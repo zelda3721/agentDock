@@ -1,0 +1,58 @@
+{
+  "color": [
+    { "name": "ad_bg", "value": "#F5F7F8" },
+    { "name": "ad_surface", "value": "#FFFFFF" },
+    { "name": "ad_surface_raised", "value": "#FFFFFF" },
+    { "name": "ad_surface_sunken", "value": "#EBEFF1" },
+    { "name": "ad_surface_selected", "value": "#E5EAEC" },
+    { "name": "ad_nav_selected", "value": "#E6F3F4" },
+
+    { "name": "ad_border", "value": "#DDE3E6" },
+    { "name": "ad_border_strong", "value": "#7C8891" },
+
+    { "name": "ad_ink", "value": "#12171C" },
+    { "name": "ad_ink_secondary", "value": "#55606B" },
+    { "name": "ad_ink_tertiary", "value": "#5D6872" },
+    { "name": "ad_ink_disabled", "value": "#A7B0B7" },
+
+    { "name": "ad_local_fg", "value": "#0A7280" },
+    { "name": "ad_local_bg", "value": "#E6F3F4" },
+    { "name": "ad_local_border", "value": "#4E939A" },
+    { "name": "ad_local_on", "value": "#FFFFFF" },
+
+    { "name": "ad_remote_fg", "value": "#985A09" },
+    { "name": "ad_remote_bg", "value": "#FBEFE0" },
+    { "name": "ad_remote_border", "value": "#B07F38" },
+    { "name": "ad_remote_on", "value": "#FFFFFF" },
+
+    { "name": "ad_brand_fg", "value": "#0A7280" },
+    { "name": "ad_brand_bg", "value": "#E6F3F4" },
+    { "name": "ad_brand_border", "value": "#4E939A" },
+    { "name": "ad_brand_on", "value": "#FFFFFF" },
+
+    { "name": "ad_danger_fg", "value": "#B3352C" },
+    { "name": "ad_danger_bg", "value": "#FBE7E5" },
+    { "name": "ad_danger_on", "value": "#FFFFFF" },
+    { "name": "ad_success_fg", "value": "#1F794B" },
+    { "name": "ad_success_bg", "value": "#E2F2EA" },
+    { "name": "ad_success_on", "value": "#FFFFFF" },
+    { "name": "ad_warning_fg", "value": "#8A6100" },
+    { "name": "ad_warning_bg", "value": "#FBF0D6" },
+    { "name": "ad_warning_on", "value": "#FFFFFF" },
+    { "name": "ad_info_fg", "value": "#2A6099" },
+    { "name": "ad_info_bg", "value": "#E4EEF8" },
+    { "name": "ad_info_on", "value": "#FFFFFF" },
+
+    { "name": "ad_focus", "value": "#0A7280" },
+
+    { "name": "ad_state_hover", "value": "#0D12171C" },
+    { "name": "ad_state_pressed", "value": "#1212171C" },
+
+    { "name": "ad_scrim", "value": "#6612171C" },
+
+    { "name": "ad_shadow_1", "value": "#0F12171C" },
+    { "name": "ad_shadow_2", "value": "#1412171C" },
+    { "name": "ad_shadow_3", "value": "#1F12171C" },
+    { "name": "ad_shadow_4", "value": "#2912171C" }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "_comment": [
+    "UI 迁移账本（UI 设计规范 §3「features 只消费不自造」）。",
+    "这 11 个 feature 页面自造了排版与色彩：design-system 依赖已在 oh-package.json5 声明，",
+    "但实际消费方为零——设计系统当前是「已接线未通电」。",
+    "",
+    "账本的作用是**让欠账可见且不可增长**：",
+    "  · 账本内的文件：既有的 hex 字面量与裸字号降级为 warning（不阻塞，但每次门禁都打印）。",
+    "  · 账本外的文件：任何 hex 字面量或裸字号一律 exit 1。",
+    "  · 迁移完一个就从本表删一个；表清空之日，把 check-tokens.mjs 里的 debt 分支一并删掉。",
+    "",
+    "每个文件头部已登记 TODO(<工单号> · UI-MIGRATION) 与迁移清单。"
+  ],
+  "files": [
+    "features/chat/src/main/ets/components/ChatPage.ets",
+    "features/knowledge/src/main/ets/components/KbListPage.ets",
+    "features/knowledge/src/main/ets/components/KbDocumentList.ets",
+    "features/agents/src/main/ets/components/AgentListPage.ets",
+    "features/agents/src/main/ets/components/AgentEditor.ets",
+    "features/models/src/main/ets/components/OnboardingWizard.ets",
+    "features/models/src/main/ets/components/ModelListPage.ets",
+    "features/models/src/main/ets/components/ProviderConfigPage.ets",
+    "features/settings/src/main/ets/components/SettingsPage.ets",
+    "features/settings/src/main/ets/components/LicensePage.ets",
+    "features/memory/src/main/ets/components/MemoryPage.ets"
+  ]
+}

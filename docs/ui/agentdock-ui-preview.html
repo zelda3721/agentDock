@@ -1,0 +1,1986 @@
+<title>AgentDock 设计系统 · 预览展板</title>
+<style>
+/* ============ 令牌层（唯一数值来源，映射 UI设计规范 §2） ============ */
+:root{
+  --bg:#F5F7F8; --surface:#FFFFFF; --raised:#FFFFFF; --sunken:#EBEFF1;
+  --selected:#E5EAEC; --navsel:#E6F3F4;
+  --border:#DDE3E6; --border-strong:#7C8891;
+  --ink:#12171C; --ink-2:#55606B; --ink-3:#5D6872; --ink-dis:#A7B0B7;
+  --local-fg:#0A7280; --local-bg:#E6F3F4; --local-border:#4E939A; --local-on:#FFFFFF;
+  --remote-fg:#985A09; --remote-bg:#FBEFE0; --remote-border:#B07F38; --remote-on:#FFFFFF;
+  --brand-fg:#0A7280; --brand-bg:#E6F3F4; --brand-border:#4E939A; --brand-on:#FFFFFF;
+  --danger-on:#FFFFFF; --success-on:#FFFFFF; --warning-on:#FFFFFF; --info-on:#FFFFFF;
+  --danger-fg:#B3352C; --danger-bg:#FBE7E5;
+  --success-fg:#1F794B; --success-bg:#E2F2EA;
+  --warning-fg:#8A6100; --warning-bg:#FBF0D6;
+  --info-fg:#2A6099; --info-bg:#E4EEF8;
+  --focus:#0A7280;
+  --hover:rgba(18,23,28,.05); --pressed:rgba(18,23,28,.07);
+  --elev1:0 1px 2px rgba(18,23,28,.06);
+  --elev2:0 2px 8px rgba(18,23,28,.08);
+  --elev3:0 8px 24px rgba(18,23,28,.12);
+  --elev4:0 16px 40px rgba(18,23,28,.16);
+
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px; --s7:32px; --s8:40px; --s9:48px;
+  --r-none:0; --r-xs:2px; --r-sm:4px; --r-md:8px; --r-lg:12px; --r-full:999px;
+  --dur-fast:120ms; --dur-normal:200ms; --dur-slow:320ms; --dur-deliberate:480ms;
+  --ease-standard:cubic-bezier(.2,0,.2,1); --ease-decel:cubic-bezier(0,0,.2,1);
+
+  --font-sans:"HarmonyOS Sans SC","HarmonyOS Sans","PingFang SC","Noto Sans CJK SC",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-inst:ui-monospace,"SF Mono",SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0D1114; --surface:#151A1F; --raised:#1A2126; --sunken:#0A0E11;
+    --selected:#232A31; --navsel:#16252A;
+    --border:#2A343B; --border-strong:#66727B;
+    --ink:#E6EBEE; --ink-2:#A6B0B9; --ink-3:#8B959E; --ink-dis:#5A646D;
+    --local-fg:#35C2CC; --local-bg:#0E2F33; --local-border:#2C8189; --local-on:#06181B;
+    --remote-fg:#E0A44A; --remote-bg:#33260F; --remote-border:#8F6E30; --remote-on:#1E1503;
+    --brand-fg:#35C2CC; --brand-bg:#0E2F33; --brand-border:#2C8189; --brand-on:#06181B;
+    --danger-on:#2A0F0C; --success-on:#062315; --warning-on:#1E1503; --info-on:#08182B;
+    --danger-fg:#E4756A; --danger-bg:#3A1D1A;
+    --success-fg:#4FB07E; --success-bg:#123021;
+    --warning-fg:#D9A83C; --warning-bg:#332711;
+    --info-fg:#68A6E0; --info-bg:#14283A;
+    --focus:#35C2CC;
+    --hover:rgba(230,235,238,.05); --pressed:rgba(230,235,238,.06);
+    --elev1:none; --elev2:none; --elev3:none; --elev4:none;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0D1114; --surface:#151A1F; --raised:#1A2126; --sunken:#0A0E11;
+  --selected:#232A31; --navsel:#16252A;
+  --border:#2A343B; --border-strong:#66727B;
+  --ink:#E6EBEE; --ink-2:#A6B0B9; --ink-3:#8B959E; --ink-dis:#5A646D;
+  --local-fg:#35C2CC; --local-bg:#0E2F33; --local-border:#2C8189; --local-on:#06181B;
+  --remote-fg:#E0A44A; --remote-bg:#33260F; --remote-border:#8F6E30; --remote-on:#1E1503;
+  --brand-fg:#35C2CC; --brand-bg:#0E2F33; --brand-border:#2C8189; --brand-on:#06181B;
+  --danger-on:#2A0F0C; --success-on:#062315; --warning-on:#1E1503; --info-on:#08182B;
+  --danger-fg:#E4756A; --danger-bg:#3A1D1A;
+  --success-fg:#4FB07E; --success-bg:#123021;
+  --warning-fg:#D9A83C; --warning-bg:#332711;
+  --info-fg:#68A6E0; --info-bg:#14283A;
+  --focus:#35C2CC;
+  --hover:rgba(230,235,238,.05); --pressed:rgba(230,235,238,.06);
+  --elev1:none; --elev2:none; --elev3:none; --elev4:none;
+}
+:root[data-theme="light"]{
+  --bg:#F5F7F8; --surface:#FFFFFF; --raised:#FFFFFF; --sunken:#EBEFF1;
+  --selected:#E5EAEC; --navsel:#E6F3F4;
+  --border:#DDE3E6; --border-strong:#7C8891;
+  --ink:#12171C; --ink-2:#55606B; --ink-3:#5D6872; --ink-dis:#A7B0B7;
+  --local-fg:#0A7280; --local-bg:#E6F3F4; --local-border:#4E939A; --local-on:#FFFFFF;
+  --remote-fg:#985A09; --remote-bg:#FBEFE0; --remote-border:#B07F38; --remote-on:#FFFFFF;
+  --brand-fg:#0A7280; --brand-bg:#E6F3F4; --brand-border:#4E939A; --brand-on:#FFFFFF;
+  --danger-on:#FFFFFF; --success-on:#FFFFFF; --warning-on:#FFFFFF; --info-on:#FFFFFF;
+  --danger-fg:#B3352C; --danger-bg:#FBE7E5;
+  --success-fg:#1F794B; --success-bg:#E2F2EA;
+  --warning-fg:#8A6100; --warning-bg:#FBF0D6;
+  --info-fg:#2A6099; --info-bg:#E4EEF8;
+  --focus:#0A7280;
+  --hover:rgba(18,23,28,.05); --pressed:rgba(18,23,28,.07);
+  --elev1:0 1px 2px rgba(18,23,28,.06);
+  --elev2:0 2px 8px rgba(18,23,28,.08);
+  --elev3:0 8px 24px rgba(18,23,28,.12);
+  --elev4:0 16px 40px rgba(18,23,28,.16);
+}
+
+/* ============ 基础 ============ */
+*{box-sizing:border-box}
+body,.pg{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font-sans);
+  font-size:14px;line-height:22px;-webkit-font-smoothing:antialiased}
+.pg{padding:0 var(--s4) var(--s9)}
+.wrap{max-width:1140px;margin:0 auto}
+h1,h2,h3,h4{margin:0;text-wrap:balance;font-weight:600}
+p{margin:0}
+.eyebrow{font-size:11px;line-height:16px;font-weight:600;letter-spacing:.08em;color:var(--ink-3)}
+.inst{font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+.i-m{font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-size:13px;line-height:18px;font-weight:500}
+.i-s{font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-size:11px;line-height:16px}
+.sec{padding:var(--s7) 0;border-top:1px solid var(--border)}
+.sec > .sec-hd{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--s3);margin-bottom:var(--s5)}
+.sec-hd h2{font-size:20px;line-height:28px}
+.sec-hd .note{color:var(--ink-2);font-size:13px;line-height:20px}
+.sub{font-size:11px;line-height:16px;font-weight:600;letter-spacing:.08em;color:var(--ink-3);
+  margin:var(--s6) 0 var(--s3)}
+.muted{color:var(--ink-2)}
+.tert{color:var(--ink-3)}
+a{color:var(--brand-fg)}   /* 链接 = 品牌用途，不是来源断言（§2.2.3） */
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.scroll-x{overflow-x:auto;overscroll-behavior-x:contain}
+svg.ic{width:14px;height:14px;flex:none;display:block}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+
+/* ============ 顶部 ============ */
+.hdr{position:sticky;top:0;z-index:20;background:var(--bg);
+  border-bottom:1px solid var(--border);margin:0 calc(-1 * var(--s4));padding:var(--s2) var(--s4)}
+.hdr-in{max-width:1140px;margin:0 auto;display:flex;align-items:center;gap:var(--s4);flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:var(--s2);font-weight:600;font-size:13px}
+.brand .dockmark{color:var(--brand-fg)}
+.hdr nav{display:flex;gap:var(--s3);flex-wrap:wrap;font-size:12px}
+.hdr nav a{color:var(--ink-2);text-decoration:none;padding:2px 0;border-bottom:1px solid transparent}
+.hdr nav a:hover{color:var(--ink);border-bottom-color:var(--brand-fg)}
+.themebtn{margin-left:auto;font:inherit;font-size:12px;color:var(--ink);background:transparent;
+  border:1px solid var(--border-strong);border-radius:var(--r-sm);padding:4px 10px;cursor:pointer;
+  display:flex;align-items:center;gap:6px;min-height:28px}
+.themebtn:hover{background:var(--hover)}
+
+.hero{padding:var(--s8) 0 var(--s7)}
+.hero h1{font-size:24px;line-height:32px;max-width:26ch}
+.hero .lede{margin-top:var(--s3);font-size:16px;line-height:26px;color:var(--ink-2);max-width:62ch}
+.stance{margin-top:var(--s6);display:grid;gap:var(--s3);
+  grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.stance article{background:var(--surface);border:1px solid var(--border);box-shadow:var(--elev1);
+  border-radius:var(--r-md);padding:var(--s4);display:flex;flex-direction:column;gap:var(--s2)}
+.stance h3{font-size:16px;line-height:24px}
+.stance p{font-size:13px;line-height:20px;color:var(--ink-2)}
+
+/* ============ 芯片 / 标签（A6） ============ */
+/* [R-101] 仪表体不得设在可能含中文的容器上——"本地""远程"会 fallback 到系统字体，
+   基线与字重跟旁边的拉丁对不齐。容器走 sans，模型名等纯拉丁叶子单独包 .inst。 */
+.chip{display:inline-flex;align-items:baseline;gap:var(--s1);border-radius:var(--r-xs);
+  padding:2px var(--s1);font-family:var(--font-sans);
+  font-size:11px;line-height:16px;border:1px solid transparent;white-space:nowrap}
+.chip svg{align-self:center}
+.chip--local{background:var(--local-bg);color:var(--local-fg);border-color:var(--local-border)}
+.chip--remote{background:var(--remote-bg);color:var(--remote-fg);border-color:var(--remote-border);
+  border-left-width:3px}
+.chip--ghost{background:transparent;color:var(--ink-3);border-color:var(--border-strong)}
+.tag{display:inline-flex;align-items:center;gap:var(--s1);border-radius:var(--r-xs);padding:2px 6px;
+  font-size:11px;line-height:16px;white-space:nowrap}
+.tag--warn{background:var(--warning-bg);color:var(--warning-fg)}
+.tag--ok{background:var(--success-bg);color:var(--success-fg)}
+.tag--danger{background:var(--danger-bg);color:var(--danger-fg)}
+.tag--info{background:var(--info-bg);color:var(--info-fg)}
+.tag--neutral{background:var(--sunken);color:var(--ink-3)}
+
+/* ============ 色卡（定色标本，不随主题切换） ============ */
+.plates{display:grid;gap:var(--s4);grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+.plate{border-radius:var(--r-md);border:1px solid;padding:var(--s4)}
+.plate--light{background:#F5F7F8;border-color:#DDE3E6;color:#12171C}
+.plate--dark{background:#0D1114;border-color:#2A343B;color:#E6EBEE}
+.plate h3{font-size:13px;line-height:20px;margin-bottom:var(--s3);display:flex;gap:var(--s2);align-items:baseline}
+.plate--light h3 small,.plate--light .sw-meta{color:#55606B}
+.plate--dark h3 small,.plate--dark .sw-meta{color:#A6B0B9}
+.plate--light small{color:#55606B}
+.plate--dark small{color:#A6B0B9}
+.swgrid{display:grid;gap:var(--s2);grid-template-columns:repeat(auto-fill,minmax(148px,1fr))}
+.sw{border-radius:var(--r-sm);overflow:hidden;border:1px solid}
+.plate--light .sw{border-color:#DDE3E6;background:#FFFFFF}
+.plate--dark .sw{border-color:#2A343B;background:#151A1F}
+.sw-chip{height:38px;border-bottom:1px solid}
+.plate--light .sw-chip{border-color:#DDE3E6}
+.plate--dark .sw-chip{border-color:#2A343B}
+.sw-body{padding:6px 8px;display:flex;flex-direction:column;gap:2px}
+.sw-name{font-family:var(--font-inst);font-size:11px;line-height:15px}
+.sw-meta{font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-size:10px;line-height:14px}
+.plate--light .sw-name{color:#12171C}
+.plate--dark .sw-name{color:#E6EBEE}
+
+/* 语义轴专区 */
+.axis{display:grid;gap:var(--s4);grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin-top:var(--s3)}
+.axis-card{border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);
+  box-shadow:var(--elev1);padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3)}
+.axis-card.local{border-left:3px solid var(--local-fg)}
+.axis-card.remote{border-left:3px solid var(--remote-fg)}
+.axis-hd{display:flex;align-items:center;gap:var(--s2)}
+.axis-hd svg{width:20px;height:20px}
+.axis-hd h3{font-size:16px;line-height:24px}
+.axis-row{display:flex;gap:var(--s2);align-items:center;flex-wrap:wrap;font-size:13px;line-height:20px;color:var(--ink-2)}
+.redun{display:grid;grid-template-columns:auto 1fr;gap:var(--s1) var(--s3);font-size:12px;line-height:18px}
+.redun dt{color:var(--ink-3)}
+.redun dd{margin:0;color:var(--ink)}
+.gray-demo{display:flex;gap:var(--s2);align-items:center;padding:var(--s2);background:var(--sunken);
+  border-radius:var(--r-none);filter:grayscale(1);font-size:12px}
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="ic-local" viewBox="0 0 16 16">
+    <path d="M2 5.5A1.5 1.5 0 0 1 3.5 4h9A1.5 1.5 0 0 1 14 5.5v5A1.5 1.5 0 0 1 12.5 12h-9A1.5 1.5 0 0 1 2 10.5v-5Zm4 6.5h4v1.5H6V12Z" fill="currentColor"/>
+    <rect x="4.5" y="6" width="7" height="1.4" fill="var(--surface)"/>
+  </symbol>
+  <symbol id="ic-remote" viewBox="0 0 16 16">
+    <path d="M4.6 12.2a2.9 2.9 0 0 1-.4-5.77A3.6 3.6 0 0 1 11 5.6a2.6 2.6 0 0 1 .3 5.19" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    <path d="M4.6 12.2h6.7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="ic-warn" viewBox="0 0 16 16">
+    <path d="M8 2.4 14.6 13.6H1.4L8 2.4Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+    <path d="M8 6.4v3.1M8 11.2v.9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="ic-alert" viewBox="0 0 16 16">
+    <circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.4"/>
+    <path d="M8 4.6v4M8 10.6v1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="ic-ok" viewBox="0 0 16 16">
+    <path d="M3 8.4 6.4 11.8 13 5.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="ic-block" viewBox="0 0 16 16">
+    <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.4"/>
+    <path d="M3.6 3.6 12.4 12.4" stroke="currentColor" stroke-width="1.4"/>
+  </symbol>
+  <symbol id="ic-tool" viewBox="0 0 16 16">
+    <circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M8 1.6v2M8 12.4v2M1.6 8h2M12.4 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M12.5 3.5l-1.4 1.4M4.9 11.1l-1.4 1.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="ic-chev" viewBox="0 0 16 16">
+    <path d="M4 6.2 8 10.2l4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="ic-tri" viewBox="0 0 16 16">
+    <path d="M8 3 14.2 13.4H1.8L8 3Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="ic-dot-solid" viewBox="0 0 16 16">
+    <circle cx="8" cy="8" r="4.2" fill="currentColor"/>
+  </symbol>
+  <symbol id="ic-dot-hollow" viewBox="0 0 16 16">
+    <circle cx="8" cy="8" r="4.2" fill="none" stroke="currentColor" stroke-width="1.5"/>
+  </symbol>
+  <symbol id="ic-archived" viewBox="0 0 16 16">
+    <path d="M8 3.8a4.2 4.2 0 0 1 0 8.4Z" fill="currentColor"/>
+    <circle cx="8" cy="8" r="4.2" fill="none" stroke="currentColor" stroke-width="1.4"/>
+  </symbol>
+  <symbol id="ic-superseded" viewBox="0 0 16 16">
+    <circle cx="8" cy="8" r="5.4" fill="none" stroke="currentColor" stroke-width="1.4"/>
+    <path d="M5.2 5.2l5.6 5.6M10.8 5.2l-5.6 5.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="ic-stop" viewBox="0 0 16 16">
+    <rect x="4" y="4" width="8" height="8" fill="currentColor"/>
+  </symbol>
+  <symbol id="ic-send" viewBox="0 0 16 16">
+    <path d="M2.2 8h9.4M8.2 4.2 12 8l-3.8 3.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="ic-plus" viewBox="0 0 16 16">
+    <path d="M8 3.4v9.2M3.4 8h9.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="ic-more" viewBox="0 0 16 16">
+    <circle cx="3.4" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="12.6" cy="8" r="1.2" fill="currentColor"/>
+  </symbol>
+  <symbol id="ic-mic" viewBox="0 0 16 16">
+    <rect x="6" y="2.2" width="4" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/>
+    <path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8v2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="ic-keyboard" viewBox="0 0 16 16">
+    <rect x="1.6" y="4" width="12.8" height="8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M4.2 6.6h.01M6.6 6.6h.01M9 6.6h.01M11.4 6.6h.01M4.8 9.4h6.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="ic-chev-left" viewBox="0 0 16 16">
+    <path d="M10 3.6 5.8 8l4.2 4.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="ic-chev-right" viewBox="0 0 16 16">
+    <path d="M6 3.6 10.2 8 6 12.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="ic-close" viewBox="0 0 16 16">
+    <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="ic-pin" viewBox="0 0 16 16">
+    <circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.3"/>
+    <circle cx="8" cy="8" r="1.6" fill="currentColor"/>
+    <path d="M8 1.2v2M8 12.8v2M1.2 8h2M12.8 8h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="ic-arrow-right" viewBox="0 0 16 16">
+    <path d="M2.6 8h10.2M9.4 4.4 13 8l-3.6 3.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="ic-wave" viewBox="0 0 24 16">
+    <path d="M1 8c2-5 4-5 6 0s4 5 6 0 4-5 6 0" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="ic-blocked" viewBox="0 0 16 16">
+    <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.4"/>
+    <path d="M3.9 3.9 12.1 12.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+  </symbol>
+</svg>
+
+<div class="pg">
+<header class="hdr">
+  <div class="hdr-in">
+    <span class="brand"><svg class="ic dockmark" style="width:16px;height:16px"><use href="#ic-local"/></svg> AgentDock 设计系统 <span class="tert i-s">v1.0</span></span>
+    <nav aria-label="章节导航">
+      <a href="#c-color">色彩</a>
+      <a href="#c-type">排版</a>
+      <a href="#c-space">间距·动效</a>
+      <a href="#c-rail">溯源条</a>
+      <a href="#c-comp">组件</a>
+      <a href="#c-screens">界面</a>
+      <a href="#c-ship">交付</a>
+    </nav>
+    <button class="themebtn" id="themebtn" type="button" aria-pressed="false">
+      <span id="themelabel">切到暗色</span>
+    </button>
+  </div>
+</header>
+
+<div class="wrap">
+<section class="hero">
+  <p class="eyebrow">鸿蒙三端 · 手机 / 平板 / 2in1</p>
+  <h1>本地优先的智能体工作台：模型自选、数据在端、记忆可审计。</h1>
+  <p class="lede">这不是一个聊天 App 的外观。本地 CPU 正在跑模型——tok/s、首 token 时延、内存预算、召回率、上下文水位是这个产品的材质，界面的职责是让它们在每一屏都可见、可查、可撤销。</p>
+  <div class="stance">
+    <article>
+      <p class="eyebrow">立场 · 语义色轴</p>
+      <h3>青 = 本地 &nbsp;/&nbsp; 琥珀 = 远程</h3>
+      <p>贯穿模型芯片、消息色带、当前大脑、隐私围栏、档位表、知识库隐私级别。四重冗余强制：色相 + 填充实/空 + 图标形状 + 文字标签——只靠色相即缺陷。</p>
+    </article>
+    <article>
+      <p class="eyebrow">立场 · 签名元素</p>
+      <h3>溯源条（Provenance Rail）</h3>
+      <p>每条助手消息下沿的一行仪表带：来源模型 · 引用 · 记忆 · 围栏拦截 · 耗时。它是"数据在端、可审计"的物质化，lg 的第三栏就是它的展开态。</p>
+    </article>
+    <article>
+      <p class="eyebrow">立场 · 仪表排版</p>
+      <h3>第二角色：等宽仪表体</h3>
+      <p>凡系统测量的数——<span class="i-s">14.2 tok/s</span>、<span class="i-s">412ms</span>、<span class="i-s">0.87</span>、<span class="i-s">ctx 62%</span>——一律等宽 + tabular-nums。模型正文里的数字不做处理：仪表体的边界是"系统测量的数"。</p>
+    </article>
+  </div>
+</section>
+
+<!-- ================= 色彩 ================= -->
+<section class="sec" id="c-color">
+  <div class="sec-hd">
+    <p class="eyebrow">01 / 令牌</p>
+    <h2>色彩</h2>
+    <p class="note">中性不是纯灰：向青偏移（色相 ~200°，饱和 4–8%），中性与主色同源。对比度为脚本实算值（sRGB 相对亮度），非估计。下方色板是<strong>定色标本</strong>，不随页面主题切换。</p>
+  </div>
+
+  <p class="sub">基础层 · 中性</p>
+  <div class="plates">
+    <div class="plate plate--light">
+      <h3>浅色 <small>对比度：表面 → ad_ink；前景 → ad_surface</small></h3>
+      <div class="swgrid">
+        <div class="sw"><div class="sw-chip" style="background:#F5F7F8"></div><div class="sw-body"><span class="sw-name">ad_bg</span><span class="sw-meta">#F5F7F8 · 16.77:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#FFFFFF"></div><div class="sw-body"><span class="sw-name">ad_surface</span><span class="sw-meta">#FFFFFF · 18.03:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#EBEFF1"></div><div class="sw-body"><span class="sw-name">ad_surface_sunken</span><span class="sw-meta">#EBEFF1 · 15.58:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#E5EAEC"></div><div class="sw-body"><span class="sw-name">ad_surface_selected</span><span class="sw-meta">#E5EAEC · 14.86:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#E6F3F4"></div><div class="sw-body"><span class="sw-name">ad_nav_selected</span><span class="sw-meta">#E6F3F4 · 仅导航</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#DDE3E6"></div><div class="sw-body"><span class="sw-name">ad_border</span><span class="sw-meta">#DDE3E6 · 1.30 仅分隔</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#7C8891"></div><div class="sw-body"><span class="sw-name">ad_border_strong</span><span class="sw-meta">#7C8891 · 3.63:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#12171C"></div><div class="sw-body"><span class="sw-name">ad_ink</span><span class="sw-meta">#12171C · 18.03:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#55606B"></div><div class="sw-body"><span class="sw-name">ad_ink_secondary</span><span class="sw-meta">#55606B · 6.42:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#5D6872"></div><div class="sw-body"><span class="sw-name">ad_ink_tertiary</span><span class="sw-meta">#5D6872 · 5.69:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#A7B0B7"></div><div class="sw-body"><span class="sw-name">ad_ink_disabled</span><span class="sw-meta">#A7B0B7 · 1.4.3 豁免</span></div></div>
+      </div>
+      <p style="font-size:12px;line-height:18px;margin-top:12px;color:#55606B">浅色墨阶被压缩的实话：secondary 6.42 与 tertiary 5.69 仅差一档——<strong>浅色下二者靠字号字重区分，不能只靠颜色。</strong></p>
+    </div>
+    <div class="plate plate--dark">
+      <h3>深色 <small>"仪器夜间模式"：抬升靠提亮 + 描边，不靠阴影</small></h3>
+      <div class="swgrid">
+        <div class="sw"><div class="sw-chip" style="background:#0D1114"></div><div class="sw-body"><span class="sw-name">ad_bg</span><span class="sw-meta">#0D1114 · 15.79:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#151A1F"></div><div class="sw-body"><span class="sw-name">ad_surface</span><span class="sw-meta">#151A1F · 14.58:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#1A2126"></div><div class="sw-body"><span class="sw-name">ad_surface_raised</span><span class="sw-meta">#1A2126 · 13.56:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#0A0E11"></div><div class="sw-body"><span class="sw-name">ad_surface_sunken</span><span class="sw-meta">#0A0E11 · 16.13:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#232A31"></div><div class="sw-body"><span class="sw-name">ad_surface_selected</span><span class="sw-meta">#232A31 · 12.08:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#16252A"></div><div class="sw-body"><span class="sw-name">ad_nav_selected</span><span class="sw-meta">#16252A · 仅导航</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#2A343B"></div><div class="sw-body"><span class="sw-name">ad_border</span><span class="sw-meta">#2A343B · 仅分隔</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#66727B"></div><div class="sw-body"><span class="sw-name">ad_border_strong</span><span class="sw-meta">#66727B · 3.55:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#E6EBEE"></div><div class="sw-body"><span class="sw-name">ad_ink</span><span class="sw-meta">#E6EBEE · 14.58:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#A6B0B9"></div><div class="sw-body"><span class="sw-name">ad_ink_secondary</span><span class="sw-meta">#A6B0B9 · 7.95:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#8B959E"></div><div class="sw-body"><span class="sw-name">ad_ink_tertiary</span><span class="sw-meta">#8B959E · 5.74:1</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#5A646D"></div><div class="sw-body"><span class="sw-name">ad_ink_disabled</span><span class="sw-meta">#5A646D · 1.4.3 豁免</span></div></div>
+      </div>
+      <p style="font-size:12px;line-height:18px;margin-top:12px;color:#A6B0B9">深色 <span class="i-s">surface_raised</span> 从首版 #1D242A 压暗到 #1A2126——实测浮层按压态下 <span class="i-s">ink_tertiary</span> 曾掉到 3.95:1。</p>
+    </div>
+  </div>
+
+  <p class="sub">语义轴 · local / remote —— 形状冗余是硬约束</p>
+  <div class="axis">
+    <div class="axis-card local">
+      <div class="axis-hd">
+        <svg class="ic" style="color:var(--local-fg)"><use href="#ic-local"/></svg>
+        <h3>本地 · 在端</h3>
+        <span class="chip chip--local" style="margin-left:auto"><svg class="ic"><use href="#ic-local"/></svg>本地 · <span class="inst">Qwen3-4B</span></span>
+      </div>
+      <div class="axis-row">
+        <span class="sw-name inst">ad_local_fg</span> <b class="i-s">#0A7280 / #35C2CC</b>
+        <span class="tert i-s">5.63 / 8.12</span>
+      </div>
+      <dl class="redun">
+        <dt>图标</dt><dd>实心坞形（填充）<svg class="ic" style="display:inline-block;vertical-align:-2px"><use href="#ic-local"/></svg></dd>
+        <dt>点标记</dt><dd>实心圆点 <svg class="ic" style="display:inline-block;vertical-align:-2px"><use href="#ic-dot-solid"/></svg></dd>
+        <dt>填充</dt><dd>实心底 <span class="i-s">ad_local_bg</span>（芯片文字 4.96 / 6.61）</dd>
+        <dt>描边</dt><dd>实线 1vp <span class="i-s">ad_local_border</span>（3.10 / 3.13 vs 芯片底）</dd>
+        <dt>文字</dt><dd>恒有"本地"二字</dd>
+      </dl>
+      <div class="gray-demo"><svg class="ic"><use href="#ic-local"/></svg><span>灰度模拟：形状与文字仍可区分</span></div>
+    </div>
+    <div class="axis-card remote">
+      <div class="axis-hd">
+        <svg class="ic" style="color:var(--remote-fg)"><use href="#ic-remote"/></svg>
+        <h3>远程 · 出端</h3>
+        <span class="chip chip--remote" style="margin-left:auto"><svg class="ic"><use href="#ic-remote"/></svg>远程 · <span class="inst">GPT-4o</span></span>
+      </div>
+      <div class="axis-row">
+        <span class="sw-name inst">ad_remote_fg</span> <b class="i-s">#985A09 / #E0A44A</b>
+        <span class="tert i-s">5.52 / 7.99</span>
+      </div>
+      <dl class="redun">
+        <dt>图标</dt><dd>空心云弧（描边，内部镂空）<svg class="ic" style="display:inline-block;vertical-align:-2px"><use href="#ic-remote"/></svg></dd>
+        <dt>点标记</dt><dd>空心圆环 <svg class="ic" style="display:inline-block;vertical-align:-2px"><use href="#ic-dot-hollow"/></svg></dd>
+        <dt>填充</dt><dd>实心底 <span class="i-s">ad_remote_bg</span>（芯片文字 4.87 / 6.72）</dd>
+        <dt>描边</dt><dd>实线 1vp + <strong>左侧 3vp 语义竖条</strong></dd>
+        <dt>文字</dt><dd>恒有"远程"二字</dd>
+      </dl>
+      <div class="gray-demo"><svg class="ic"><use href="#ic-remote"/></svg><span>灰度模拟：青与琥珀亮度几乎相同（ΔL* = 0.5），色相失效时只剩形状</span></div>
+    </div>
+  </div>
+  <p class="muted" style="font-size:13px;line-height:20px;margin-top:12px">为什么是青 / 琥珀而不是绿 / 红：protanopia 与 deuteranopia 都是<strong>红绿轴</strong>缺陷，蓝黄轴完整保留。青（b* ≈ −15）与琥珀（b* ≈ +50）架在这条未受损的轴上，色觉模拟后 ΔE 仍有 <span class="i-s">57–79</span>（"明显不同色"阈值约 <span class="i-s">10</span>）。</p>
+  <p class="muted" style="font-size:13px;line-height:20px;margin-top:8px"><strong>[R-35] 语义轴保护：</strong>青同时是品牌色与"本地"语义色。会话行 / 消息 / 文档行 / 记忆条的选中态<strong>一律中性</strong> <span class="i-s">ad_surface_selected</span> + 左 3vp 标记条——选中的会话行若泛青，会被误读为"这个会话是本地的"，语义色的证据效力即归零。只有导航项可用 <span class="i-s">ad_nav_selected</span>。</p>
+
+  <p class="sub">状态色与焦点 —— warning 不用琥珀（琥珀已被"远程"占用）</p>
+  <div class="plates">
+    <div class="plate plate--light">
+      <h3>浅色</h3>
+      <div class="swgrid">
+        <div class="sw"><div class="sw-chip" style="background:#FBE7E5;display:flex;align-items:center;justify-content:center;color:#B3352C;font:600 12px var(--font-sans);gap:4px"><svg class="ic"><use href="#ic-warn"/></svg>危险 5.10</div><div class="sw-body"><span class="sw-name">ad_danger_fg/_bg</span><span class="sw-meta">#B3352C / #FBE7E5</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#E2F2EA;display:flex;align-items:center;justify-content:center;color:#1F794B;font:600 12px var(--font-sans);gap:4px"><svg class="ic"><use href="#ic-ok"/></svg>成功 4.65</div><div class="sw-body"><span class="sw-name">ad_success_fg/_bg</span><span class="sw-meta">#1F794B / #E2F2EA</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#FBF0D6;display:flex;align-items:center;justify-content:center;color:#8A6100;font:600 12px var(--font-sans);gap:4px"><svg class="ic"><use href="#ic-tri"/></svg>警戒 4.89</div><div class="sw-body"><span class="sw-name">ad_warning_fg/_bg</span><span class="sw-meta">#8A6100 / #FBF0D6</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#E4EEF8;display:flex;align-items:center;justify-content:center;color:#2A6099;font:600 12px var(--font-sans)">提示 5.53</div><div class="sw-body"><span class="sw-name">ad_info_fg/_bg</span><span class="sw-meta">#2A6099 / #E4EEF8</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#F5F7F8;box-shadow:inset 0 0 0 2px #0A7280"></div><div class="sw-body"><span class="sw-name">ad_focus</span><span class="sw-meta">#0A7280 · 5.24:1</span></div></div>
+      </div>
+    </div>
+    <div class="plate plate--dark">
+      <h3>深色</h3>
+      <div class="swgrid">
+        <div class="sw"><div class="sw-chip" style="background:#3A1D1A;display:flex;align-items:center;justify-content:center;color:#E4756A;font:600 12px var(--font-sans);gap:4px"><svg class="ic"><use href="#ic-warn"/></svg>危险 5.14</div><div class="sw-body"><span class="sw-name">ad_danger_fg/_bg</span><span class="sw-meta">#E4756A / #3A1D1A</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#123021;display:flex;align-items:center;justify-content:center;color:#4FB07E;font:600 12px var(--font-sans);gap:4px"><svg class="ic"><use href="#ic-ok"/></svg>成功 5.33</div><div class="sw-body"><span class="sw-name">ad_success_fg/_bg</span><span class="sw-meta">#4FB07E / #123021</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#332711;display:flex;align-items:center;justify-content:center;color:#D9A83C;font:600 12px var(--font-sans);gap:4px"><svg class="ic"><use href="#ic-tri"/></svg>警戒 6.68</div><div class="sw-body"><span class="sw-name">ad_warning_fg/_bg</span><span class="sw-meta">#D9A83C / #332711</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#14283A;display:flex;align-items:center;justify-content:center;color:#68A6E0;font:600 12px var(--font-sans)">提示 5.82</div><div class="sw-body"><span class="sw-name">ad_info_fg/_bg</span><span class="sw-meta">#68A6E0 / #14283A</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#0D1114;box-shadow:inset 0 0 0 2px #35C2CC"></div><div class="sw-body"><span class="sw-name">ad_focus</span><span class="sw-meta">#35C2CC · 8.80:1</span></div></div>
+      </div>
+    </div>
+  </div>
+  <p class="muted" style="font-size:13px;line-height:20px;margin-top:12px">warning 与 remote 不混淆靠三点兜底：① 从不共存于同一控件；② warning 恒带三角图标（<svg class="ic" style="display:inline-block;vertical-align:-2px"><use href="#ic-tri"/></svg>），remote 恒带空心云弧；③ warning 恒带文字前缀。<strong>全表 0 项不达标</strong>，最紧三组为芯片描边 vs 芯片底（<span class="i-s">3.10 / 3.12 / 3.13</span>）。</p>
+</section>
+<style>
+/* ============ 排版 / 间距 / 动效 展板 ============ */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);
+  box-shadow:var(--elev1);padding:var(--s4)}
+.card--sunken{background:var(--sunken);border-radius:var(--r-none);border-color:transparent;box-shadow:none}
+.grid2{display:grid;gap:var(--s4);grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.grid3{display:grid;gap:var(--s3);grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.scale{display:flex;flex-direction:column}
+.scale-row{display:flex;gap:var(--s4);align-items:baseline;padding:var(--s2) 0;border-bottom:1px solid var(--border)}
+.scale-row:last-child{border-bottom:0}
+.scale-key{flex:0 0 132px;font-family:var(--font-inst);font-size:11px;line-height:16px;color:var(--ink-3)}
+.scale-spec{flex:0 0 108px;font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-size:11px;color:var(--ink-3)}
+.scale-demo{flex:1;min-width:180px;color:var(--ink)}
+.t-display{font-size:34px;line-height:42px;font-weight:700;letter-spacing:-.01em}
+.t-title-l{font-size:24px;line-height:32px;font-weight:600}
+.t-title-m{font-size:20px;line-height:28px;font-weight:600}
+.t-title-s{font-size:16px;line-height:24px;font-weight:600}
+.t-body-l{font-size:16px;line-height:26px}
+.t-body-m{font-size:14px;line-height:22px}
+.t-body-s{font-size:13px;line-height:20px}
+.t-caption{font-size:12px;line-height:18px}
+.instr-tbl{width:100%;border-collapse:collapse;font-size:13px}
+.instr-tbl th,.instr-tbl td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--border)}
+.instr-tbl th{font-size:11px;letter-spacing:.08em;font-weight:600;color:var(--ink-3)}
+.instr-tbl td.num{font-family:var(--font-inst);font-variant-numeric:tabular-nums;text-align:right;font-size:13px;font-weight:500}
+.instr-tbl td.num-prop{text-align:right;font-size:13px}
+.spacebars{display:flex;flex-direction:column;gap:6px}
+.spacebar{display:flex;align-items:center;gap:var(--s3)}
+.spacebar i{display:block;height:12px;background:var(--sunken);border-left:2px solid var(--border-strong)}
+.spacebar span{font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-size:11px;color:var(--ink-3)}
+.radii{display:flex;gap:var(--s3);flex-wrap:wrap}
+.radius-item{width:88px;display:flex;flex-direction:column;gap:6px;align-items:center;text-align:center}
+.radius-box{width:64px;height:44px;background:var(--sunken);border:1px solid var(--border-strong)}
+.elevs{display:grid;gap:var(--s4);grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.elev-box{background:var(--raised);border:1px solid var(--border);border-radius:var(--r-md);
+  padding:var(--s3);font-size:12px;line-height:18px;min-height:76px}
+.motion-row{display:flex;align-items:center;gap:var(--s3);padding:var(--s2) 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.motion-row:last-child{border-bottom:0}
+.motion-name{flex:0 0 148px;font-size:13px}
+.motion-spec{flex:0 0 150px;font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-size:11px;color:var(--ink-3)}
+.demo-cursor{display:inline-block;width:2px;height:16px;background:var(--brand-fg);vertical-align:-3px;
+  animation:blink 1000ms var(--ease-standard) infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+.demo-breath{color:var(--info-fg);font-size:13px;animation:breath 1400ms var(--ease-standard) infinite}
+@keyframes breath{0%,100%{opacity:1}50%{opacity:.5}}
+.demo-gauge{position:relative;height:2px;background:var(--sunken);width:180px}
+.demo-gauge i{width:34%;display:block}
+.demo-gauge.warn i{background:var(--warning-fg);width:72%}
+.demo-gauge.dang i{background:var(--danger-fg);width:92%}
+@media (prefers-reduced-motion: reduce){
+  .demo-cursor{animation:none;opacity:1}
+  .demo-breath{animation:none}
+  .demo-gauge i{transition:none}
+  *{scroll-behavior:auto}
+}
+</style>
+
+<!-- ================= 排版 ================= -->
+<section class="sec" id="c-type">
+  <div class="sec-hd">
+    <p class="eyebrow">02 / 令牌</p>
+    <h2>排版音阶</h2>
+    <p class="note">叙述文字 = HarmonyOS Sans（系统级，中文必需）。个性来自第二角色：<strong>JetBrains Mono 仪表体</strong>（Apache-2.0，0 带斜杠，1/l/I 明确区分）。眉标靠字距而非全大写。</p>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <p class="eyebrow" style="margin-bottom:var(--s3)">字号阶 · 实样</p>
+      <div class="scale">
+        <div class="scale-row"><span class="scale-key">display</span><span class="scale-spec">34/42 · 700</span><span class="scale-demo t-display">还没有会话</span></div>
+        <div class="scale-row"><span class="scale-key">title_l</span><span class="scale-spec">24/32 · 600</span><span class="scale-demo t-title-l">记忆整理报告</span></div>
+        <div class="scale-row"><span class="scale-key">title_m</span><span class="scale-spec">20/28 · 600</span><span class="scale-demo t-title-m">合同第三章审查</span></div>
+        <div class="scale-row"><span class="scale-key">title_s</span><span class="scale-spec">16/24 · 600</span><span class="scale-demo t-title-s">Qwen3-4B-Instruct</span></div>
+        <div class="scale-row"><span class="scale-key">body_l</span><span class="scale-spec">16/26 · 400</span><span class="scale-demo t-body-l">聊天消息正文：行高 1.63，长文阅读舒适度优先。</span></div>
+        <div class="scale-row"><span class="scale-key">body_m</span><span class="scale-spec">14/22 · 400</span><span class="scale-demo t-body-m">默认 UI 正文。</span></div>
+        <div class="scale-row"><span class="scale-key">body_s</span><span class="scale-spec">13/20 · 400</span><span class="scale-demo t-body-s">次级说明、表单辅助文字。</span></div>
+        <div class="scale-row"><span class="scale-key">caption</span><span class="scale-spec">12/18 · 400</span><span class="scale-demo t-caption">时间戳、脚注。</span></div>
+        <div class="scale-row"><span class="scale-key">eyebrow</span><span class="scale-spec">11/16 · 600 · +.08em</span><span class="scale-demo eyebrow">溯源 / 引用 / 记忆</span></div>
+        <div class="scale-row"><span class="scale-key">instrument_m</span><span class="scale-spec">13/18 · 500</span><span class="scale-demo i-m">14.2 tok/s · 3,204 tok</span></div>
+        <div class="scale-row"><span class="scale-key">instrument_s</span><span class="scale-spec">11/16 · 400（lg 12）</span><span class="scale-demo i-s">sha256 a3f1…9c2e · [1] 0.87</span></div>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:var(--s4)">
+      <div class="card">
+        <p class="eyebrow" style="margin-bottom:var(--s3)">仪表体 vs 叙述体 —— 边界是"系统测量的数"</p>
+        <p class="t-body-l" style="margin-bottom:var(--s3)">根据 GB/T 39786-2021 第 7.2 条，密钥轮换周期为 12 个月，国标要求不超过 6 个月，两者存在冲突。<span class="tert t-body-s">← 助手正文里的数字<strong>不</strong> mono 化：mono 化会让回答看起来像日志。</span></p>
+        <div class="card--sunken" style="padding:var(--s3)">
+          <table class="instr-tbl">
+            <thead><tr><th>系统测量</th><th style="text-align:right">仪表体（tabular）</th><th style="text-align:right">比例字体（错误）</th></tr></thead>
+            <tbody>
+              <tr><td>生成速度</td><td class="num">14.2 tok/s</td><td class="num-prop">14.2 tok/s</td></tr>
+              <tr><td>首 token 时延</td><td class="num">412ms</td><td class="num-prop">412ms</td></tr>
+              <tr><td>召回率</td><td class="num">87.5%</td><td class="num-prop">87.5%</td></tr>
+              <tr><td>上下文水位</td><td class="num">ctx 62%</td><td class="num-prop">ctx 62%</td></tr>
+              <tr><td>token 预算</td><td class="num">3,204 / 32,768</td><td class="num-prop">3,204 / 32,768</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="tert t-body-s" style="margin-top:var(--s2)">右列同样的数字，宽度不等——原地刷新时会左右抖动，成排时无法纵向对齐。这对一个把仪表当卖点的产品是硬伤。</p>
+      </div>
+      <div class="card">
+        <p class="eyebrow" style="margin-bottom:var(--s2)">中英混排</p>
+        <p class="t-body-s muted">一段仪表文字含中文时采用混排：中文走 sans，数字走 instrument，同行基线对齐（<span class="i-s">instrument_s</span> 与 <span class="i-s">caption</span> 行高同为 16/18vp）。</p>
+        <p style="margin-top:var(--s2);display:flex;align-items:baseline;gap:6px;font-size:12px">
+          <span>已拦截</span><span class="i-s">1</span><span>条本地内容 · 耗时</span><span class="i-s">1.24s</span><span>·</span><span class="i-s">14.2 tok/s</span>
+        </p>
+        <p class="tert t-body-s" style="margin-top:var(--s2)">PC（lg）密度靠行高与内距收紧，<strong>不缩正文字号</strong>；仪表体是唯一放大项（11 → 12fp）。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 间距 / 圆角 / 层级 / 动效 ================= -->
+<section class="sec" id="c-space">
+  <div class="sec-hd">
+    <p class="eyebrow">03 / 令牌</p>
+    <h2>间距 · 圆角 · 层级 · 动效</h2>
+    <p class="note">圆角承载语义："越是数据，越方；越是容器，越圆。"深色不用阴影——层级靠提亮 + 描边。</p>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <p class="eyebrow" style="margin-bottom:var(--s3)">间距阶 · 4/8 基数</p>
+      <div class="spacebars">
+        <div class="spacebar"><i style="width:4px"></i><span>space_1 &nbsp;4vp</span><span class="tert i-s">图标与文字间隙、芯片内距</span></div>
+        <div class="spacebar"><i style="width:8px"></i><span>space_2 &nbsp;8vp</span><span class="tert i-s">溯源条各段间隔</span></div>
+        <div class="spacebar"><i style="width:12px"></i><span>space_3 12vp</span><span class="tert i-s">列表行内距（lg）</span></div>
+        <div class="spacebar"><i style="width:16px"></i><span>space_4 16vp</span><span class="tert i-s">默认内距</span></div>
+        <div class="spacebar"><i style="width:20px"></i><span>space_5 20vp</span><span class="tert i-s">段落间距</span></div>
+        <div class="spacebar"><i style="width:24px"></i><span>space_6 24vp</span><span class="tert i-s">区块间距</span></div>
+        <div class="spacebar"><i style="width:32px"></i><span>space_7 32vp</span><span class="tert i-s">大区块分隔</span></div>
+        <div class="spacebar"><i style="width:40px"></i><span>space_8 40vp</span><span class="tert i-s">页面顶部留白</span></div>
+        <div class="spacebar"><i style="width:48px"></i><span>space_9 48vp</span><span class="tert i-s">空状态垂直留白</span></div>
+        <div class="spacebar"><i style="width:2px"></i><span>hairline 2vp</span><span class="tert i-s">唯一例外：溯源条内的刻度密度</span></div>
+      </div>
+      <p class="tert t-body-s" style="margin-top:var(--s3)">断点：sm &lt;600 单栏 / md 600–840 双栏 / lg &gt;840 三栏。聊天正文列最大 <span class="i-s">720vp</span>，超宽窗口居中不铺满。</p>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:var(--s4)">
+      <div class="card">
+        <p class="eyebrow" style="margin-bottom:var(--s3)">圆角分级</p>
+        <div class="radii">
+          <div class="radius-item"><div class="radius-box" style="border-radius:0"></div><span class="i-s">none 0</span><span class="tert i-s">仪表·表格</span></div>
+          <div class="radius-item"><div class="radius-box" style="border-radius:2px"></div><span class="i-s">xs 2</span><span class="tert i-s">芯片·引用号</span></div>
+          <div class="radius-item"><div class="radius-box" style="border-radius:4px"></div><span class="i-s">sm 4</span><span class="tert i-s">按钮·输入框</span></div>
+          <div class="radius-item"><div class="radius-box" style="border-radius:8px"></div><span class="i-s">md 8</span><span class="tert i-s">卡片·菜单</span></div>
+          <div class="radius-item"><div class="radius-box" style="border-radius:12px"></div><span class="i-s">lg 12</span><span class="tert i-s">模态·Sheet</span></div>
+          <div class="radius-item"><div class="radius-box" style="border-radius:999px"></div><span class="i-s">full</span><span class="tert i-s">白名单专用</span></div>
+        </div>
+        <p class="tert t-body-s" style="margin-top:var(--s3)"><span class="i-s">radius_full</span> 白名单：头像 / 状态圆点 / 圆形图标按钮 / 滑块拇指。其余一律禁止——按钮不是药丸，芯片不是药丸。</p>
+      </div>
+      <div class="card">
+        <p class="eyebrow" style="margin-bottom:var(--s3)">层级 · 阴影色取自 ad_ink（冷调石墨，不是纯黑）</p>
+        <div class="elevs">
+          <div class="elev-box" style="box-shadow:none;border-color:var(--border)"><b>elev_1</b><br><span class="tert">卡片</span><br><span class="i-s tert">0 1 2 · .06</span></div>
+          <div class="elev-box" style="box-shadow:var(--elev2)"><b>elev_2</b><br><span class="tert">吸顶栏 / 侧边栏</span><br><span class="i-s tert">0 2 8 · .08</span></div>
+          <div class="elev-box" style="box-shadow:var(--elev3);border-color:var(--border)"><b>elev_3</b><br><span class="tert">菜单 / Popover</span><br><span class="i-s tert">0 8 24 · .12</span></div>
+          <div class="elev-box" style="box-shadow:var(--elev4);border-color:var(--border-strong)"><b>elev_4</b><br><span class="tert">模态 + 遮罩</span><br><span class="i-s tert">0 16 40 · .16</span></div>
+        </div>
+        <p class="tert t-body-s" style="margin-top:var(--s3)">深色下这四档<strong>无阴影</strong>——暗底上黑阴影不可见，硬堆只会糊边。层级改由 <span class="i-s">surface_raised</span> 提亮 + 描边表达。切到暗色主题看这排卡片的变化。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:var(--s4)">
+    <p class="eyebrow" style="margin-bottom:var(--s3)">动效 —— 未列入表的元素不做动效</p>
+    <div class="motion-row">
+      <span class="motion-name">仪表数值刷新</span><span class="motion-spec">dur_instant · 0ms</span>
+      <span class="i-m" style="color:var(--ink)">14.2 tok/s</span>
+      <span class="tert t-body-s">数字做补间会在中间帧显示无意义的假值（12→47 途中出现 31 tok/s）。<strong>跳变，不补间——与减弱动效开关无关。</strong></span>
+    </div>
+    <div class="motion-row">
+      <span class="motion-name">流式光标</span><span class="motion-spec">1000ms 循环</span>
+      <span class="t-body-l">…存在两处冲突<span class="demo-cursor"></span></span>
+      <span class="tert t-body-s">2vp 青；减弱动效时<strong>常亮不闪</strong>（仍需指示"正在生成"）。</span>
+    </div>
+    <div class="motion-row">
+      <span class="motion-name">ctx 水位线</span><span class="motion-spec">条形 300ms / 文本 0ms</span>
+      <span style="display:flex;flex-direction:column;gap:4px">
+        <span class="demo-gauge"><i></i></span>
+        <span class="demo-gauge warn"><i></i></span>
+        <span class="demo-gauge dang"><i></i></span>
+      </span>
+      <span class="tert t-body-s">条形补间，数字跳变，二者并存。阈值 <b class="i-s">70%</b> warning（△ 三角）/ <b class="i-s">90%</b> danger（<svg class="ic" style="display:inline-block;vertical-align:-2px"><use href="#ic-warn"/></svg> 警告）——<strong>图标一律 SVG</strong>。</span>
+    </div>
+    <div class="motion-row">
+      <span class="motion-name">"整理思路中"</span><span class="motion-spec">1400ms 呼吸</span>
+      <span class="demo-breath" style="display:inline-flex;align-items:center;gap:6px"><svg class="ic" style="width:24px"><use href="#ic-wave"/></svg>整理思路中…</span>
+      <span class="tert t-body-s">减弱动效时改静态图标 + 文字 + 静态进度条。压缩是可见事件，不是幕后动作。</span>
+    </div>
+    <div class="motion-row">
+      <span class="motion-name">溯源条点亮</span><span class="motion-spec">单段 120ms · stagger 60ms · 总 ≤480ms</span>
+      <span class="tert t-body-s" style="flex:1">全 App 唯一允许的"表演"——见下一节的可重放演示。减弱动效时取消 stagger，全量一次性显示，<strong>一条不少</strong>。</span>
+    </div>
+    <p class="tert t-body-s" style="margin-top:var(--s3)"><strong>[R-29] 减弱动效 ≠ 删除反馈。</strong>用户仍必须知道"发生了变化"，只是不用动画来说。本页已尊重 <span class="i-s">prefers-reduced-motion</span>。</p>
+  </div>
+</section>
+<style>
+/* ============ B1 AdProvenanceRail —— 签名组件 ============ */
+.rail{display:flex;align-items:center;gap:var(--s2);background:var(--sunken);border-radius:var(--r-none);
+  border-left:3px solid var(--local-fg);padding:3px var(--s2);min-height:24px;
+  font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-size:11px;line-height:16px;
+  color:var(--ink-3);white-space:nowrap;overflow-x:auto;scrollbar-width:none}
+.rail::-webkit-scrollbar{display:none}
+.rail--remote{border-left-color:var(--remote-fg)}
+.rail .seg{display:flex;align-items:center;gap:var(--s1)}
+.rail .sep{color:var(--ink-3);opacity:.5;padding:0 2px}
+.rail .zh{font-family:var(--font-sans);font-size:12px}
+.rail .hit{display:flex;align-items:center;gap:3px;padding:2px 3px;margin:-2px 0;border-radius:var(--r-xs);
+  color:var(--local-fg);background:transparent;border:0;font:inherit;cursor:pointer}
+.rail .hit .zh{color:var(--local-fg)}
+.rail .hit:hover{background:var(--hover);text-decoration:underline}
+.rail .hit--fence{color:var(--remote-fg)}
+.rail .hit--fence .zh{color:var(--remote-fg)}
+.rail .meter{color:var(--ink-3)}
+.rail .caret{margin-left:auto;padding-left:var(--s2);color:var(--ink-3);display:flex}
+.rail.is-selected{background:var(--selected)}
+/* 点亮编排 */
+.rail.play .seg{opacity:.3;color:var(--ink-3);animation:lightin var(--dur-fast) var(--ease-decel) forwards;
+  animation-delay:calc(var(--i) * 60ms)}
+@keyframes lightin{to{opacity:1}}
+@media (prefers-reduced-motion: reduce){
+  .rail.play .seg{animation:none;opacity:1}
+}
+/* [R-07] 命中模型裁决：24vp 的带子里横排 4 个 40×40 的相邻目标，几何上不可能。
+   手指端（sm/md）→ **整条是单一命中区**（min-height 40vp），点按直接开底部 Sheet，
+   Sheet 内每段是 56vp 的行；指针端（lg）→ 逐段独立可点、独立可聚焦。信息一条不减，只换容器。 */
+.rail--touch{min-height:40px;cursor:pointer}
+.rail--touch .hit{pointer-events:none}          /* 段不再各自可点——整条才是命中区 */
+.rail--touch:hover{background:var(--selected)}
+.rail-demo-wrap{display:flex;flex-direction:column;gap:var(--s2)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;font-family:var(--font-sans);
+  font-size:14px;font-weight:500;line-height:22px;border-radius:var(--r-sm);padding:0 var(--s4);
+  min-height:40px;border:1px solid transparent;cursor:pointer}
+.btn--primary{background:var(--brand-fg);color:var(--brand-on)}
+.btn--primary:hover{filter:brightness(1.06)}
+.btn--secondary{background:transparent;color:var(--ink);border-color:var(--border-strong)}
+.btn--secondary:hover{background:var(--hover)}
+.btn--ghost{background:transparent;color:var(--brand-fg);padding:0 var(--s2)}
+.btn--ghost:hover{background:var(--hover)}
+.btn--danger{background:var(--danger-fg);color:var(--danger-on)}  /* [R-03a] 禁止 #fff：深色下白字压朱红仅 2.98:1 */
+.btn--sm{min-height:32px;font-size:13px;padding:0 var(--s3)}
+.btn[disabled]{color:var(--ink-dis);background:transparent;border-color:var(--border);cursor:not-allowed}
+.btn--primary[disabled]{background:var(--sunken)}
+/* 展开态 */
+.rail-exp{background:var(--surface);border:1px solid var(--border);border-top:0;border-radius:0 0 var(--r-md) var(--r-md);
+  padding:var(--s3) var(--s4);display:flex;flex-direction:column;gap:var(--s3)}
+.exp-grp{display:flex;flex-direction:column;gap:6px}
+.exp-hd{display:flex;align-items:center;gap:var(--s2);font-size:11px;line-height:16px;font-weight:600;
+  letter-spacing:.08em;color:var(--ink-3);border-bottom:1px solid var(--border);padding-bottom:4px}
+.exp-item{display:flex;align-items:flex-start;gap:var(--s2);padding:4px 0;font-size:13px;line-height:20px}
+.exp-item .num{font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-size:11px;
+  background:var(--brand-bg);color:var(--brand-fg);border-radius:var(--r-xs);padding:1px 4px;flex:none}
+.exp-item .meta{font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-size:11px;color:var(--ink-3)}
+.exp-item .arrow{margin-left:auto;color:var(--ink-3);flex:none}
+.warnline{display:inline-flex;align-items:center;gap:4px;color:var(--warning-fg);font-size:12px}
+.fenceline{display:flex;flex-direction:column;gap:2px;border-left:3px solid var(--remote-border);
+  background:var(--remote-bg);padding:6px var(--s2)}
+.fenceline .why{font-size:11px;color:var(--remote-fg);font-family:var(--font-inst)}
+.speak{background:var(--sunken);border-left:3px solid var(--ink-3);padding:var(--s3);font-size:13px;line-height:21px}
+.wheres{display:grid;gap:var(--s2);grid-template-columns:repeat(auto-fit,minmax(200px,1fr));margin-top:var(--s3)}
+.where{border:1px solid var(--border);border-radius:var(--r-sm);padding:var(--s2) var(--s3);font-size:13px;
+  display:flex;flex-direction:column;gap:2px;background:var(--surface)}
+.where b{font-weight:600}
+.where span{font-size:12px;color:var(--ink-2)}
+.anat{width:100%;border-collapse:collapse;font-size:13px;min-width:560px}
+.anat th,.anat td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+.anat th{font-size:11px;letter-spacing:.08em;font-weight:600;color:var(--ink-3)}
+.anat code{font-family:var(--font-inst);font-size:12px}
+</style>
+
+<!-- ================= 溯源条 ================= -->
+<section class="sec" id="c-rail">
+  <div class="sec-hd">
+    <p class="eyebrow">04 / 签名元素</p>
+    <h2>AdProvenanceRail · 溯源条</h2>
+    <p class="note">一行仪表带，把"这条回答从哪来、有没有离开设备"物质化。<strong>它是本 App 被记住的东西。</strong>底 <span class="i-s">surface_sunken</span>，直角（<span class="i-s">radius_none</span>）——仪表是直角的；左侧 3vp 语义竖条给出来源断言。</p>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <p class="eyebrow" style="margin-bottom:var(--s3)">折叠态 · 本地（高 24vp / lg 22vp）</p>
+      <div class="rail-demo-wrap">
+        <div class="rail play" id="rail-demo">
+          <span class="seg" style="--i:0"><span class="chip chip--local"><svg class="ic"><use href="#ic-local"/></svg>本地 · <span class="inst">Qwen3-4B</span></span></span>
+          <span class="sep">·</span>
+          <button class="hit seg" style="--i:1" type="button"><span class="zh">引用</span> 3</button>
+          <span class="sep">·</span>
+          <button class="hit seg" style="--i:2" type="button"><span class="zh">记忆</span> 2</button>
+          <span class="sep">·</span>
+          <span class="seg meter" style="--i:3">1.24s · 14.2 tok/s</span>
+          <span class="caret"><svg class="ic"><use href="#ic-chev"/></svg></span>
+        </div>
+        <div style="display:flex;gap:var(--s2);align-items:center">
+          <button class="btn btn--secondary btn--sm" id="replay" type="button">重放点亮编排</button>
+          <span class="tert t-body-s">左→右依次点亮：模型 → 引用 → 记忆 → 拦截。在流式<strong>结束时</strong>一次性编排，不在流中逐段抖动。</span>
+        </div>
+      </div>
+      <p class="tert t-body-s" style="margin-top:var(--s3)">本地大脑不存在出端，<strong>拦截段不渲染</strong>。引用 / 记忆计数为 0 时整段不渲染（不显示"引用 0"）。</p>
+    </div>
+
+    <div class="card">
+      <p class="eyebrow" style="margin-bottom:var(--s3)">折叠态 · 远程（[R-17] 拦截段恒渲染）</p>
+      <div class="rail-demo-wrap">
+        <div class="rail rail--remote">
+          <span class="seg"><span class="chip chip--remote"><svg class="ic"><use href="#ic-remote"/></svg>远程 · <span class="inst">GPT-4o</span></span></span>
+          <span class="sep">·</span>
+          <button class="hit" type="button"><span class="zh">引用</span> 2</button>
+          <span class="sep">·</span>
+          <button class="hit hit--fence" type="button"><svg class="ic"><use href="#ic-warn"/></svg><span class="zh">已拦截</span> 1 <span class="zh">条本地内容</span></button>
+          <span class="sep">·</span>
+          <span class="meter">2.08s · 41.6 tok/s</span>
+          <span class="caret"><svg class="ic"><use href="#ic-chev"/></svg></span>
+        </div>
+        <div class="rail rail--remote">
+          <span class="seg"><span class="chip chip--remote"><svg class="ic"><use href="#ic-remote"/></svg>远程 · <span class="inst">GPT-4o</span></span></span>
+          <span class="sep">·</span>
+          <button class="hit hit--fence" type="button"><svg class="ic"><use href="#ic-warn"/></svg><span class="zh">未拦截</span></button>
+          <span class="sep">·</span>
+          <span class="meter">1.91s · 44.0 tok/s</span>
+          <span class="caret"><svg class="ic"><use href="#ic-chev"/></svg></span>
+        </div>
+      </div>
+      <p class="tert t-body-s" style="margin-top:var(--s3)">远程时拦截段<strong>恒在</strong>：计数为 0 显示"未拦截"，朗读"隐私围栏：无拦截"——否则用户无法区分"没拦截"与"没有围栏"。</p>
+    </div>
+  </div>
+
+  <p class="sub">字段解剖 —— 逐字段定死排版与交互</p>
+  <div class="card" style="padding:0">
+    <div class="scroll-x">
+      <table class="anat">
+        <thead><tr><th>字段</th><th>排版</th><th>交互</th><th>渲染规则</th></tr></thead>
+        <tbody>
+          <tr><td><span class="chip chip--local"><svg class="ic"><use href="#ic-local"/></svg>本地 · <span class="inst">Qwen3-4B</span></span></td><td>AdChip，四重冗余（色 + 实心填充 + 实心坞形 + "本地"二字）</td><td>点击 → 模型详情 / 切换</td><td>恒在</td></tr>
+          <tr><td><span class="zh">引用</span> <code>3</code></td><td>"引用"走 sans + 数字走 <code>instrument_s</code> 混排；有值时 <code>local_fg</code></td><td>点击 → AdCitationPanel</td><td>计数 0 时整段不渲染</td></tr>
+          <tr><td><span class="zh">记忆</span> <code>2</code></td><td>同上</td><td>点击 → 记忆条清单</td><td>计数 0 时整段不渲染</td></tr>
+          <tr><td style="color:var(--remote-fg)"><svg class="ic" style="display:inline-block;vertical-align:-2px"><use href="#ic-warn"/></svg> 已拦截 <code>1</code> 条本地内容</td><td><code>remote_fg</code> + △ 图标（形状冗余）</td><td>点击 → AdPrivacyFenceNotice</td><td><strong>[R-17]</strong> remote 时恒渲染（含"未拦截"）；local 时不渲染</td></tr>
+          <tr><td><code>1.24s · 14.2 tok/s</code></td><td>全 <code>instrument_s</code> + tabular-nums，<code>ink_tertiary</code></td><td>不可点</td><td>恒在</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <p class="tert t-body-s" style="margin-top:var(--s2)">分隔符 <code class="i-s">·</code> 间距 <span class="i-s">2vp</span>（<span class="i-s">space_hairline</span>）——全系统为溯源条专开的例外，模拟刻度密度。<strong>[R-07]</strong> 溯源条不是"一整块可点"：每一段独立命中、独立可聚焦。<strong>[R-26]</strong> sm 下字段过多时横向滚动，<strong>不换行、不省略</strong>——任何字段被截断隐藏都等于抹掉证据；1.3x 以上字号降级为两行，内容一条不减。</p>
+
+  <p class="sub">展开态 · sm / md 就地展开</p>
+  <div style="max-width:720px">
+    <div class="rail is-selected" style="border-radius:var(--r-md) var(--r-md) 0 0">
+      <span class="seg"><span class="chip chip--remote"><svg class="ic"><use href="#ic-remote"/></svg>远程 · <span class="inst">GPT-4o</span></span></span>
+      <span class="sep">·</span>
+      <button class="hit" type="button"><span class="zh">引用</span> 2</button>
+      <span class="sep">·</span>
+      <button class="hit" type="button"><span class="zh">记忆</span> 1</button>
+      <span class="sep">·</span>
+      <button class="hit hit--fence" type="button"><svg class="ic"><use href="#ic-warn"/></svg><span class="zh">已拦截</span> 1</button>
+      <span class="sep">·</span>
+      <span class="meter">2.08s</span>
+      <span class="caret" style="transform:rotate(180deg)"><svg class="ic"><use href="#ic-chev"/></svg></span>
+    </div>
+    <div class="rail-exp">
+      <div class="exp-grp">
+        <p class="exp-hd">引用 2</p>
+        <div class="exp-item">
+          <span class="num">1</span>
+          <span style="flex:1">GB/T 39786-2021.pdf<br><span class="meta">p.12 · 片段 #204 · 相似度 0.87</span></span>
+          <span class="chip chip--local"><svg class="ic"><use href="#ic-local"/></svg>本地</span>
+          <span class="arrow"><svg class="ic"><use href="#ic-chev-right"/></svg></span>
+        </div>
+        <div class="exp-item">
+          <span class="num">2</span>
+          <span style="flex:1">内控手册.docx<br><span class="meta">§3.2 · 片段 #77 · 相似度 0.81</span><br>
+            <span class="warnline"><svg class="ic"><use href="#ic-warn"/></svg>由 AI 识别，可能有误 —— 可打开原图</span></span>
+          <span class="chip chip--local"><svg class="ic"><use href="#ic-local"/></svg>本地</span>
+          <span class="arrow"><svg class="ic"><use href="#ic-chev-right"/></svg></span>
+        </div>
+      </div>
+      <div class="exp-grp">
+        <p class="exp-hd">记忆 1</p>
+        <div class="exp-item">
+          <span style="color:var(--success-fg);flex:none;display:flex"><svg class="ic"><use href="#ic-dot-solid"/></svg></span>
+          <span style="flex:1">用户偏好在回答中引用国标编号<br><span class="meta">来源 会话「第三章条款比对」#msg204 · 3 次命中</span></span>
+          <span class="i-m">0.91</span>
+          <span class="tag tag--ok">active</span>
+          <span class="arrow"><svg class="ic"><use href="#ic-chev-right"/></svg></span>
+        </div>
+      </div>
+      <div class="exp-grp">
+        <p class="exp-hd" style="color:var(--remote-fg)"><svg class="ic"><use href="#ic-remote"/></svg> 已拦截 1 · 未发送到远程</p>
+        <div class="fenceline">
+          <span style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--remote-fg)">
+            <svg class="ic"><use href="#ic-remote"/></svg> 合同库 / 员工名册.xlsx · 片段 #88, #91</span>
+          <span class="why">原因：知识库 privacy_level = local_only</span>
+        </div>
+        <div style="display:flex;gap:var(--s2);margin-top:6px;flex-wrap:wrap">
+          <button class="btn btn--secondary btn--sm" type="button">改用本地模型回答</button>
+          <button class="btn btn--ghost btn--sm" type="button">调整该库隐私级别 ›</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="tert t-body-s" style="margin-top:var(--s2)"><strong>lg 不就地展开</strong>：内容推入第三栏检视栏（C3 AdInspector），溯源条本身转 selected 态（<span class="i-s">surface_selected</span> + 左标记条，<strong>中性、不泛青</strong>），表示"检视栏正在显示这条消息的溯源"。md/sm 无第三栏 → 同一内容渲染进底部 Sheet，<strong>组件内容完全相同，只换容器</strong>（[R-70]）。</p>
+
+  <p class="sub">溯源条必须出现的五处（验收项）—— <strong>五处全部在本页有实证，不是一张文字清单</strong></p>
+  <div class="wheres">
+    <div class="where"><b>助手消息下沿</b><span>正文列左对齐同一基线 [R-72]</span></div>
+    <div class="where"><b>电话模式字幕</b><span>语音不是审计的豁免区</span></div>
+    <div class="where"><b>Run 轨迹每步</b><span>生成步显示模型与 tok/s</span></div>
+    <div class="where"><b>记忆整理报告</b><span>是哪个模型整理的、引用了哪些记忆条</span></div>
+    <div class="where"><b>检索调试器结果头</b><span>两路召回的来源归属</span></div>
+  </div>
+  <p class="tert t-body-s" style="margin-top:var(--s2)"><strong>[R-13a] 渲染契约</strong>：段可以按渲染规则不显示（计数为 0），但 <strong>caret 与展开路径恒在</strong>。
+  任何位置的 rail 失去展开能力，即降级为"来源标签"，视为缺陷——<strong>签名元素如果只在聊天页是签名、到别处就是标签，它就不是签名。</strong></p>
+
+
+  <p class="sub">溯源条的另外两处落点 —— 证明它在非消息语境下形态不变（[R-13a]）</p>
+  <div class="grid2">
+    <!-- ③ Run 轨迹每步 -->
+    <div class="spec">
+      <header><h3>AdRunTrace · 步骤卡</h3><span class="code">B10 · V1.0</span></header>
+      <div class="trace">
+        <div class="trace-hd"><b>Run <span class="inst">a3f19c</span></b>
+          <span class="tag tag--ok"><svg class="ic"><use href="#ic-ok"/></svg>done</span>
+          <span class="m">5 步 · 12.4s · 3,204 tok</span></div>
+        <div class="step">
+          <span class="ax" style="color:var(--success-fg)"><svg class="ic"><use href="#ic-dot-solid"/></svg></span>
+          <span class="sb"><span class="st"><span class="n">step 2</span>
+            <span style="display:flex;align-items:center;gap:4px"><svg class="ic"><use href="#ic-tool"/></svg><span class="inst">kb.search</span></span>
+            <span class="m">0.22s · 412 tok</span></span></span>
+        </div>
+        <div class="step">
+          <span class="ax" style="color:var(--success-fg)"><svg class="ic"><use href="#ic-dot-solid"/></svg></span>
+          <span class="sb">
+            <span class="st"><span class="n">step 3</span> 生成 <span class="m">8.90s · 1,204 tok</span></span>
+            <div class="rail rail--touch" style="margin-top:2px">
+              <span class="seg"><span class="chip chip--local"><svg class="ic"><use href="#ic-local"/></svg>本地 · <span class="inst">Qwen3-4B</span></span></span>
+              <span class="sep">·</span><button class="hit" type="button"><span class="zh">引用</span> 3</button>
+              <span class="sep">·</span><button class="hit" type="button"><span class="zh">记忆</span> 2</button>
+              <span class="sep">·</span><button class="hit hit--fence" type="button"><svg class="ic"><use href="#ic-tri"/></svg><span class="zh">已拦截</span> 1</button>
+              <span class="sep">·</span><span class="meter">8.90s · 14.2 tok/s</span>
+              <span class="caret"><svg class="ic"><use href="#ic-chev"/></svg></span>
+            </div>
+          </span>
+        </div>
+        <div class="step">
+          <span class="ax tert"><svg class="ic"><use href="#ic-archived"/></svg></span>
+          <span class="sb"><span class="st"><span class="n">step 4</span>
+            <span style="color:var(--info-fg)">上下文整理（L3 滚动摘要）</span>
+            <span class="m">2.10s · — tok</span></span>
+            <span class="i-s tert">working 区 78% → 46% · prefill 重放 3.2s</span></span>
+        </div>
+      </div>
+      <p class="why"><strong>每一步的溯源条形态不变</strong>：模型芯片 + 引用 + 记忆 + 拦截 + 耗时 + <strong>caret</strong>，可展开。
+      段可以按渲染规则不显示（计数为 0），但 <strong>caret 与展开路径恒在</strong>——任何位置的 rail 失去展开能力即降级为"来源标签"，视为缺陷（[R-13a]）。
+      左轴四形状：成功 / 整理 / 重试 / 失败——<strong>四种形状，不只四种颜色</strong>。</p>
+    </div>
+
+    <!-- ⑤ 检索调试器结果头 -->
+    <div class="spec">
+      <header><h3>检索调试器 · 结果头</h3><span class="code">§4.3 · V1.0</span></header>
+      <div class="stage stage--col">
+        <div class="rail rail--touch">
+          <span class="seg"><span class="chip chip--local"><svg class="ic"><use href="#ic-local"/></svg>本地 · <span class="inst">bge-small-zh</span></span></span>
+          <span class="sep">·</span><button class="hit" type="button"><span class="zh">召回</span> 24</button>
+          <span class="sep">·</span><button class="hit" type="button"><span class="zh">注入</span> 3</button>
+          <span class="sep">·</span><span class="meter">70ms</span>
+          <span class="caret"><svg class="ic"><use href="#ic-chev"/></svg></span>
+        </div>
+        <div class="dbg">
+          <p class="eyebrow" style="margin-top:var(--s2)">向量召回 top24 · <span class="inst">62ms</span></p>
+          <span class="dbg-row"><span class="id">c_882</span><span class="bar" style="width:87px"></span><span class="sc">0.87</span></span>
+          <span class="dbg-row"><span class="id">c_311</span><span class="bar" style="width:81px"></span><span class="sc">0.81</span></span>
+          <p class="eyebrow" style="margin-top:var(--s2)">RRF 融合 k=60 → 最终注入</p>
+          <span class="dbg-row"><span class="id">c_311</span><span class="bar" style="width:33px"></span><span class="sc">0.0328</span>
+            <span class="inj"><svg class="ic"><use href="#ic-ok"/></svg>注入</span></span>
+          <span class="dbg-row"><span class="id">c_882</span><span class="bar" style="width:16px"></span><span class="sc">0.0164</span>
+            <span class="inj"><svg class="ic"><use href="#ic-ok"/></svg>注入</span></span>
+          <span class="i-s tert">3 个片段 · 1,482 / 2,048 tok</span>
+        </div>
+      </div>
+      <p class="why">结果头挂完整 rail —— <strong>两路召回的来源归属</strong>必须在场：用的哪个 embedding 模型、在端还是出端。
+      未标"注入"的即被 token 预算截掉的，<strong>这一栏是生产级与玩具的分水岭</strong>。</p>
+    </div>
+  </div>
+
+  <p class="sub">屏幕朗读模板（逐字写死，[R-14] 溯源先行）</p>
+  <div class="grid2">
+    <div class="speak" style="border-left-color:var(--local-fg)">
+      <p class="eyebrow" style="margin-bottom:6px">本地</p>
+      「<strong>本地模型 Qwen3-4B 生成，数据未离开设备。</strong>引用 3 条，记忆 2 条。耗时 1.24 秒，每秒 14.2 个 token。双击展开检视栏。」
+    </div>
+    <div class="speak" style="border-left-color:var(--remote-fg)">
+      <p class="eyebrow" style="margin-bottom:6px">远程</p>
+      「<strong>远程模型 GPT-4o 生成，本次内容已发送至 api.openai.com。</strong><br><strong>注意：</strong>隐私围栏拦截 1 条本地内容。引用 2 条。耗时 2.08 秒，每秒 41.6 个 token。」
+      <p class="tert t-body-s" style="margin-top:6px">"已发送至 + 域名"是必读项，不得省略；拦截项必须前置"注意"并单独成句。</p>
+    </div>
+  </div>
+</section>
+<style>
+/* ============ 组件展板 ============ */
+.spec{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);
+  box-shadow:var(--elev1);padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3)}
+.spec > header{display:flex;align-items:baseline;gap:var(--s2);flex-wrap:wrap}
+.spec > header h3{font-size:16px;line-height:24px}
+.spec > header .code{font-family:var(--font-inst);font-size:11px;color:var(--ink-3)}
+.spec .why{font-size:13px;line-height:20px;color:var(--ink-2)}
+.stage{background:var(--sunken);border-radius:var(--r-sm);padding:var(--s4);display:flex;
+  flex-wrap:wrap;gap:var(--s3);align-items:center}
+.stage--col{flex-direction:column;align-items:stretch}
+.compgrid{display:grid;gap:var(--s4);grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+.statelbl{font-family:var(--font-inst);font-size:10px;color:var(--ink-3);display:block;margin-bottom:4px}
+.btn.is-focus{outline:2px solid var(--focus);outline-offset:2px}
+.btn.is-hover{background:var(--brand-fg);filter:brightness(1.06)}
+.btn--secondary.is-hover{background:var(--hover)}
+.btn.is-loading{color:transparent;position:relative}
+.btn.is-loading::after{content:"";position:absolute;width:16px;height:16px;border-radius:50%;
+  border:2px solid var(--brand-on);border-top-color:transparent;animation:spin 800ms linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){.btn.is-loading::after{animation:none}}
+/* AdListItem */
+.li{display:flex;align-items:center;gap:var(--s3);padding:var(--s3) var(--s4);background:var(--surface);
+  border-bottom:1px solid var(--border);min-height:56px;border-left:3px solid transparent}
+.li.is-selected{background:var(--selected);border-left-color:var(--ink)}
+.li .av{width:32px;height:32px;border-radius:var(--r-full);background:var(--sunken);display:flex;
+  align-items:center;justify-content:center;font-size:15px;flex:none}
+.li .main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.li .t1{font-size:16px;line-height:24px;font-weight:600}
+.li .t2{font-size:13px;line-height:20px;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.li .time{font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-size:11px;color:var(--ink-3);flex:none}
+.li--compact{min-height:40px;padding:var(--s2) var(--s3)}
+/* AdEmptyState */
+.empty{display:flex;flex-direction:column;align-items:center;text-align:center;gap:var(--s3);padding:var(--s7) var(--s4)}
+.empty .glyph{display:flex;gap:6px;color:var(--ink-3)}
+.empty .glyph svg{width:26px;height:26px}
+.empty h3{font-size:24px;line-height:32px}
+.empty p{font-size:14px;line-height:22px;color:var(--ink-2);max-width:44ch}
+/* AdMessage */
+.msg{display:flex;flex-direction:column;gap:6px;border-left:3px solid var(--ink-3);padding:var(--s2) 0 var(--s2) var(--s3);
+  background:var(--surface)}
+.msg--local{border-left-color:var(--local-fg)}
+.msg--remote{border-left-color:var(--remote-fg)}
+.msg--danger{border-left-color:var(--danger-fg)}
+.msg--warn{border-left-color:var(--warning-fg)}
+.msg-hd{display:flex;align-items:baseline;gap:var(--s2)}
+.msg-hd .who{font-size:11px;line-height:16px;font-weight:600;letter-spacing:.08em;color:var(--ink-3)}
+.msg-hd .ts{margin-left:auto;font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-size:11px;color:var(--ink-3)}
+.msg-body{font-size:16px;line-height:26px;color:var(--ink)}
+.cite{position:relative;display:inline-flex;align-items:center;font-family:var(--font-inst);font-variant-numeric:tabular-nums;
+  font-size:11px;line-height:16px;background:var(--brand-bg);color:var(--brand-fg);border:1px solid var(--brand-border);
+  border-radius:var(--r-xs);padding:0 3px;margin:0 1px;cursor:pointer;vertical-align:1px}
+/* [R-06] 视觉 16vp，但命中盒必须撑到 40vp：透明 ::after 扩出，不改变行高 */
+.cite::after{content:"";position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:40px;height:40px;min-width:100%}
+.cite:hover{background:var(--brand-fg);color:var(--brand-on)}
+.cite.is-active{background:var(--brand-fg);color:var(--brand-on)}
+/* AdBrainIndicator */
+.brain{display:inline-flex;align-items:baseline;gap:var(--s1);border-left:3px solid var(--local-fg);
+  padding:2px var(--s2);background:var(--surface);font-family:var(--font-sans);font-size:11px;
+  color:var(--local-fg);cursor:pointer;min-height:28px}
+.brain svg{align-self:center}
+.brain:hover{background:var(--hover)}
+.brain--remote{border-left-color:var(--remote-fg);color:var(--remote-fg)}
+.brain--handoff{border-left-color:var(--remote-fg);
+  background:linear-gradient(90deg,var(--local-bg),var(--remote-bg))}
+.brain--handoff .h-l{color:var(--local-fg)}
+.brain--handoff .h-r{color:var(--remote-fg)}
+/* AdCtxGauge */
+.gauge{display:flex;flex-direction:column;gap:2px}
+.gauge .track{height:2px;background:var(--sunken);position:relative}
+/* 安静态 = 实色 ink_tertiary（浅 4.92:1 / 深 6.36:1 vs 槽底）。
+   **禁止 opacity(.35)**：有效色浅 #B9C0C5 仅 1.59:1、深 #373D42 仅 1.76:1，低于 WCAG 1.4.11 的 3:1，
+   <70% 时这条线基本消失——"把仪表放进主界面"的冒险就只在 70% 之后才存在了（[R-02]）。 */
+.gauge .fill,.demo-gauge i{position:absolute;left:0;top:0;bottom:0;background:var(--ink-3);
+  transition:width 300ms var(--ease-decel)}
+.gauge.warn .fill{background:var(--warning-fg);opacity:1}
+.gauge.dang .fill{background:var(--danger-fg);opacity:1}
+.gauge.busy .fill{background:var(--info-fg);opacity:1;animation:breath 1400ms var(--ease-standard) infinite}
+.gauge .read{display:flex;align-items:center;gap:4px;font-family:var(--font-inst);font-variant-numeric:tabular-nums;
+  font-size:11px;color:var(--ink-3);justify-content:flex-end}
+.gauge.warn .read{color:var(--warning-fg)}
+.gauge.dang .read{color:var(--danger-fg)}
+.gauge.busy .read{color:var(--info-fg);justify-content:flex-start}
+@media (prefers-reduced-motion: reduce){.gauge .fill{transition:none;animation:none}}
+/* AdToolCard */
+.tool{border-left:3px dashed var(--ink-3);background:var(--sunken);padding:var(--s2) var(--s3);
+  display:flex;flex-direction:column;gap:6px;border-radius:var(--r-none)}
+.tool-hd{display:flex;align-items:center;gap:var(--s2);font-family:var(--font-sans);font-size:12px}
+.tool-hd .meter{margin-left:auto;color:var(--ink-3);font-variant-numeric:tabular-nums;font-size:11px}
+.tool pre{margin:0;font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-size:11px;
+  line-height:16px;color:var(--ink-2);white-space:pre-wrap;word-break:break-all}
+.tool--perm{border-left:3px solid var(--remote-border);background:var(--remote-bg)}
+/* AdModelTierCard */
+.tier{border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);padding:var(--s4);
+  display:flex;flex-direction:column;gap:var(--s2);box-shadow:var(--elev1)}
+.tier-hd{display:flex;align-items:center;gap:var(--s2)}
+.tier-hd .eyebrow{flex:1}
+.tier h4{font-size:16px;line-height:24px}
+.tier dl{display:grid;grid-template-columns:auto 1fr auto 1fr;gap:2px var(--s2);margin:0;font-size:13px}
+.tier dt{color:var(--ink-2)}
+.tier dd{margin:0;font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-size:13px;font-weight:500}
+.tier dd.bad{color:var(--danger-fg)}
+.prog{height:4px;background:var(--sunken);position:relative;border-radius:var(--r-none)}
+.prog i{position:absolute;inset:0 auto 0 0;background:var(--ink-3)}  /* 过程量，非来源断言：模型是从远端下载的，染青语义正好相反 */
+/* 记忆 */
+.mem{display:flex;flex-direction:column;gap:2px;border-left:3px solid transparent;padding:var(--s2) var(--s3);background:var(--surface)}
+.mem-t{display:flex;align-items:center;gap:var(--s2);font-size:14px;line-height:22px}
+.mem-t .dot{flex:none}
+.mem-src{font-size:13px;line-height:20px;color:var(--ink-3)}
+.diff{display:flex;align-items:center;gap:var(--s2);padding:6px var(--s3);font-size:13px;line-height:20px;
+  border-left:3px solid transparent}
+.diff--add{background:var(--success-bg);border-left-color:var(--success-fg)}
+.diff--del{background:var(--danger-bg);border-left-color:var(--danger-fg);text-decoration:line-through;color:var(--ink-2)}
+.diff .pfx{font-family:var(--font-inst);font-weight:600;flex:none}
+.diff--add .pfx{color:var(--success-fg)}
+.diff--del .pfx{color:var(--danger-fg)}
+.diff .val{margin-left:auto;font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-size:11px;color:var(--ink-3)}
+</style>
+
+<!-- ================= 组件展板 ================= -->
+<section class="sec" id="c-comp">
+  <div class="sec-hd">
+    <p class="eyebrow">05 / 组件</p>
+    <h2>Ad 组件集 · 视觉规格</h2>
+    <p class="note">所有可交互组件必须实现全六态：enabled / hover（仅 2in1 指针）/ pressed / focused / selected / disabled。<strong>禁止 opacity(0.4) 一刀切禁用</strong>——整体降透明会把边框糊掉。</p>
+  </div>
+
+  <div class="compgrid">
+    <!-- AdButton -->
+    <div class="spec">
+      <header><h3>AdButton</h3><span class="code">A1 · V0.9</span></header>
+      <div class="stage">
+        <button class="btn btn--primary" type="button"><svg class="ic"><use href="#ic-local"/></svg>发送</button>
+        <button class="btn btn--secondary" type="button">取消</button>
+        <button class="btn btn--ghost" type="button">查看轨迹</button>
+        <button class="btn btn--danger" type="button"><svg class="ic"><use href="#ic-warn"/></svg>删除知识库</button>
+      </div>
+      <div class="stage" style="gap:var(--s4)">
+        <span><span class="statelbl">hover</span><button class="btn btn--primary is-hover" type="button">发送</button></span>
+        <span><span class="statelbl">focused</span><button class="btn btn--secondary is-focus" type="button">取消</button></span>
+        <span><span class="statelbl">loading（宽度不跳）</span><button class="btn btn--primary is-loading" type="button">发送</button></span>
+        <span><span class="statelbl">disabled</span><button class="btn btn--primary" type="button" disabled>发送</button></span>
+      </div>
+      <p class="why">primary = 青实心 + <code class="i-s">brand_on</code> 前景（<strong>品牌轴</strong>，不是 local——主按钮不承载溯源断言）；danger = 朱实心 + <code class="i-s">danger_on</code> 前景 + <strong>必带 <svg class="ic" style="display:inline-block;vertical-align:-2px"><use href="#ic-warn"/></svg> 图标</strong>（破坏性动作不得只靠红色识别）。圆角一律 <code class="i-s">radius_sm</code>——按钮不是药丸。loading 时 label 原地换环形进度，<strong>宽度不跳动、不缩成圆形</strong>。</p>
+    </div>
+
+    <!-- AdTag / Chip -->
+    <div class="spec">
+      <header><h3>AdTag / AdChip</h3><span class="code">A6 · V0.9</span></header>
+      <div class="stage">
+        <span class="chip chip--local"><svg class="ic"><use href="#ic-local"/></svg>本地 · <span class="inst">Qwen3-4B</span></span>
+        <span class="chip chip--remote"><svg class="ic"><use href="#ic-remote"/></svg>远程 · <span class="inst">GPT-4o</span></span>
+        <span class="chip chip--ghost">未选 · <span class="inst">Qwen3-8B</span></span>
+        <span class="tag tag--warn"><svg class="ic"><use href="#ic-warn"/></svg>需 OCR</span>
+        <span class="tag tag--ok"><svg class="ic"><use href="#ic-ok"/></svg>就绪</span>
+        <span class="tag tag--danger"><svg class="ic"><use href="#ic-block"/></svg>内存不足</span>
+        <span class="tag tag--info">离线</span>
+        <span class="tag tag--neutral">仅本地</span>
+      </div>
+      <p class="why">圆角 <code class="i-s">radius_xs</code>（2vp）——机械感，不是药丸；<code class="i-s">radius_full</code> 在芯片上明令禁止。模型名是标识符，走仪表体。remote 芯片额外带<strong>左 3vp 语义竖条</strong>。</p>
+    </div>
+
+    <!-- AdCard + AdListItem -->
+    <div class="spec">
+      <header><h3>AdCard / AdListItem</h3><span class="code">A4 · A5 · V0.9</span></header>
+      <div class="stage stage--col" style="padding:0;background:transparent">
+        <div class="li is-selected">
+          <span class="av">合</span>
+          <span class="main"><span class="t1">合同第三章审查</span><span class="t2">最近：违约金上限比对…</span></span>
+          <span class="chip chip--local"><svg class="ic"><use href="#ic-local"/></svg>本地</span>
+          <span class="time">14:02</span>
+        </div>
+        <div class="li">
+          <span class="av">报</span>
+          <span class="main"><span class="t1">报销政策问答</span><span class="t2">最近：差旅住宿标准…</span></span>
+          <span class="chip chip--remote"><svg class="ic"><use href="#ic-remote"/></svg>远程</span>
+          <span class="time">昨天</span>
+        </div>
+        <div class="li li--compact">
+          <span class="main" style="flex-direction:row;align-items:center;gap:var(--s3)">
+            <span class="t1" style="font-size:14px">论文方法论</span>
+            <span class="chip chip--local"><svg class="ic"><use href="#ic-local"/></svg>本地</span>
+            <span class="t2 i-s">3 文档</span>
+          </span>
+          <span class="time">周一</span>
+        </div>
+      </div>
+      <p class="why">选中态（第一行）= 中性 <code class="i-s">surface_selected</code> + 左 3vp <code class="i-s">ink</code> 标记条，<strong>不泛青</strong>：会话行携带溯源信息，泛青会被误读为"这个会话是本地的"。第三行为 lg compact 密排（40vp，副信息升为同行列）。</p>
+    </div>
+
+    <!-- AdEmptyState -->
+    <div class="spec">
+      <header><h3>AdEmptyState</h3><span class="code">A11 · V0.9</span></header>
+      <div class="stage" style="padding:0">
+        <div class="empty" style="width:100%">
+          <span class="glyph"><svg><use href="#ic-local"/></svg><svg><use href="#ic-local"/></svg><svg><use href="#ic-local"/></svg></span>
+          <h3>还没有知识库</h3>
+          <p>建一个库，把文档放进来——它们只会留在这台设备上。</p>
+          <span style="display:flex;gap:var(--s2)">
+            <button class="btn btn--primary" type="button">新建知识库</button>
+            <button class="btn btn--secondary" type="button">导入文档</button>
+          </span>
+          <p class="tert t-body-s">支持 PDF / DOCX / Markdown / TXT</p>
+        </div>
+      </div>
+      <p class="why">空态是<strong>行动邀请，不是道歉</strong>：禁止"暂无数据""空空如也"。每个空态必须回答"这里将来会有什么 + 现在点哪里"，且至少一个 primary 按钮。图标是线性仪器母题，不是插画。</p>
+    </div>
+  </div>
+
+  <p class="sub">AdMessage —— 非气泡结构：左 3vp 语义色带 + 通栏排版</p>
+  <div class="spec" style="max-width:760px">
+    <div class="stage stage--col" style="gap:var(--s4)">
+      <div class="msg">
+        <div class="msg-hd"><span class="who">你</span><span class="ts">14:32</span></div>
+        <p class="msg-body">第三章的条款和国标有冲突吗？帮我逐条比对。</p>
+      </div>
+      <div class="msg msg--local">
+        <div class="msg-hd"><span class="who">标准审查助手</span><span class="ts">14:32</span></div>
+        <p class="msg-body">根据 GB/T 39786-2021 第 7.2 条，存在两处冲突：<span class="cite is-active">1</span> 条款 3.1.2 的密钥轮换周期为 12 个月，国标要求不超过 6 个月<span class="cite">2</span>。</p>
+        <div class="rail" style="max-width:520px">
+          <span class="seg"><span class="chip chip--local"><svg class="ic"><use href="#ic-local"/></svg>本地 · <span class="inst">Qwen3-4B</span></span></span>
+          <span class="sep">·</span><button class="hit" type="button"><span class="zh">引用</span> 2</button>
+          <span class="sep">·</span><button class="hit" type="button"><span class="zh">记忆</span> 1</button>
+          <span class="sep">·</span><span class="meter">1.24s · 14.2 tok/s</span>
+          <span class="caret"><svg class="ic"><use href="#ic-chev"/></svg></span>
+        </div>
+      </div>
+      <div class="msg msg--local">
+        <div class="msg-hd"><span class="who">标准审查助手 · 流式中</span><span class="ts">14:33</span></div>
+        <p class="msg-body">第二处冲突在附件三的密钥托管条款<span class="demo-cursor"></span></p>
+      </div>
+      <div class="msg" style="border-left-style:dashed">
+        <div class="msg-hd"><span class="who">已中断</span><span class="ts">14:33</span></div>
+        <p class="msg-body" style="font-size:14px;line-height:22px">…存在两处冲──</p>
+        <p style="display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap">
+          <span class="tag tag--neutral"><svg class="ic"><use href="#ic-stop"/></svg>已中断（用户取消）</span>
+          <span class="i-s tert">已生成 148 tok</span>
+          <button class="btn btn--secondary btn--sm" type="button">继续生成</button>
+          <button class="btn btn--ghost btn--sm" type="button">重新生成</button>
+        </p>
+      </div>
+      <div class="msg msg--danger">
+        <div class="msg-hd"><span class="who" style="color:var(--danger-fg)">生成失败</span><span class="ts">14:35</span></div>
+        <p class="msg-body" style="font-size:14px;line-height:22px;display:flex;align-items:center;gap:6px;color:var(--danger-fg)">
+          <svg class="ic"><use href="#ic-warn"/></svg>远程服务限流了（429）。等约 20 秒会自动重试。</p>
+        <p class="t-body-s muted">已保留上下文，可直接重试。</p>
+        <p style="display:flex;gap:var(--s2);flex-wrap:wrap">
+          <button class="btn btn--secondary btn--sm" type="button">立即换本地模型</button>
+          <button class="btn btn--ghost btn--sm" type="button">重试</button>
+          <button class="btn btn--ghost btn--sm" type="button">查看详情</button>
+        </p>
+      </div>
+    </div>
+    <p class="why"><strong>助手色带即语义</strong>：色带颜色就是这条回答的来源。一屏扫下去，全青 = 全在本地，出现琥珀 = 这一句出过端——这是"每一屏都可见"的最低成本实现。<strong>[R-37]</strong> 流式必须可中断，中断后已生成内容<strong>保留</strong>并标注，溯源条按已解析部分照常渲染，禁止清空。</p>
+  </div>
+
+  <div class="compgrid" style="margin-top:var(--s4)">
+    <!-- BrainIndicator -->
+    <div class="spec">
+      <header><h3>AdBrainIndicator · 当前大脑</h3><span class="code">B2 · V0.9</span></header>
+      <div class="stage stage--col">
+        <span><span class="statelbl">本地</span>
+          <span class="brain"><svg class="ic"><use href="#ic-local"/></svg>本地 · <span class="inst">Qwen3-4B</span> <svg class="ic"><use href="#ic-chev"/></svg></span></span>
+        <span><span class="statelbl">远程</span>
+          <span class="brain brain--remote"><svg class="ic"><use href="#ic-remote"/></svg>远程 · <span class="inst">GPT-4o</span> <svg class="ic"><use href="#ic-chev"/></svg></span></span>
+        <span><span class="statelbl">接管中（显式第三态）</span>
+          <span class="brain brain--handoff">
+            <svg class="ic h-l"><use href="#ic-local"/></svg><svg class="ic h-l"><use href="#ic-arrow-right"/></svg>
+            <svg class="ic h-r"><use href="#ic-remote"/></svg>
+            <span class="h-r">接管中 · 远程 · <span class="inst">GPT-4o</span></span>
+          </span></span>
+      </div>
+      <p class="why">"接管中"不能用"远程"糊弄——两级大脑里<strong>快脑仍在本地监听</strong>，用户有权知道"我说的话仍被本地模型听着，只是这个答案由远程生成"。<strong>[R-22]</strong> 大脑切换必须主动播报（通话中用户在看别处）。远程态朗读必须说出"内容将发送至远程服务"。</p>
+    </div>
+
+    <!-- CtxGauge -->
+    <div class="spec">
+      <header><h3>AdCtxGauge · ctx 水位线</h3><span class="code">B3 · V0.9</span></header>
+      <div class="stage stage--col" style="gap:var(--s4)">
+        <div class="gauge"><span class="statelbl">安静态 &lt;70%（三端读数常显；sm 仅省略 token 绝对值）</span>
+          <span class="track"><i class="fill" style="width:34%"></i></span>
+          <span class="read">ctx 34%</span></div>
+        <div class="gauge warn"><span class="statelbl">警戒态 ≥70%</span>
+          <span class="track"><i class="fill" style="width:72%"></i></span>
+          <span class="read"><svg class="ic"><use href="#ic-warn"/></svg>ctx 72%</span></div>
+        <div class="gauge dang"><span class="statelbl">危险态 ≥90%</span>
+          <span class="track"><i class="fill" style="width:92%"></i></span>
+          <span class="read"><svg class="ic"><use href="#ic-alert"/></svg>ctx 92% · 上下文快满了，下一条会先整理</span></div>
+        <div class="gauge busy"><span class="statelbl">整理思路中（压缩发生时）</span>
+          <span class="track"><i class="fill" style="width:100%"></i></span>
+          <span class="read">整理思路中…</span></div>
+      </div>
+      <p class="why">一条 2vp 细线，长在输入框上沿——"把仪表放进主界面"这一可辩护冒险的落点。阈值 <b>70% warning / 90% danger</b>（85% 的写法已作废），且<strong>必须与 ContextGovernor 触发线同源同值</strong>（[R-18]）。压缩期间<strong>输入框不禁用</strong>，可继续打字，消息入队。</p>
+    </div>
+
+    <!-- CitationChip -->
+    <div class="spec">
+      <header><h3>AdCitationChip</h3><span class="code">B5 · V0.9</span></header>
+      <div class="stage stage--col">
+        <p class="t-body-l" style="margin:0">…密钥轮换周期为 12 个月 <span class="cite">1</span>，国标要求不超过 6 个月 <span class="cite is-active">2</span>。</p>
+        <div class="card--sunken" style="padding:var(--s3);display:flex;flex-direction:column;gap:6px">
+          <span style="display:flex;align-items:center;gap:var(--s2);font-size:13px">
+            <span class="cite">2</span><b>内控手册.docx</b>
+            <span class="i-s tert">§3.2 · 片段 #77 · 0.81</span>
+            <span class="chip chip--local" style="margin-left:auto"><svg class="ic"><use href="#ic-local"/></svg>本地</span></span>
+          <span class="warnline"><svg class="ic"><use href="#ic-warn"/></svg>由 AI 识别，可能有误（provenance = vlm）</span>
+          <span style="display:flex;gap:var(--s2)">
+            <button class="btn btn--secondary btn--sm" type="button">打开原图</button>
+            <button class="btn btn--ghost btn--sm" type="button">复制</button></span>
+        </div>
+      </div>
+      <p class="why">直角芯片（<code class="i-s">radius_xs</code>）+ 仪表体编号。OCR/VLM 产物<strong>必须</strong>标注"由 AI 识别，可能有误"并提供<strong>跳转原图</strong>路径；<code class="i-s">provenance = text</code>（文本层直取）不加此提示——加了反而稀释警告的信号价值。</p>
+    </div>
+
+    <!-- ToolCard -->
+    <div class="spec">
+      <header><h3>AdToolCard</h3><span class="code">B6 · V1.0</span></header>
+      <div class="stage stage--col">
+        <div class="tool">
+          <div class="tool-hd"><svg class="ic"><use href="#ic-tool"/></svg><span class="inst">kb.search</span><span class="meter">218ms · 412 tok</span><svg class="ic"><use href="#ic-chev"/></svg></div>
+          <pre>入参  { "query": "密钥轮换 周期", "libIds": ["kb1"], "topK": 6 }
+出参  命中 6 个片段（已外置为 artifact:a17，上下文仅注入摘要头）
+      [1] GB/T… p.12  0.87    [2] 内控手册… §3.2  0.81</pre>
+          <span style="display:flex;gap:var(--s2)"><button class="btn btn--ghost btn--sm" type="button">查看全文</button></span>
+        </div>
+        <div class="tool tool--perm">
+          <div class="tool-hd" style="color:var(--remote-fg)"><svg class="ic"><use href="#ic-tool"/></svg><span class="inst">http.fetch</span> —— 需要你的授权</div>
+          <p style="font-size:13px;line-height:20px;margin:0">Agent「标准审查助手」请求访问：<span class="i-s">api.example.com</span></p>
+          <p style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--remote-fg);margin:0">
+            <svg class="ic"><use href="#ic-remote"/></svg>出端提醒：请求内容将离开本设备</p>
+          <span style="display:flex;gap:var(--s2);flex-wrap:wrap">
+            <button class="btn btn--secondary btn--sm is-focus" type="button">拒绝</button>
+            <button class="btn btn--ghost btn--sm" type="button">仅本次允许</button>
+            <button class="btn btn--ghost btn--sm" type="button">始终允许该域名</button></span>
+        </div>
+      </div>
+      <p class="why">"工具结果外置"必须在 UI 上可见（<code class="i-s">artifact:a17</code> + 查看全文入口），否则用户会以为信息丢了。<strong>[R-51] 权限确认默认焦点必须是 [拒绝]</strong>（图中焦点环），且禁止"记住全部 Agent"式通配授权。</p>
+    </div>
+  </div>
+
+  <p class="sub">AdModelTierCard —— "本机不可运行"是诚实性资产</p>
+  <div class="grid2">
+    <div class="tier">
+      <div class="tier-hd"><span class="eyebrow">STANDARD</span>
+        <span class="tag tag--ok"><svg class="ic"><use href="#ic-ok"/></svg>本机可运行</span></div>
+      <h4>Qwen3-4B-Instruct &nbsp;<span class="i-s tert">Q4_K_M</span></h4>
+      <dl>
+        <dt>大小</dt><dd>2.41GB</dd><dt>内存占用</dt><dd>~3.1GB</dd>
+        <dt>上下文</dt><dd>32,768 tok</dd><dt>预期速度</dt><dd>8–15 tok/s</dd>
+        <dt>许可</dt><dd style="font-weight:400">Apache-2.0</dd><dt>出处</dt><dd style="font-weight:400;display:flex;align-items:center;gap:6px"><span class="chip chip--remote"><svg class="ic"><use href="#ic-remote"/></svg>远程 · <span class="inst">HuggingFace</span></span><a href="#c-comp">Qwen</a></dd>
+      </dl>
+      <p class="i-s" style="display:flex;align-items:center;gap:6px;color:var(--ink-3)">
+        sha256 a3f1…9c2e <span style="color:var(--success-fg);display:inline-flex;align-items:center;gap:3px"><svg class="ic"><use href="#ic-ok"/></svg>校验通过</span></p>
+      <div class="prog"><i style="width:75.5%"></i></div>
+      <p style="display:flex;align-items:center;gap:var(--s2)">
+        <span class="i-m" style="color:var(--ink-3)">1.82 / 2.41GB · 75.5% · 12.4 MB/s</span>
+        <span style="margin-left:auto;display:flex;gap:var(--s2)">
+          <button class="btn btn--secondary btn--sm" type="button">暂停</button>
+          <button class="btn btn--ghost btn--sm" type="button">取消</button></span></p>
+    </div>
+    <div class="tier" style="border-left:3px solid var(--danger-fg)">
+      <div class="tier-hd"><span class="eyebrow">MAX</span>
+        <span class="tag tag--danger"><svg class="ic"><use href="#ic-block"/></svg>本机不可运行</span></div>
+      <h4>Qwen3-8B &nbsp;<span class="i-s tert">Q4_K_M</span></h4>
+      <dl>
+        <dt>大小</dt><dd>4.92GB</dd><dt>内存占用</dt><dd class="bad">~6.4GB</dd>
+        <dt>本机预算</dt><dd class="bad">3.0GB</dd><dt>上下文</dt><dd>32,768 tok</dd>
+      </dl>
+      <p class="t-body-s" style="border-left:3px solid var(--border-strong);padding-left:var(--s2);color:var(--ink-2)">
+        这台设备（12GB RAM）建议使用 Standard 档。</p>
+      <p style="display:flex;gap:var(--s2);margin-top:auto">
+        <button class="btn btn--secondary btn--sm" type="button">仍要下载</button>
+        <button class="btn btn--primary btn--sm" type="button">看 4B 档</button></p>
+    </div>
+  </div>
+  <p class="tert t-body-s" style="margin-top:var(--s2)">内存不足行<strong>不置灰隐藏、不粗暴禁用</strong>——必须给出"为什么"（内存数字对比）与替代方案，技术用户有权自行判断。许可与出处<strong>强制常显</strong>；sha256 必须可见，四态：未下载 / 校验中 / 通过 / 失败（各带独立 SVG 形状）。</p>
+
+  <div class="compgrid" style="margin-top:var(--s6)">
+    <!-- PrivacyFence -->
+    <div class="spec">
+      <header><h3>AdPrivacyFenceNotice</h3><span class="code">B9 · V0.9</span></header>
+      <div class="stage stage--col">
+        <span><span class="statelbl">预检态（输入框上沿，发送前）</span>
+          <span style="display:flex;align-items:center;gap:6px;background:var(--remote-bg);color:var(--remote-fg);
+            padding:6px var(--s2);border-left:3px solid var(--remote-border);font-size:13px">
+            <svg class="ic"><use href="#ic-remote"/></svg>
+            <span>发送时将拦截 <b class="i-s">3</b> 条本地内容</span>
+            <button class="btn btn--ghost btn--sm" style="margin-left:auto;color:var(--remote-fg)" type="button">查看拦截项</button>
+          </span></span>
+        <span><span class="statelbl">事后审计（助手消息下方内联条）</span>
+          <span style="display:flex;align-items:center;gap:6px;background:var(--info-bg);color:var(--info-fg);
+            padding:6px var(--s2);font-size:13px">
+            <svg class="ic"><use href="#ic-warn"/></svg>
+            <span><b class="i-s">1</b> 条本地内容因隐私设置未发送</span>
+            <button class="btn btn--ghost btn--sm" style="margin-left:auto;color:var(--info-fg)" type="button">查看拦截项</button>
+          </span></span>
+      </div>
+      <p class="why">语调：<strong>这不是错误，是围栏按预期工作</strong>——故用琥珀（远程语义）而非朱红，图标是空心云弧，不是叉。<strong>没有出错，只是没出端。</strong>必须可展开看清是哪些（只说"N 条被拦截"却不能查明细，等于要求用户盲信）。<strong>[R-79] 事前预检 + 事后审计，两者都要。UI 不提供"本次绕过"入口。</strong></p>
+    </div>
+
+    <!-- Memory -->
+    <div class="spec">
+      <header><h3>AdMemoryItem</h3><span class="code">B8 · V1.0</span></header>
+      <div class="stage stage--col" style="padding:0;background:transparent">
+        <div class="mem" style="border-left-color:var(--success-fg)">
+          <span class="mem-t"><span class="dot" style="color:var(--success-fg);display:flex"><svg class="ic"><use href="#ic-dot-solid"/></svg></span>
+            <span style="flex:1">用户偏好在回答中引用国标编号</span>
+            <span class="i-m">0.91</span><span class="tag tag--ok">active</span></span>
+          <span class="mem-src">来源：会话「第三章条款比对」#msg204 · 3 次命中 · 14 天前 ›</span>
+        </div>
+        <div class="mem" style="border-left-color:var(--ink-3)">
+          <span class="mem-t"><span class="dot tert" style="display:flex"><svg class="ic"><use href="#ic-archived"/></svg></span>
+            <span style="flex:1">用户曾询问差旅住宿标准</span>
+            <span class="i-m tert">0.41</span><span class="tag tag--neutral">archived</span></span>
+          <span class="mem-src">可搜回，非删除 · 32 天前</span>
+        </div>
+        <div class="mem" style="border-left-color:var(--danger-fg)">
+          <span class="mem-t"><span class="dot" style="color:var(--danger-fg)"><svg class="ic"><use href="#ic-warn"/></svg></span>
+            <span style="flex:1">合同上限统一按 30% 算</span>
+            <span class="tag tag--danger">冲突，待确认</span></span>
+          <span class="mem-src">与「按 20% 算」（0.78 · 会话#1330）冲突</span>
+          <span style="display:flex;gap:var(--s2);margin-top:4px">
+            <button class="btn btn--secondary btn--sm" type="button">保留 A</button>
+            <button class="btn btn--secondary btn--sm" type="button">保留 B</button>
+            <button class="btn btn--ghost btn--sm" type="button">都留</button></span>
+        </div>
+      </div>
+      <p class="why">四态三重冗余（色 + 形 + 文字），四个形状<strong>全部走 SVG，不用系统字形</strong>（[R-100]）：<svg class="ic"><use href="#ic-dot-solid"/></svg> active / <svg class="ic"><use href="#ic-archived"/></svg> archived / <svg class="ic"><use href="#ic-superseded"/></svg> superseded / <svg class="ic"><use href="#ic-warn"/></svg> conflict。<strong>"来源"不可省略</strong>——每条记忆必须能一路点回原始消息；无来源的记忆条 = 黑箱，本产品不接受。置信度 &lt; 0.60 时数值转 warning 色。</p>
+    </div>
+  </div>
+</section>
+<style>
+/* ============ B10 AdRunTrace 步骤卡 + 检索调试器结果头 ============ */
+.trace{border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);
+  box-shadow:var(--elev1);overflow:hidden}
+.trace-hd{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s3);
+  border-bottom:1px solid var(--border);font-size:13px}
+.trace-hd .m{margin-left:auto;font-family:var(--font-inst);font-variant-numeric:tabular-nums;
+  font-size:11px;color:var(--ink-3)}
+.step{display:flex;gap:var(--s2);padding:var(--s2) var(--s3);border-bottom:1px solid var(--border);
+  align-items:flex-start}
+.step:last-child{border-bottom:0}
+.step .ax{flex:none;margin-top:2px;display:flex}
+.step .sb{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.step .st{display:flex;align-items:baseline;gap:var(--s2);font-size:13px}
+.step .st .n{font-family:var(--font-inst);font-variant-numeric:tabular-nums;color:var(--ink-3);font-size:11px}
+.step .st .m{margin-left:auto;font-family:var(--font-inst);font-variant-numeric:tabular-nums;
+  font-size:11px;color:var(--ink-3)}
+.dbg{display:flex;flex-direction:column;gap:6px}
+.dbg-row{display:flex;align-items:center;gap:var(--s2);font-size:12px;
+  font-variant-numeric:tabular-nums}
+.dbg-row .id{font-family:var(--font-inst);color:var(--ink-2);width:64px;flex:none}
+.dbg-row .bar{height:6px;background:var(--brand-fg);border-radius:var(--r-none);flex:none}
+.dbg-row .sc{font-family:var(--font-inst);color:var(--ink-3);width:52px;text-align:right;flex:none}
+.dbg-row .inj{color:var(--success-fg);font-size:11px;display:flex;align-items:center;gap:2px}
+
+/* ============ 界面模拟 ============ */
+.mock{border:1px solid var(--border-strong);border-radius:var(--r-lg);overflow:hidden;background:var(--bg);
+  box-shadow:var(--elev2);display:flex;flex-direction:column}
+.mock-cap{display:flex;align-items:baseline;gap:var(--s2);margin-bottom:var(--s2)}
+.mock-cap b{font-size:13px}
+.mock-cap span{font-family:var(--font-inst);font-size:11px;color:var(--ink-3)}
+.topbar{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s3);background:var(--surface);
+  border-bottom:1px solid var(--border);min-height:44px}
+.topbar .ttl{font-size:16px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.iconbtn{width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:var(--r-sm);
+  border:0;background:transparent;color:var(--ink-2);cursor:pointer;flex:none}
+.iconbtn:hover{background:var(--hover)}
+.stream{flex:1;overflow:hidden;padding:var(--s3);display:flex;flex-direction:column;gap:var(--s4);background:var(--bg)}
+/* 用户轮次：**通栏、不右对齐、无气泡、无圆头像**（§1.2.1 / §3 B4 / [R-38a]）。
+   与助手消息共用同一条正文基线——右对齐气泡下 [R-72]「溯源条与正文列左对齐同一基线」根本对不齐。
+   区分说话人靠底色（surface_sunken，输入井的那个面）+ 左 3vp ink_tertiary 色带，不靠气泡。 */
+.msg--user{border-left-color:var(--ink-3);background:var(--sunken);border-radius:var(--r-none)}
+.composer{border-top:1px solid var(--border);background:var(--surface);padding:var(--s2) var(--s3) var(--s3)}
+.inputrow{display:flex;gap:var(--s2);align-items:flex-end;margin-top:6px}
+.field{flex:1;border:1px solid var(--border-strong);border-radius:var(--r-sm);padding:8px var(--s3);
+  color:var(--ink-3);font-size:14px;min-height:40px;display:flex;align-items:center;justify-content:space-between;background:var(--surface)}
+.tabbar{display:flex;border-top:1px solid var(--border);background:var(--surface)}
+.tabbar a{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0 8px;
+  font-size:11px;color:var(--ink-3);text-decoration:none}
+.tabbar a.on{color:var(--brand-fg);background:var(--navsel)}  /* 导航无溯源语义 → 品牌轴 */
+.tabbar a svg{width:18px;height:18px}
+.sidebar{background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex:none}
+.navitem{display:flex;align-items:center;gap:var(--s2);padding:8px var(--s3);font-size:13px;color:var(--ink-2);
+  border-left:3px solid transparent}
+.navitem.on{background:var(--navsel);color:var(--brand-fg);border-left-color:var(--brand-fg);font-weight:600}
+.navitem svg{width:16px;height:16px}
+.listcol{background:var(--surface);border-right:1px solid var(--border);flex:none;display:flex;flex-direction:column}
+.listcol .hd{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s3);border-bottom:1px solid var(--border)}
+.listcol .hd b{font-size:13px;flex:1}
+.convo{padding:var(--s2) var(--s3);border-bottom:1px solid var(--border);border-left:3px solid transparent;
+  display:flex;flex-direction:column;gap:2px;cursor:pointer}
+.convo.on{background:var(--selected);border-left-color:var(--ink)}
+.convo .n{font-size:14px;font-weight:600}
+.convo .m{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-3);
+  font-family:var(--font-sans);font-variant-numeric:tabular-nums}
+.inspector{background:var(--surface);border-left:1px solid var(--border);flex:none;display:flex;flex-direction:column}
+.insp-hd{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s3);border-bottom:1px solid var(--border)}
+.insp-hd b{font-size:13px;flex:1}
+.insp-body{padding:var(--s3);display:flex;flex-direction:column;gap:var(--s3);overflow:hidden}
+.insp-foot{margin-top:auto;border-top:1px solid var(--border);padding:6px var(--s3);
+  font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-size:11px;color:var(--ink-3)}
+.quote{background:var(--sunken);border-radius:var(--r-none);padding:var(--s2);font-size:13px;line-height:20px}
+.quote mark{background:var(--brand-bg);color:var(--brand-fg);padding:0 2px;border-radius:var(--r-xs)}
+.mockrow{display:grid;gap:var(--s5);grid-template-columns:minmax(0,320px) minmax(0,1fr);align-items:start}
+@media (max-width:760px){.mockrow{grid-template-columns:1fr}}
+</style>
+
+<!-- ================= 界面 ================= -->
+<section class="sec" id="c-screens">
+  <div class="sec-hd">
+    <p class="eyebrow">06 / 界面</p>
+    <h2>会话页 · sm / md / lg</h2>
+    <p class="note">同一条消息、同一份证据，三个断点上一条不减：当前大脑常驻顶栏、ctx 水位线长在输入框上沿、溯源条紧贴消息下沿且与正文列<strong>左对齐同一基线</strong>（[R-72]）。检视栏（第三栏）不是可有可无——它是溯源条的展开态。</p>
+  </div>
+
+  <div class="mockrow">
+    <div>
+      <p class="mock-cap"><b>sm · 手机</b><span>&lt;600vp · 单栏 + 底部 Tab</span></p>
+      <div class="mock" style="height:560px">
+        <div class="topbar">
+          <button class="iconbtn" type="button" aria-label="返回"><svg class="ic"><use href="#ic-chev-left"/></svg></button>
+          <span class="ttl">合同第三章审查</span>
+          <button class="iconbtn" type="button" aria-label="更多"><svg class="ic"><use href="#ic-more"/></svg></button>
+        </div>
+        <div style="padding:6px var(--s3);border-bottom:1px solid var(--border);background:var(--surface)">
+          <span class="brain"><svg class="ic"><use href="#ic-local"/></svg>本地 · <span class="inst">Qwen3-4B</span> <svg class="ic"><use href="#ic-chev"/></svg></span>
+        </div>
+        <div class="stream" style="gap:var(--s3)">
+          <div class="msg msg--user">
+            <div class="msg-hd"><span class="who">你</span><span class="ts">14:02</span></div>
+            <p class="msg-body">第三章的违约金上限？</p>
+          </div>
+          <div class="msg msg--local" style="background:transparent">
+            <div class="msg-hd"><span class="who">标准审查助手</span><span class="ts">14:02</span></div>
+            <p class="msg-body">依据合同文本 <span class="cite">1</span>，违约金不超过合同总额的 30% <span class="cite is-active">2</span>。</p>
+            <div class="rail rail--touch">
+              <span class="seg"><span class="chip chip--local"><svg class="ic"><use href="#ic-local"/></svg>本地 · <span class="inst">Qwen3-4B</span></span></span>
+              <span class="sep">·</span><button class="hit" type="button"><span class="zh">引用</span> 2</button>
+              <span class="sep">·</span><button class="hit" type="button"><span class="zh">记忆</span> 1</button>
+              <span class="sep">·</span><span class="meter">14.2 tok/s</span>
+              <span class="caret" style="transform:rotate(180deg)"><svg class="ic"><use href="#ic-chev"/></svg></span>
+            </div>
+            <div class="rail-exp" style="border-radius:0">
+              <div class="exp-grp">
+                <p class="exp-hd">引用 [2]</p>
+                <p class="t-body-s" style="margin:0"><b>合同.pdf</b> <span class="i-s tert">· 第 13 页 · 0.81</span></p>
+                <div class="quote">…赔偿总额不得超过合同总额的 <mark>30%</mark>…</div>
+                <span><button class="btn btn--ghost btn--sm" type="button">打开原文</button></span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="composer">
+          <div class="gauge">
+            <span class="track"><i class="fill" style="width:34%"></i></span>
+            <span class="read">ctx 34%</span>
+          </div>
+          <div class="inputrow">
+            <span class="field">问点什么… <span class="tert" style="display:flex"><svg class="ic"><use href="#ic-plus"/></svg></span></span>
+            <button class="btn btn--primary" type="button">发送</button>
+          </div>
+        </div>
+        <div class="tabbar">
+          <a href="#c-screens" class="on"><svg><use href="#ic-local"/></svg>聊天</a>
+          <a href="#c-screens"><svg><use href="#ic-tool"/></svg>知识库</a>
+          <a href="#c-screens"><svg><use href="#ic-tool"/></svg>Agent</a>
+          <a href="#c-screens"><svg><use href="#ic-tool"/></svg>记忆</a>
+          <a href="#c-screens"><svg><use href="#ic-tool"/></svg>设置</a>
+        </div>
+      </div>
+      <p class="tert t-body-s" style="margin-top:var(--s2)">sm：点引用芯片 → 在消息下方<strong>就地展开</strong>，不跳走、不升 Sheet。溯源条字段过多时横向滚动，不省略。</p>
+    </div>
+
+    <div>
+      <p class="mock-cap"><b>md · 平板</b><span>600–840vp · 双栏 · 检视栏降级为底部 Sheet</span></p>
+      <div class="scroll-x">
+      <div class="mock" style="height:560px;flex-direction:row;min-width:660px">
+        <div class="listcol" style="width:220px">
+          <div class="hd"><b>会话</b><button class="iconbtn" type="button" aria-label="新建会话"><svg class="ic"><use href="#ic-plus"/></svg></button></div>
+          <div class="convo on"><span class="n">合同第三章审查</span><span class="m"><svg class="ic" style="color:var(--local-fg)"><use href="#ic-local"/></svg>本地 · <span class="inst">14:02</span></span></div>
+          <div class="convo"><span class="n">报销政策问答</span><span class="m"><svg class="ic" style="color:var(--remote-fg)"><use href="#ic-remote"/></svg>远程 · 昨天</span></div>
+          <div class="convo"><span class="n">论文方法论</span><span class="m"><svg class="ic" style="color:var(--local-fg)"><use href="#ic-local"/></svg>本地 · 周一</span></div>
+        </div>
+        <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+          <div class="topbar">
+            <span class="ttl">合同第三章审查</span>
+            <span class="brain brain--remote"><svg class="ic"><use href="#ic-remote"/></svg>远程 · <span class="inst">GPT-4o</span> <svg class="ic"><use href="#ic-chev"/></svg></span>
+          </div>
+          <div class="stream">
+            <div class="msg msg--user">
+              <div class="msg-hd"><span class="who">你</span><span class="ts">14:02</span></div>
+              <p class="msg-body">第三章的违约金上限？</p>
+            </div>
+            <div class="msg msg--remote" style="background:transparent">
+              <div class="msg-hd"><span class="who">标准审查助手</span><span class="ts">14:02</span></div>
+              <p class="msg-body">依据合同文本 <span class="cite">1</span>，违约金不超过合同总额的 30% <span class="cite">2</span>。第三章未就逾期利息另作约定。</p>
+              <div class="rail rail--remote rail--touch">
+                <span class="seg"><span class="chip chip--remote"><svg class="ic"><use href="#ic-remote"/></svg>远程 · <span class="inst">GPT-4o</span></span></span>
+                <span class="sep">·</span><button class="hit" type="button"><span class="zh">引用</span> 2</button>
+                <span class="sep">·</span><button class="hit" type="button"><span class="zh">记忆</span> 1</button>
+                <span class="sep">·</span><button class="hit hit--fence" type="button"><svg class="ic"><use href="#ic-warn"/></svg><span class="zh">已拦截</span> 1</button>
+                <span class="sep">·</span><span class="meter">2.08s · 41.6 tok/s</span>
+                <span class="caret"><svg class="ic"><use href="#ic-chev"/></svg></span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;background:var(--info-bg);color:var(--info-fg);
+              padding:6px var(--s2);font-size:13px">
+              <svg class="ic"><use href="#ic-warn"/></svg><span><b class="i-s">1</b> 条本地内容因隐私设置未发送</span>
+              <button class="btn btn--ghost btn--sm" style="margin-left:auto;color:var(--info-fg)" type="button">查看拦截项</button>
+            </div>
+          </div>
+          <div class="composer">
+            <div class="gauge warn"><span class="track"><i class="fill" style="width:72%"></i></span>
+              <span class="read"><svg class="ic"><use href="#ic-tri"/></svg>ctx 72%</span></div>
+            <div class="inputrow">
+              <span class="field">问点什么… <span class="tert" style="display:flex"><svg class="ic"><use href="#ic-plus"/></svg></span></span>
+              <button class="btn btn--primary" type="button">发送</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
+      <p class="tert t-body-s" style="margin-top:var(--s2)">md：点引用 / 记忆 / 拦截 → 底部 Sheet 升起（<span class="i-s">radius_lg</span>，高度 60%），<strong>内容与 lg 检视栏完全相同，只换容器</strong>。当前大脑为远程 → 拦截段恒渲染 + 事后审计内联条。</p>
+    </div>
+  </div>
+</section>
+<section class="sec" style="border-top:0;padding-top:0">
+  <p class="sub">lg · 2in1 PC —— 三栏：侧栏 + 会话列表 + 聊天（正文列 max 720vp） + 检视栏（溯源条的展开态）</p>
+  <div class="scroll-x">
+    <div class="mock" style="height:620px;flex-direction:row;min-width:1080px">
+      <div class="sidebar" style="width:150px;padding:var(--s2) 0">
+        <div class="navitem on"><svg><use href="#ic-local"/></svg>会话</div>
+        <div class="navitem"><svg><use href="#ic-tool"/></svg>知识库</div>
+        <div class="navitem"><svg><use href="#ic-tool"/></svg>Agent</div>
+        <div class="navitem"><svg><use href="#ic-tool"/></svg>模型</div>
+        <div class="navitem"><svg><use href="#ic-tool"/></svg>记忆</div>
+        <div class="navitem"><svg><use href="#ic-tool"/></svg>设置</div>
+        <div style="margin-top:auto;padding:var(--s3);font-family:var(--font-inst);font-size:11px;color:var(--ink-3)">
+          Ctrl K 搜索<br>Ctrl I 检视栏</div>
+      </div>
+      <div class="listcol" style="width:230px">
+        <div class="hd"><b>会话</b><button class="iconbtn" type="button" aria-label="新建会话"><svg class="ic"><use href="#ic-plus"/></svg></button></div>
+        <div class="convo on"><span class="n">合同第三章审查</span><span class="m"><svg class="ic" style="color:var(--local-fg)"><use href="#ic-local"/></svg>本地 · <span class="inst">14:02</span></span></div>
+        <div class="convo"><span class="n">报销政策问答</span><span class="m"><svg class="ic" style="color:var(--remote-fg)"><use href="#ic-remote"/></svg>远程 · 昨天</span></div>
+        <div class="convo"><span class="n">论文方法论</span><span class="m"><svg class="ic" style="color:var(--local-fg)"><use href="#ic-local"/></svg>本地 · 周一</span></div>
+        <div class="convo"><span class="n">国标符合性核查</span><span class="m"><svg class="ic" style="color:var(--local-fg)"><use href="#ic-local"/></svg>本地 · <span class="inst">7</span> 月 <span class="inst">9</span> 日</span></div>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+        <div class="topbar">
+          <span class="ttl">合同第三章审查</span>
+          <span class="i-s tert">5 条消息</span>
+          <span class="brain"><svg class="ic"><use href="#ic-local"/></svg>本地 · <span class="inst">Qwen3-4B</span> <svg class="ic"><use href="#ic-chev"/></svg></span>
+        </div>
+        <div class="stream">
+          <div style="max-width:720px;width:100%;margin:0 auto;display:flex;flex-direction:column;gap:var(--s4)">
+            <div class="msg msg--user">
+              <div class="msg-hd"><span class="who">你</span><span class="ts">14:02</span></div>
+              <p class="msg-body">第三章的违约金上限？和国标有冲突吗？</p>
+            </div>
+            <div class="msg msg--local" style="background:transparent">
+              <div class="msg-hd"><span class="who">标准审查助手</span><span class="ts">14:02</span></div>
+              <p class="msg-body">依据合同文本 <span class="cite">1</span>，违约金不超过合同总额的 30% <span class="cite is-active">2</span>。与 GB/T 39786-2021 无直接冲突；但第 7.2 条的密钥轮换周期要求更严，需要单独核对。</p>
+              <div class="rail is-selected">
+                <span class="seg"><span class="chip chip--local"><svg class="ic"><use href="#ic-local"/></svg>本地 · <span class="inst">Qwen3-4B</span></span></span>
+                <span class="sep">·</span><button class="hit" type="button"><span class="zh">引用</span> 2</button>
+                <span class="sep">·</span><button class="hit" type="button"><span class="zh">记忆</span> 1</button>
+                <span class="sep">·</span><span class="meter">1.24s · 14.2 tok/s · 首字 310ms</span>
+                <span class="caret" style="transform:rotate(180deg)"><svg class="ic"><use href="#ic-chev"/></svg></span>
+              </div>
+              <div class="tool" style="margin-top:6px">
+                <div class="tool-hd"><svg class="ic"><use href="#ic-tool"/></svg><span class="inst">kb.search("违约金 上限")</span><span class="meter">218ms · 412 tok</span><svg class="ic"><use href="#ic-chev"/></svg></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="composer">
+          <div class="gauge warn"><span class="track"><i class="fill" style="width:72%"></i></span>
+            <span class="read"><svg class="ic"><use href="#ic-tri"/></svg>ctx 72% · 23,593 / 32,768 tok</span></div>
+          <div class="inputrow">
+            <span class="field">问点什么… <span class="tert" style="display:flex"><svg class="ic"><use href="#ic-plus"/></svg></span></span>
+            <button class="btn btn--primary" type="button">发送</button>
+          </div>
+          <p class="i-s tert" style="margin-top:6px;text-align:right">Ctrl+Enter 发送</p>
+        </div>
+      </div>
+      <div class="inspector" style="width:330px">
+        <div class="insp-hd"><b>检视</b>
+          <span class="i-s tert">来自消息 · 14:02</span>
+          <button class="iconbtn" type="button" aria-label="固定"><svg class="ic"><use href="#ic-pin"/></svg></button>
+          <button class="iconbtn" type="button" aria-label="关闭"><svg class="ic"><use href="#ic-close"/></svg></button></div>
+        <div class="insp-body">
+          <span class="chip chip--local" style="align-self:flex-start"><svg class="ic"><use href="#ic-local"/></svg>本地 · <span class="inst">Qwen3-4B</span></span>
+          <div class="exp-grp">
+            <p class="exp-hd">引用 2 <svg class="ic" style="margin-left:auto"><use href="#ic-chev"/></svg></p>
+            <div class="exp-item"><span class="num">1</span>
+              <span style="flex:1"><b>合同.pdf</b><br><span class="meta">p.12 · 相似度 0.87 · FTS 命中</span></span></div>
+            <div class="exp-item" style="background:var(--selected);border-radius:var(--r-sm)">
+              <span class="num">2</span>
+              <span style="flex:1"><b>合同.pdf</b><br><span class="meta">p.13 · 相似度 0.81</span>
+                <span class="quote" style="display:block;margin-top:4px">…赔偿总额不得超过合同总额的 <mark>30%</mark>…</span>
+                <button class="btn btn--ghost btn--sm" style="padding:0;margin-top:4px" type="button">打开原文</button></span></div>
+          </div>
+          <div class="exp-grp">
+            <p class="exp-hd">记忆 1 <svg class="ic" style="margin-left:auto"><use href="#ic-chev"/></svg></p>
+            <div class="exp-item"><span style="color:var(--success-fg);display:flex"><svg class="ic"><use href="#ic-dot-solid"/></svg></span>
+              <span style="flex:1">用户偏好引用国标编号</span><span class="i-m">0.91</span></div>
+          </div>
+          <div class="exp-grp">
+            <p class="exp-hd">Run 轨迹 5 步 <svg class="ic" style="margin-left:auto"><use href="#ic-chev"/></svg></p>
+            <p class="i-s tert" style="margin:0;display:flex;align-items:center;gap:4px">总计 5 步 · 12.4s · 3,204 tok · 含 1 次上下文整理 <svg class="ic"><use href="#ic-archived"/></svg></p>
+          </div>
+        </div>
+        <div class="insp-foot">ctx 72% · 23,593 / 32,768 tok</div>
+      </div>
+    </div>
+  </div>
+  <p class="tert t-body-s" style="margin-top:var(--s2)">lg：点溯源条任一字段 → 检视栏滚到对应分组并高亮（底色闪一次 120ms），正文引用芯片 <span class="cite" style="cursor:default">2</span> 同步选中；溯源条本身转 selected 态（中性底 + 左标记条）。检视栏 <strong>[R-11] 绝不做焦点陷阱</strong>——Tab 能自然进出；栏宽可拖 320–480vp，宽度持久化。<strong>本地大脑：拦截段不渲染</strong>（不存在出端），与上面 md 的远程态对照看。</p>
+</section>
+<style>
+.tiertbl{width:100%;border-collapse:collapse;font-size:13px;min-width:660px}
+.tiertbl th,.tiertbl td{padding:6px var(--s3);text-align:left;border-bottom:1px solid var(--border);height:32px}
+.tiertbl th{font-size:11px;letter-spacing:.08em;font-weight:600;color:var(--ink-3);background:var(--sunken)}
+.tiertbl td.n{font-family:var(--font-inst);font-variant-numeric:tabular-nums;text-align:right;font-weight:500}
+.tiertbl tr.bad td{color:var(--ink-2)}
+.tiertbl .stat{display:inline-flex;align-items:center;gap:4px;font-size:12px}
+.tiertbl .note-row td{border-bottom:1px solid var(--border);color:var(--danger-fg);font-size:12px;padding-top:0;height:auto}
+.report{border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);box-shadow:var(--elev1);
+  overflow:hidden}
+.report-hd{display:flex;align-items:center;gap:var(--s3);padding:var(--s3) var(--s4);border-bottom:1px solid var(--border);flex-wrap:wrap}
+.report-hd h3{font-size:16px;flex:1;min-width:180px}
+.counts{display:flex;gap:var(--s5);padding:var(--s3) var(--s4);background:var(--sunken)}
+.count{display:flex;flex-direction:column;gap:2px}
+.count b{font-family:var(--font-inst);font-variant-numeric:tabular-nums;font-size:20px;line-height:28px;font-weight:500}
+.count span{font-size:11px;color:var(--ink-3);letter-spacing:.08em}
+.rgrp{padding:var(--s3) var(--s4);border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:6px}
+.rgrp:last-child{border-bottom:0}
+.call{border-radius:var(--r-lg);border:1px solid var(--border-strong);background:var(--bg);padding:var(--s5) var(--s4);
+  display:flex;flex-direction:column;align-items:center;gap:var(--s3);box-shadow:var(--elev2)}
+.wave{display:flex;align-items:flex-end;gap:3px;height:56px}
+.wave i{width:4px;background:var(--local-fg);border-radius:var(--r-none);
+  animation:vu 900ms var(--ease-standard) infinite alternate}
+@keyframes vu{from{height:8px}to{height:48px}}
+@media (prefers-reduced-motion: reduce){.wave i{animation:none;height:26px}}
+.cap-line{display:flex;gap:var(--s2);font-size:14px;line-height:22px;width:100%}
+.cap-line .who{flex:none;color:var(--ink-3);font-size:12px;width:34px}
+.callbtns{display:flex;gap:var(--s5);align-items:center;margin-top:var(--s2)}
+.cbtn{width:56px;height:56px;border-radius:var(--r-full);border:1px solid var(--border-strong);
+  background:var(--surface);color:var(--ink);display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:2px;font-size:11px;cursor:pointer}
+.cbtn--end{width:64px;height:64px;background:var(--danger-fg);color:var(--danger-on);border-color:transparent}
+</style>
+
+<section class="sec" style="border-top:0">
+  <p class="sub">模型档位表（md / lg · compact 行高 32vp） —— 同指标纵向对齐，这正是 tabular-nums 的用武之地</p>
+  <div class="card" style="padding:0;overflow:hidden">
+    <div style="display:flex;align-items:center;gap:var(--s3);padding:var(--s3) var(--s4);flex-wrap:wrap">
+      <span class="chip chip--local"><svg class="ic"><use href="#ic-local"/></svg>本地</span>
+      <span class="chip chip--ghost">远程 Provider</span>
+      <span class="i-s tert" style="margin-left:auto">本机 16GB · 模型预算 8GB · 2in1</span>
+    </div>
+    <div class="scroll-x">
+      <table class="tiertbl">
+        <thead><tr><th>档位</th><th>模型</th><th style="text-align:right">大小</th><th style="text-align:right">内存</th><th style="text-align:right">速度</th><th style="text-align:right">上下文</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr><td><span class="stat" style="color:var(--local-fg)"><svg class="ic"><use href="#ic-local"/></svg>Nano</span></td>
+            <td>Qwen3-0.6B-Q4_K_M</td><td class="n">380MB</td><td class="n">0.6GB</td><td class="n">32.1 tok/s</td><td class="n">32,768</td>
+            <td><span class="tag tag--ok"><svg class="ic"><use href="#ic-ok"/></svg>就绪</span></td></tr>
+          <tr style="background:var(--selected)"><td><span class="stat" style="color:var(--local-fg)"><svg class="ic"><use href="#ic-local"/></svg>Standard</span></td>
+            <td>Qwen3-4B-Q4_K_M</td><td class="n">2.41GB</td><td class="n">3.1GB</td><td class="n">14.2 tok/s</td><td class="n">32,768</td>
+            <td><span class="tag tag--ok"><svg class="ic"><use href="#ic-ok"/></svg>就绪 · 当前</span></td></tr>
+          <tr><td><span class="stat" style="color:var(--local-fg)"><svg class="ic"><use href="#ic-local"/></svg>Standard</span></td>
+            <td>Qwen3-4B-Q5_K_M</td><td class="n">3.14GB</td><td class="n">3.9GB</td><td class="n">— tok/s</td><td class="n">32,768</td>
+            <td><button class="btn btn--ghost btn--sm" style="padding:0" type="button">下载 ›</button></td></tr>
+          <tr><td><span class="stat" style="color:var(--local-fg)"><svg class="ic"><use href="#ic-local"/></svg>Max</span></td>
+            <td>Qwen3-8B-Q4_K_M</td><td class="n">4.92GB</td><td class="n">6.2GB</td><td class="n">— tok/s</td><td class="n">32,768</td>
+            <td><span class="i-s tert">下载中 62%</span></td></tr>
+          <tr class="bad"><td><span class="stat" style="color:var(--danger-fg)"><svg class="ic"><use href="#ic-block"/></svg>Max</span></td>
+            <td>Qwen3-14B-Q4_K_M</td><td class="n">8.80GB</td><td class="n" style="color:var(--danger-fg)">10.4GB</td><td class="n">— tok/s</td><td class="n">32,768</td>
+            <td><span class="tag tag--danger"><svg class="ic"><use href="#ic-block"/></svg>内存不足</span></td></tr>
+          <tr class="note-row"><td colspan="7">本机内存放不下这个模型（预算 8GB，这个模型需要 10.4GB）。建议使用 Standard 档。 &nbsp;[ 仍要下载 ]</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div style="padding:var(--s3) var(--s4);display:flex;flex-direction:column;gap:6px;background:var(--sunken)">
+      <span style="display:flex;align-items:center;gap:var(--s2);font-size:13px">
+        <b>下载中</b> <span class="i-m">Qwen3-8B-Q4_K_M</span>
+        <span style="margin-left:auto;display:flex;gap:var(--s2)">
+          <button class="btn btn--secondary btn--sm" type="button">暂停</button>
+          <button class="btn btn--ghost btn--sm" type="button">取消</button></span></span>
+      <div class="prog"><i style="width:62%"></i></div>
+      <span class="i-s tert">3.05 / 4.92GB · 62.0% · 5.2 MB/s · 完成后校验 sha256（校验通过才算「已就绪」）</span>
+    </div>
+  </div>
+  <p class="tert t-body-s" style="margin-top:var(--s2)">未跑分显示 <span class="i-s">— tok/s</span> 而不是 <span class="i-s">0</span>——<strong>假值即错误</strong>。三态必须带形状（全部 SVG）：<span style="color:var(--success-fg)"><svg class="ic"><use href="#ic-ok"/></svg> 就绪</span> / <span style="color:var(--local-fg)"><svg class="ic"><use href="#ic-local"/></svg> 可运行（未下载）</span> / <span style="color:var(--danger-fg)"><svg class="ic"><use href="#ic-blocked"/></svg> 内存不足</span>。行选中态是<strong>中性</strong>的（<span class="i-s">surface_selected</span>），不泛青。</p>
+
+  <p class="sub">记忆整理报告 —— 冲突永远置顶；逐条撤销是本组件的存在理由</p>
+  <div class="report">
+    <div class="report-hd">
+      <h3>记忆整理 · 7 月 12 日 03:14</h3>
+      <div class="rail" style="border-left-color:var(--local-fg);flex:none">
+        <span class="seg"><span class="chip chip--local"><svg class="ic"><use href="#ic-local"/></svg>本地 · <span class="inst">Qwen3-0.6B</span></span></span>
+        <span class="sep">·</span><button class="hit" type="button"><span class="zh">引用记忆</span> 12</button>
+        <span class="sep">·</span><span class="meter">42s · 自动（设备空闲）</span>
+        <span class="caret"><svg class="ic"><use href="#ic-chev"/></svg></span>
+      </div>
+      <button class="btn btn--secondary btn--sm" type="button">全部撤销</button>
+    </div>
+    <div class="counts">
+      <span class="count"><b style="color:var(--success-fg)">7</b><span>新增</span></span>
+      <span class="count"><b style="color:var(--local-fg)">3</b><span>合并</span></span>
+      <span class="count"><b style="color:var(--ink-3)">12</b><span>归档</span></span>
+      <span class="count"><b style="color:var(--danger-fg)">1</b><span>冲突</span></span>
+      <span class="count" style="margin-left:auto;text-align:right"><b class="tert">128</b><span>处理条目</span></span>
+    </div>
+    <div class="rgrp">
+      <p class="exp-hd" style="color:var(--danger-fg);border-color:var(--danger-fg)">
+        <svg class="ic"><use href="#ic-warn"/></svg> 冲突（需你确认 1 条）· 永不自动裁决</p>
+      <div class="diff" style="background:var(--surface);border-left-color:var(--border-strong)">
+        <span class="pfx">A</span><span>项目截止日为 9 月 30 日</span><span class="val">0.82 · 会话#1204</span></div>
+      <div class="diff" style="background:var(--surface);border-left-color:var(--border-strong)">
+        <span class="pfx">B</span><span>项目截止日为 10 月 15 日</span><span class="val">0.88 · 会话#1330</span></div>
+      <span style="display:flex;gap:var(--s2);flex-wrap:wrap">
+        <button class="btn btn--secondary btn--sm" type="button">保留 A</button>
+        <button class="btn btn--secondary btn--sm" type="button">保留 B</button>
+        <button class="btn btn--ghost btn--sm" type="button">都留（标注情境差异）</button>
+        <button class="btn btn--ghost btn--sm" type="button">稍后处理</button></span>
+    </div>
+    <div class="rgrp">
+      <p class="exp-hd">合并 3 <svg class="ic" style="margin-left:auto"><use href="#ic-chev"/></svg></p>
+      <div class="diff diff--add"><span class="pfx">+</span>
+        <span>用户在合规部工作，关注密钥管理与国标符合性</span>
+        <span class="val">0.86</span>
+        <button class="btn btn--ghost btn--sm" style="padding:0 6px" type="button">撤销</button></div>
+      <div class="diff diff--del"><span class="pfx">−</span><span>用户在合规部工作</span><span class="val">0.71</span></div>
+      <div class="diff diff--del"><span class="pfx">−</span><span>用户关注国标符合性</span><span class="val">0.68</span></div>
+    </div>
+    <div class="rgrp">
+      <p class="exp-hd">画像更新（L3 蒸馏）· 行级 diff <svg class="ic" style="margin-left:auto"><use href="#ic-chev"/></svg></p>
+      <div class="diff diff--del"><span class="pfx">−</span><span>用户主要处理商业合同</span></div>
+      <div class="diff diff--add"><span class="pfx">+</span><span>用户主要处理商业合同与技术服务协议，关注违约责任与交付节点</span>
+        <button class="btn btn--ghost btn--sm" style="padding:0 6px;margin-left:auto" type="button">撤销</button></div>
+      <p class="i-s tert" style="margin-top:4px">蒸馏自 12 条高置信记忆 · oplog #o8821 · Phase D · 03:14:52 · 反向操作可用</p>
+    </div>
+    <div class="rgrp">
+      <p class="exp-hd">归档 12（低分遗忘，可搜回） <svg class="ic" style="margin-left:auto"><use href="#ic-chev"/></svg></p>
+      <p class="t-body-s tert" style="margin:0">上一轮被系统杀死后续跑：处理到 Phase B（34/128），本轮从游标继续。<strong>不假装一气呵成。</strong> <button class="btn btn--ghost btn--sm" style="padding:0 6px" type="button">查看续跑记录</button></p>
+    </div>
+  </div>
+  <p class="tert t-body-s" style="margin-top:var(--s2)"><strong>[R-34]</strong> 新增 / 删除除底色外必须有 <span class="i-s">+ / −</span> 前缀与朗读文本，禁止仅靠绿/红底。<strong>撤销不是 danger 操作</strong>——它是恢复：用 secondary 按钮，<strong>不弹破坏性确认框</strong>，撤销后原地 toast「已撤销，可重做」。<strong>[R-40]</strong> 撤销走 oplog 反向操作，不是"再跑一遍整理"。</p>
+
+  <p class="sub">电话模式（V1.5）—— 语音不是审计的豁免区</p>
+  <div class="mockrow">
+    <div class="call">
+      <div style="display:flex;align-items:center;width:100%;font-size:12px;color:var(--ink-3)">
+        <span>‹ 收起</span><span class="i-m" style="margin-left:auto;color:var(--ink)">42:07</span></div>
+      <span class="brain brain--handoff" style="align-self:center">
+        <svg class="ic h-l"><use href="#ic-local"/></svg><svg class="ic h-l"><use href="#ic-arrow-right"/></svg>
+        <svg class="ic h-r"><use href="#ic-remote"/></svg><span class="h-r">接管中 · 远程 · <span class="inst">GPT-4o</span></span></span>
+      <p class="t-title-m">正在聆听</p>
+      <div class="wave" aria-hidden="true">
+        <i style="animation-delay:0ms"></i><i style="animation-delay:80ms"></i><i style="animation-delay:160ms"></i>
+        <i style="animation-delay:240ms"></i><i style="animation-delay:60ms"></i><i style="animation-delay:200ms"></i>
+        <i style="animation-delay:120ms"></i><i style="animation-delay:300ms"></i><i style="animation-delay:40ms"></i>
+        <i style="animation-delay:180ms"></i><i style="animation-delay:100ms"></i><i style="animation-delay:260ms"></i>
+      </div>
+      <div style="width:100%;display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--border);padding-top:var(--s3)">
+        <p class="eyebrow">字幕（双向，可关）</p>
+        <div class="cap-line"><span class="who">你</span><span>第三章的违约金上限是多少？</span></div>
+        <div class="msg msg--local" style="background:transparent;padding-left:var(--s2)">
+          <div class="cap-line"><span class="who" style="width:64px">标准审查</span><span>不超过合同总额的百分之三十。</span></div>
+          <div class="rail rail--touch">
+            <span class="seg"><span class="chip chip--local"><svg class="ic"><use href="#ic-local"/></svg>本地 · <span class="inst">Qwen3-4B</span></span></span>
+            <span class="sep">·</span><button class="hit" type="button"><span class="zh">引用</span> 2</button>
+            <span class="sep">·</span><span class="meter">首音 780ms</span>
+            <span class="caret"><svg class="ic"><use href="#ic-chev"/></svg></span>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;color:var(--remote-fg);font-size:13px">
+          <svg class="ic"><use href="#ic-remote"/></svg>深度问题，已切换到远程强模型 · 内容将发送至 api.openai.com</div>
+      </div>
+      <div class="callbtns">
+        <button class="cbtn" type="button"><svg class="ic"><use href="#ic-mic"/></svg>静音</button>
+        <button class="cbtn cbtn--end" type="button"><svg class="ic"><use href="#ic-close"/></svg>挂断</button>
+        <button class="cbtn" type="button"><svg class="ic"><use href="#ic-keyboard"/></svg>切文本</button>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:var(--s4)">
+      <div class="card">
+        <p class="eyebrow" style="margin-bottom:var(--s3)">PC 最小化悬浮胶囊（radius_lg · elev_3 · 可拖动 · 置顶）</p>
+        <div style="display:inline-flex;align-items:center;gap:var(--s3);border-radius:var(--r-lg);
+          background:var(--raised);border:1px solid var(--border-strong);box-shadow:var(--elev3);padding:var(--s2) var(--s3)">
+          <span class="chip chip--local"><svg class="ic"><use href="#ic-local"/></svg>本地 · <span class="inst">Qwen3-4B</span></span>
+          <span class="wave" style="height:20px" aria-hidden="true"><i style="width:3px"></i><i style="width:3px;animation-delay:120ms"></i><i style="width:3px;animation-delay:60ms"></i><i style="width:3px;animation-delay:180ms"></i></span>
+          <span class="i-m">42:07</span>
+          <button class="iconbtn" type="button" aria-label="挂断"><svg class="ic"><use href="#ic-close"/></svg></button>
+        </div>
+        <p class="why" style="margin-top:var(--s3)"><strong>当前大脑指示器是电话模式的主角</strong>——语音里看不到消息流，唯一的溯源锚点就是它。三态：本地 / 远程 / <strong>接管中</strong>。切换时同时给音频提示（过场语「这个问题我想一下」）——盲操作场景下音频是主通道。</p>
+      </div>
+      <div class="card">
+        <p class="eyebrow" style="margin-bottom:var(--s2)">动效减弱降级</p>
+        <p class="t-body-s muted">声纹 → 静态电平条（离散 5 格，随音量跳变，无补间）；barge-in（用户打断）时声纹从"输出色"<strong>0ms 瞬切</strong>回"输入青"——打断的确认必须是瞬时的，过渡会读成"没听见"。</p>
+        <p class="t-body-s muted" style="margin-top:var(--s2)">触控目标：挂断 <span class="i-s">64vp</span>、静音/切文本 <span class="i-s">56vp</span>——远超 40vp 下限，因为场景常是单手、走动中、看不清屏幕。</p>
+      </div>
+    </div>
+  </div>
+</section>
+<style>
+.checks{display:grid;gap:var(--s4);grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.chk{display:flex;gap:var(--s2);align-items:flex-start;font-size:13px;line-height:20px;padding:4px 0}
+.chk .box{width:14px;height:14px;border:1px solid var(--border-strong);border-radius:2px;flex:none;margin-top:3px}
+.ship{width:100%;border-collapse:collapse;font-size:13px;min-width:640px}
+.ship th,.ship td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+.ship th{font-size:11px;letter-spacing:.08em;font-weight:600;color:var(--ink-3)}
+.ship td:first-child{white-space:nowrap;font-family:var(--font-inst);font-size:12px}
+.vtag{display:inline-flex;align-items:center;border-radius:var(--r-xs);padding:1px 5px;font-family:var(--font-inst);
+  font-size:11px;border:1px solid}
+/* 版本号与"在端/出端"毫无关系——染语义色会让 V1.5 被读成"远程功能包"。一律中性，靠字重区分。 */
+.v09{background:var(--sunken);color:var(--ink);border-color:var(--border-strong);font-weight:600}
+.v10{background:var(--sunken);color:var(--ink-2);border-color:var(--border-strong)}
+.v15{background:var(--sunken);color:var(--ink-3);border-color:var(--border)}
+.nocut{border-left:3px solid var(--danger-fg);background:var(--danger-bg);color:var(--ink);padding:var(--s3) var(--s4);
+  font-size:13px;line-height:21px;border-radius:0 var(--r-sm) var(--r-sm) 0}
+.foot{padding:var(--s6) 0 0;border-top:1px solid var(--border);margin-top:var(--s7);
+  display:flex;gap:var(--s3);flex-wrap:wrap;align-items:baseline;font-size:12px;color:var(--ink-3)}
+</style>
+
+<section class="sec" id="c-ship">
+  <div class="sec-hd">
+    <p class="eyebrow">07 / 交付</p>
+    <h2>版本归属与验收</h2>
+    <p class="note">签名元素不排在"以后"：溯源条、ctx 水位线、检视栏在 V0.9 就必须完整。</p>
+  </div>
+
+  <div class="card" style="padding:0">
+    <div class="scroll-x">
+      <table class="ship">
+        <thead><tr><th>版本 · 任务</th><th>界面</th><th>必须交付的组件</th></tr></thead>
+        <tbody>
+          <tr><td><span class="vtag v09">V0.9</span> T0.9-15</td><td>会话页（sm/md/lg）</td>
+            <td><b>B1 AdProvenanceRail</b>（四段完整 + 左→右点亮 + 展开态）· <b>B3 AdCtxGauge</b>（70/90 阈值 + 压缩态）· <b>B4 AdMessage</b>（非气泡 + 语义色带 + 流式/中断/错误）· <b>B2 AdBrainIndicator</b>（三态）· B5 AdCitationChip/Panel（含 OCR/VLM 警示）· B9 AdPrivacyFenceNotice · A1/A2/A3/A5/A10/A11/A12/A13</td></tr>
+          <tr><td><span class="vtag v09">V0.9</span> T0.9-10</td><td>首启向导 · 模型页</td>
+            <td><b>B7 AdModelTierCard</b>（档位三态 + sha256 四态 + 许可出处）· A9 AdSlider · A8 AdSwitch（隐私语义色例外：开 = 琥珀）· API Key 字段</td></tr>
+          <tr><td><span class="vtag v09">V0.9</span> T0.9-18</td><td>知识库</td>
+            <td>A5 · A6（隐私级别徽标）· A10（断点续传态）· A13（隐私级别降级确认）· 检索调试器精简版</td></tr>
+          <tr><td><span class="vtag v09">V0.9</span> T0.9-16 / 27</td><td>Agent 极简 · 设置 + 开源许可</td>
+            <td>A3 AdTextArea（常驻 token 计数）· A4 · A8 · A13</td></tr>
+          <tr><td><span class="vtag v09">V0.9</span> 贯穿</td><td>三端骨架</td>
+            <td><b>C1 AdNavShell · C2 AdSplitView · C3 AdInspector</b>（lg 第三栏 + md/sm Sheet 降级——检视栏是签名元素的落点，<b>不可裁</b>）</td></tr>
+          <tr><td><span class="vtag v10">V1.0</span> T1.0-10</td><td>Agent 完整版（lg 三栏）</td>
+            <td><b>B10 AdRunTrace</b>（含上下文整理事件与 R4 检测标注）· <b>B6 AdToolCard</b>（权限确认态 + artifact 外置提示）</td></tr>
+          <tr><td><span class="vtag v10">V1.0</span> T1.0-11</td><td>记忆（时间线 / 冲突 / L3 diff）</td>
+            <td><b>B8 AdMemoryItem + AdConsolidationReport</b>（逐条撤销是存在理由；冲突永远置顶）</td></tr>
+          <tr><td><span class="vtag v10">V1.0</span> T1.0-15</td><td>PC 专项第一批</td>
+            <td>A14 AdMenu · A15 AdSearchField（Ctrl+K）· 拖拽落区 · hover 规则 · 窗口降级阶梯</td></tr>
+          <tr><td><span class="vtag v15">V1.5</span> T1.5-08</td><td>电话模式</td>
+            <td><b>B11 AdCallControls</b>（声纹 + 双向字幕 + <b>字幕内溯源条</b> + 接管态）· B2 放大态</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="nocut" style="margin-top:var(--s4)">
+    <b>V0.9 不可裁清单</b>：溯源条（B1）· ctx 水位线（B3）· 语义色轴四重冗余 · 隐私围栏预检条 + 事后审计 · 检视栏及其降级路径 · 开源许可展示页 · 对比度全表 CI 断言。<br>
+    <strong>这些是产品立场的物质化，砍掉它们就不是这个产品了。</strong>
+  </div>
+
+  <p class="sub">设计验收清单摘要（发版前逐条勾选）</p>
+  <div class="checks">
+    <div class="card">
+      <p class="eyebrow" style="margin-bottom:var(--s2)">立场层 · 不通过不发版</p>
+      <div class="chk"><span class="box"></span><span>打开任意一屏，<b>3 秒内能看出这次回答有没有离开设备</b>（色 + 形 + 字三重可见）</span></div>
+      <div class="chk"><span class="box"></span><span>溯源条出现在<b>全部五处</b>：助手消息 / 电话字幕 / Run 轨迹每步 / 整理报告 / 检索调试器结果头</span></div>
+      <div class="chk"><span class="box"></span><span>隐私围栏<b>事前预检 + 事后审计两者都在</b>，拦截明细可逐条展开</span></div>
+      <div class="chk"><span class="box"></span><span>记忆整理的<b>每一条</b>变更都可逐条撤销，且走 oplog 反向操作</span></div>
+      <div class="chk"><span class="box"></span><span>全 App 无渐变英雄区、无 emoji 分区标记、无全局圆角一刀切、无 <span class="i-s">#007DFF</span> 作品牌色</span></div>
+      <div class="chk"><span class="box"></span><span>无"通用聊天 App 外观"（左右气泡 + 圆头像 + 大发送按钮那一套）</span></div>
+    </div>
+    <div class="card">
+      <p class="eyebrow" style="margin-bottom:var(--s2)">令牌层 / 组件层</p>
+      <div class="chk"><span class="box"></span><span><span class="i-s">.ets</span> 中零 hex 字面量、零字号魔法数；浅深两套 color.json 的 name 集合完全一致</span></div>
+      <div class="chk"><span class="box"></span><span>对比度全表脚本断言通过（<b>0 项不达标</b>）；深色不用阴影</span></div>
+      <div class="chk"><span class="box"></span><span>圆角分级正确：仪表 none / 芯片 xs / 按钮 sm / 卡片 md；full 仅白名单</span></div>
+      <div class="chk"><span class="box"></span><span>每个可交互组件六态齐全；禁用态无 <span class="i-s">opacity(0.4)</span></span></div>
+      <div class="chk"><span class="box"></span><span>语义色处四重冗余齐全（grep <span class="i-s">localFg|remoteFg|localBg|remoteBg</span> 逐个核过）</span></div>
+      <div class="chk"><span class="box"></span><span>含溯源信息的列表 / 消息<b>选中态是中性的，未泛青</b></span></div>
+      <div class="chk"><span class="box"></span><span>强制清单里的数字全走 instrument + tabular-nums；<b>助手正文里的数字未被 mono 化</b></span></div>
+    </div>
+    <div class="card">
+      <p class="eyebrow" style="margin-bottom:var(--s2)">断点 / 可访问性 / 隐私红线 / 文案</p>
+      <div class="chk"><span class="box"></span><span>检视栏在 md/sm 的 Sheet 降级、840–1232vp 的 overlay 降级已验证，<b>内容完全相同</b></span></div>
+      <div class="chk"><span class="box"></span><span>正文列宽上限 720vp；溯源条与正文左对齐同一基线</span></div>
+      <div class="chk"><span class="box"></span><span>系统字体 <span class="i-s">1.75x</span> 全流程可用、<span class="i-s">3.2x</span> 不崩；1.3x 以上溯源条降级两行，<b>内容一条不减</b></span></div>
+      <div class="chk"><span class="box"></span><span>溯源条 / 围栏 / 记忆撤销在<b>无色觉 · 无视觉 · 无动效 · 大字体 · 无指针</b>五条降级路径下 100% 无损可达</span></div>
+      <div class="chk"><span class="box"></span><span>流式期间未逐 token 播报；ctx 跨 70% / 90% 各主动播报一次</span></div>
+      <div class="chk"><span class="box"></span><span>UI 层<b>不存在任何"绕过围栏"的开关</b>；三个恒常可见项（当前大脑 / 围栏预检条 / 溯源条首段）不可被关闭</span></div>
+      <div class="chk"><span class="box"></span><span>toast 全部是「已 + 动词」，无"成功"二字；<b>离线用 info 而非 danger</b>——离线是本产品的正常工况，不是错误</span></div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span>AgentDock 设计系统展板 · 依据《UI设计规范（权威文档）》 §2 令牌 / §3 组件 / §4 界面 / §9 版本归属 / §10 验收</span>
+    <span style="margin-left:auto" class="i-s">明暗双主题 · 色盲安全 · WCAG 全表 0 项不达标</span>
+  </div>
+</section>
+
+<script>
+(function(){
+  var root = document.documentElement;
+  var btn = document.getElementById('themebtn');
+  var lbl = document.getElementById('themelabel');
+  function current(){
+    var t = root.getAttribute('data-theme');
+    if (t) return t;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  function sync(){
+    var dark = current() === 'dark';
+    lbl.textContent = dark ? '切到浅色' : '切到暗色';
+    btn.setAttribute('aria-pressed', dark ? 'true' : 'false');
+  }
+  btn.addEventListener('click', function(){
+    root.setAttribute('data-theme', current() === 'dark' ? 'light' : 'dark');
+    sync();
+  });
+  sync();
+
+  var rail = document.getElementById('rail-demo');
+  var replay = document.getElementById('replay');
+  replay.addEventListener('click', function(){
+    rail.classList.remove('play');
+    void rail.offsetWidth;
+    rail.classList.add('play');
+  });
+})();
+</script>
+</div>
+</div>

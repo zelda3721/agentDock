@@ -13,18 +13,29 @@ import window from '@ohos.window';
 import display from '@ohos.display';
 import deviceInfo from '@ohos.deviceInfo';
 import hilog from '@ohos.hilog';
+import config from '@ohos.accessibility.config';
+import { MotionPreference } from 'design-system';
 import { BreakpointSystem } from '../common/BreakpointSystem';
 
 const DOMAIN: number = 0x1001;
 const TAG: string = 'EntryAbility';
 
-/** PC（2in1）最小窗口尺寸，单位 vp（设计文档 §8 PC 专项） */
-const PC_MIN_WIDTH_VP: number = 840;
+/**
+ * PC（2in1）最小窗口尺寸，单位 vp（UI 设计规范 §7.5）。
+ *
+ * 896 而非 840：按 [R-69] 同一套计法，双栏一档的下限是
+ * 折叠侧栏 56 + 页边距 48 + 列表 280 + 栏间距 16×2 + 聊天 min 480 = 896vp。
+ * 840 的旧值在算术上装不下「列表 280 + 聊天 min 480」，最小窗口下必然挤爆。
+ */
+const PC_MIN_WIDTH_VP: number = 896;
 const PC_MIN_HEIGHT_VP: number = 600;
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(DOMAIN, TAG, 'onCreate, deviceType=%{public}s', deviceInfo.deviceType);
+    // 动效减弱偏好（§2.7.4）：读取系统"减少动画"配置并监听变更。
+    // **读不到配置时按"已开启"保守处理**——MotionPreference 默认即 true，此处只在读到时下调。
+    this.initMotionPreference();
     // TODO(T0.9-03): 按设计文档 §7 在此初始化 core-data（RDB 打开 + schema 迁移 + 文件沙箱布局）
     // TODO(T0.9-04): 按设计文档 §2 在此初始化 core-infra（日志、事件总线、配置、任务队列）
   }
@@ -63,7 +74,29 @@ export default class EntryAbility extends UIAbility {
   }
 
   /**
-   * PC（2in1）窗口策略（设计文档 §8）：最小尺寸 840×600 vp + 记忆窗口大小位置。
+   * 动效减弱偏好接线（design-system Index.ets 头注释要求：entry 启动时必须调用 MotionPreference.set）。
+   * 无障碍配置读取失败时**不改动**默认值（保守按"已开启减弱"处理）。
+   */
+  private initMotionPreference(): void {
+    try {
+      const animationOff: config.Config<boolean> = config.animationOff;
+      animationOff.get().then((reduced: boolean): void => {
+        MotionPreference.set(reduced);
+        hilog.info(DOMAIN, TAG, 'MotionPreference.set(%{public}s)', String(reduced));
+      }).catch((e: Error): void => {
+        hilog.warn(DOMAIN, TAG, 'read animationOff failed, keep reduce-motion=true: %{public}s', e.message);
+      });
+      // 监听变更：用户在系统设置里改"减少动画"时即时生效
+      animationOff.on('change', (reduced: boolean): void => {
+        MotionPreference.set(reduced);
+      });
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'accessibility config unavailable, keep reduce-motion=true');
+    }
+  }
+
+  /**
+   * PC（2in1）窗口策略（UI 设计规范 §7.5）：最小尺寸 896×600 vp + 记忆窗口大小位置。
    * 非 2in1 设备（phone/tablet）直接跳过——手机/平板不支持自由窗口尺寸设置。
    */
   private applyPcWindowPolicy(windowStage: window.WindowStage): void {
@@ -79,7 +112,7 @@ export default class EntryAbility extends UIAbility {
     try {
       const mainWindow: window.Window = windowStage.getMainWindowSync();
 
-      // window.WindowLimits 的单位是 px，而设计文档给的 840×600 是 vp，需按屏幕密度换算。
+      // window.WindowLimits 的单位是 px，而规范给的 896×600 是 vp，需按屏幕密度换算。
       // TODO(T0.9-02/§8 存疑): 确认 API 20 的 setWindowLimits 单位确为 px（若已改为 vp 则去掉换算）；
       //   同时确认 densityPixels 在多显示器/外接屏场景下应取主显示还是窗口所在显示。
       const densityPixels: number = display.getDefaultDisplaySync().densityPixels;

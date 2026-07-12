@@ -85,7 +85,8 @@ AgentDock/
 │   ├── core-agent/               # 受控 ReAct 循环、工具总线、ContextGovernor
 │   ├── core-memory/              # 记忆分层、五阶段整理引擎、RecallService
 │   ├── core-data/                # RDB(SQLite)+FTS5、schema 迁移、沙箱文件
-│   └── core-infra/               # 日志、事件总线、配置、错误码（无内部依赖）
+│   ├── core-infra/               # 日志、事件总线、配置、错误码（无内部依赖）
+│   └── design-system/            # 设计令牌（青=本地/琥珀=远程）+ Ad 组件集（无内部依赖）
 ├── native/                       # NAPI C++17
 │   ├── llama_bridge/             # llama.cpp (GGUF) + FFRT 线程池
 │   ├── vec_index/                # hnswlib 向量索引
@@ -101,8 +102,9 @@ AgentDock/
 **依赖方向严格单向**（反向即循环，Code Review 驳回）：
 
 ```
-entry → features/* + common/core-*
-features/* → common/core-*                     （features 之间不得互相依赖）
+entry → features/* + common/core-* + design-system
+features/* → common/core-* + design-system     （features 之间不得互相依赖）
+design-system → （无内部依赖：纯 UI 令牌与组件，禁止反向依赖 core-* / features）
 core-agent → core-llm, core-rag, core-memory, core-data, core-infra
 core-rag   → core-llm, core-data, core-infra, vec-index, doc-parsers
 core-memory→ core-llm, core-data, core-infra

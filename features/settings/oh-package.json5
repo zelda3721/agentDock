@@ -8,6 +8,7 @@
   "author": "AgentDock",
   "license": "Apache-2.0",
   "dependencies": {
+    "design-system": "file:../../common/design-system",
     "core-data": "file:../../common/core-data",
     "core-infra": "file:../../common/core-infra"
   }

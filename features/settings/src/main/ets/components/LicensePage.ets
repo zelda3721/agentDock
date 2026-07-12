@@ -14,6 +14,17 @@ import { BreakpointKey, SettingsFacade, ThirdPartyLicense } from '../model/Setti
  *
  * TODO(T0.9-27): 按设计文档 §22.1/§22.4 实现许可清单读取与全文展示（本项目 Apache-2.0 + 每个依赖一份原文）。
  */
+/**
+ * TODO(T0.9-27 · UI-MIGRATION): 迁移到 design-system —— UI 设计规范 §3「features 只消费不自造」。
+ *   本文件当前**自造**了排版与色彩，design-system 依赖已在 oh-package.json5 声明但尚未消费
+ *   （"已接线未通电"）。迁移清单：
+ *     · 字号 → AdType.*（[R-24] 禁止裸字号；标题 titleS/bodyM、说明 bodyS/caption）
+ *     · 颜色 → AdColor.*（§2.8.2 铁律：ets 层颜色必须是 Resource，禁止 hex 字面量）
+ *     · 仪表数字（token 计数 / 进度 % / 字节数 / sha256）→ AdType.instrumentS + AdType.TABULAR（§2.4.3）
+ *     · 列表行 → AdListItem；卡片 → AdCard；本地/远程徽标 → AdTag（自带四重冗余 [R-31]）
+ *   在完成迁移前，本文件登记在 tools/ui/ui-debt.json 的迁移账本中；
+ *   **门禁 check-tokens.mjs 只放行账本内的既有欠账，账本外的任何新违规一律 exit 1。**
+ */
 @Component
 export struct LicensePage {
   @Prop breakpoint: BreakpointKey = 'sm';

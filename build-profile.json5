@@ -188,6 +188,18 @@
       ]
     },
     {
+      "name": "design_system",
+      "srcPath": "./common/design-system",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    },
+    {
       "name": "llama_bridge",
       "srcPath": "./native/llama_bridge",
       "targets": [

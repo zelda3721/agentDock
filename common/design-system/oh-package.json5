@@ -1,0 +1,11 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  "name": "design-system",
+  "version": "1.0.0",
+  "description": "AgentDock 设计系统：语义色令牌（青=本地 / 琥珀=远程）、排版与仪表体、间距圆角层级动效令牌、Ad 组件集（基础层 + 产品层）",
+  "main": "Index.ets",
+  "author": "AgentDock",
+  "license": "Apache-2.0",
+  "dependencies": {}
+}

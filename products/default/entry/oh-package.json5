@@ -8,6 +8,8 @@
   "author": "AgentDock",
   "license": "Apache-2.0",
   "dependencies": {
+    // 设计系统（HAR）——令牌 + Ad 组件集，entry 与 6 个 feature 共享（UI 设计规范 §3）
+    "design-system": "file:../../../common/design-system",
     // 基础特性层（HSP）——6 个 feature，全部由 entry 装配
     "chat": "file:../../../features/chat",
     "agents": "file:../../../features/agents",

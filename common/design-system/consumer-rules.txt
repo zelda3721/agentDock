@@ -1,0 +1,2 @@
+# design-system 传递给消费方（HAP/HSP）的混淆规则：暂无
+# 注意：若后续开启混淆，资源名（ad_* color/float）与 @Component 名不得被混淆，否则 $r 解析与组件复用失效。

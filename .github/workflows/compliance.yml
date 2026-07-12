@@ -56,6 +56,36 @@ jobs:
       - name: 模型清单校验
         run: node tools/models/validate-manifest.mjs
 
+  ui-gate:
+    name: UI 设计门禁（UI 设计规范 §2.9）
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 1/4 —— [R-04] 改任何一个 hex 必须跑通对比度全表；hex 从 color.json 实读现算，不抄规范里的数字
+      - name: 对比度全表断言
+        run: node tools/ui/check-contrast.mjs
+
+      # 2/4 —— §2.8.2 零 hex 字面量 · [R-24] 零裸字号 · [R-03a] 实心前景不得是 Color.White
+      #        · 两套 color.json name 集合一致 · 品牌轴与语义轴不得混用（[R-32]）
+      - name: 令牌纪律
+        run: node tools/ui/check-tokens.mjs
+
+      # 3/4 —— [R-100] 形状冗余必须由 SVG 提供：emoji presentation 会渲染成彩色，无视 currentColor，
+      #        而「warning 恒带 △」是 warning 与 remote 不混淆的唯一保障——载体不可控，冗余就不成立
+      - name: 形状冗余（禁 emoji / 系统字形）
+        run: node tools/ui/check-glyphs.mjs
+
+      # 4/4 —— §5 文案纪律：术语表、动词一致、单位空格、[R-41] 无宾语确认
+      - name: 文案纪律
+        run: node tools/ui/check-copy.mjs
+
       # TODO(T0.9-22): 待金标集建成（W7）后接入——涉及 core-rag 的 PR 必跑 recall@6 ≥85%。
       #                当前检索链路未通，仅做金标集格式校验（金标文件尚未创建时跳过）。
       # TODO(T0.9-22): 待 ContextGovernor（T0.9-17）交付后，接入压缩回归 V0.9 最小子集，
