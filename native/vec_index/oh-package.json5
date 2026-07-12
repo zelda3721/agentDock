@@ -1,0 +1,13 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  "name": "vec-index",
+  "version": "1.0.0",
+  "description": "向量索引 NAPI 模块（hnswlib + float16 平面文件），见设计文档 §4.1",
+  "main": "Index.ets",
+  "author": "AgentDock",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "libvec_index.so": "file:./src/main/cpp/types/libvec_index"
+  }
+}

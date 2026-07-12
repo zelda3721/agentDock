@@ -1,0 +1,17 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  "name": "core-agent",
+  "version": "1.0.0",
+  "description": "Agent 运行时：声明式 Agent 定义、受控 ReAct 循环、工具总线、上下文治理（ContextGovernor / FidelityGate）",
+  "main": "Index.ets",
+  "author": "AgentDock",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "core-llm": "file:../core-llm",
+    "core-rag": "file:../core-rag",
+    "core-memory": "file:../core-memory",
+    "core-data": "file:../core-data",
+    "core-infra": "file:../core-infra"
+  }
+}

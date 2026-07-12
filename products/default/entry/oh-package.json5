@@ -1,0 +1,23 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "AgentDock 入口 HAP：窗口策略、断点布局装配、PC 快捷键注册（设计文档 §2 products 层）",
+  "main": "",
+  "author": "AgentDock",
+  "license": "Apache-2.0",
+  "dependencies": {
+    // 基础特性层（HSP）——6 个 feature，全部由 entry 装配
+    "chat": "file:../../../features/chat",
+    "agents": "file:../../../features/agents",
+    "knowledge": "file:../../../features/knowledge",
+    "memory": "file:../../../features/memory",
+    "models": "file:../../../features/models",
+    "settings": "file:../../../features/settings",
+    // 公共能力层（HAR）——entry 直接需要的：日志/事件总线/配置（core-infra）、启动期数据库初始化（core-data）
+    // 其余 core-* 由各 feature 自行依赖，entry 不越层直连（设计文档 §2 依赖方向）
+    "core-infra": "file:../../../common/core-infra",
+    "core-data": "file:../../../common/core-data"
+  }
+}

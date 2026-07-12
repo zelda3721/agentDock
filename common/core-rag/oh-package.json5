@@ -1,0 +1,17 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  "name": "core-rag",
+  "version": "1.0.0",
+  "description": "知识库子系统：解析→切片→Embedding→索引→混合检索→上下文装配（含隐私围栏强制执行点）",
+  "main": "Index.ets",
+  "author": "AgentDock",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "core-llm": "file:../core-llm",
+    "core-data": "file:../core-data",
+    "core-infra": "file:../core-infra",
+    "vec-index": "file:../../native/vec_index",
+    "doc-parsers": "file:../../native/doc_parsers"
+  }
+}

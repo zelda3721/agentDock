@@ -1,0 +1,13 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  "name": "core-data",
+  "version": "1.0.0",
+  "description": "AgentDock 数据层：RDB 封装（加密/WAL）、schema 与版本化迁移、沙箱文件仓库、备份导入导出",
+  "main": "Index.ets",
+  "author": "AgentDock",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "core-infra": "file:../core-infra"
+  }
+}

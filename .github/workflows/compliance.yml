@@ -1,0 +1,63 @@
+# Copyright (c) 2026 AgentDock Contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# 合规门禁（开发计划 §11.2「许可证 CI，W1 起 PR 级门禁」/ §10 / 红线 10/14/21/22/23）。
+#
+# 设计要点：本 workflow **不需要 ohpm / hvigor / DevEco**——它只跑纯 Node 静态检查，
+# 因此在 GitHub 免费 runner 上即可稳定通过（真机构建见 build.yml 的说明）。
+# 零第三方依赖：不执行 npm install，脚本全部是本机 Node 22 直跑的 ESM。
+
+name: compliance
+
+on:
+  pull_request:
+    branches: ['**']
+  push:
+    branches: ['**']
+
+# 最小权限：只读仓库内容
+permissions:
+  contents: read
+
+concurrency:
+  group: compliance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  license-and-redlines:
+    name: 许可与红线门禁
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          # 无 lockfile、无依赖，故不配置 cache
+
+      - name: 环境自检
+        run: node --version
+
+      # 红线 22 / §22.4：全源文件 SPDX 头
+      - name: SPDX 许可头检查
+        run: node tools/license/check-spdx.mjs
+
+      # 红线 21 / §11.2：依赖树许可审计（白名单外即 fail）
+      - name: 依赖许可审计
+        run: node tools/license/check-deps.mjs
+
+      # 红线 10（R1 MuPDF）/ 14（R5 权重）/ 23（签名材料）
+      - name: R1/R5 防复发门禁
+        run: node tools/license/check-forbidden.mjs
+
+      # 红线 14 / §11.3：模型清单（含「sha256 为 null 必须标 pending-verification」）
+      - name: 模型清单校验
+        run: node tools/models/validate-manifest.mjs
+
+      # TODO(T0.9-22): 待金标集建成（W7）后接入——涉及 core-rag 的 PR 必跑 recall@6 ≥85%。
+      #                当前检索链路未通，仅做金标集格式校验（金标文件尚未创建时跳过）。
+      # TODO(T0.9-22): 待 ContextGovernor（T0.9-17）交付后，接入压缩回归 V0.9 最小子集，
+      #                W8 起对压缩逻辑改动作**合并门禁**（红线 27，无豁免期）：
+      #                node tools/eval/compression-regression/run-regression.mjs

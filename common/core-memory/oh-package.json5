@@ -1,0 +1,15 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  "name": "core-memory",
+  "version": "1.0.0",
+  "description": "记忆子系统：L0–L3 分层记忆模型、在线抽取、五阶段整理引擎（可续跑）、oplog 撤销、召回服务",
+  "main": "Index.ets",
+  "author": "AgentDock",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "core-llm": "file:../core-llm",
+    "core-data": "file:../core-data",
+    "core-infra": "file:../core-infra"
+  }
+}

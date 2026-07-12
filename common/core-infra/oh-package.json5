@@ -1,0 +1,11 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  "name": "core-infra",
+  "version": "1.0.0",
+  "description": "AgentDock 基础设施层：日志（脱敏/环形缓冲）、事件总线、持久化任务队列、配置、密钥仓、指标",
+  "main": "Index.ets",
+  "author": "AgentDock",
+  "license": "Apache-2.0",
+  "dependencies": {}
+}

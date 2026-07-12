@@ -1,0 +1,59 @@
+# Copyright (c) 2026 AgentDock Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+# ---------- 依赖 ----------
+/node_modules
+/oh_modules
+**/node_modules
+**/oh_modules
+
+# ---------- 构建产物 ----------
+/.hvigor
+**/.hvigor
+.cxx
+**/.cxx
+/build
+**/build
+/.clangd
+/.clang-format
+/.clang-tidy
+/.appanalyzer
+/.test
+
+# ---------- 打包产物 ----------
+*.har
+*.hsp
+*.hap
+*.app
+
+# ---------- 本地环境 ----------
+local.properties
+/.idea
+**/.idea
+.DS_Store
+**/.DS_Store
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# ---------- 签名材料（严禁入库） ----------
+*.p12
+*.p7b
+*.cer
+*.csr
+keystore*
+/signature
+**/signature
+
+# ---------- 模型权重（体积过大，走外部分发） ----------
+*.gguf
+*.onnx
+*.safetensors
+*.bin
+*.pt
+
+# ---------- native 三方源码（由脚本拉取，仅保留占位与说明） ----------
+# 注意：git 无法“重新包含”被忽略目录内部的文件，因此只忽略 third_party 的直接子项，
+# 并显式放行 .gitkeep 与 README.md；被忽略目录（如 llama.cpp/）内部内容自然一并忽略。
+native/*/third_party/*
+!native/*/third_party/.gitkeep
+!native/*/third_party/README.md

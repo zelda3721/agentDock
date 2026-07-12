@@ -1,0 +1,9 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  "module": {
+    "name": "core_memory",
+    "type": "har",
+    "deviceTypes": ["phone", "tablet", "2in1"]
+  }
+}

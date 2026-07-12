@@ -1,0 +1,55 @@
+# Copyright (c) 2026 AgentDock Contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# ============================================================================
+# 构建 / 真机冒烟 —— 当前为**占位骨架**，故意不做任何构建动作。
+# ============================================================================
+#
+# 为什么这里是空的（重要，勿"补全"成假构建）：
+#
+#   1. HarmonyOS 的构建链（DevEco Studio 6.x / hvigor / ohpm / HarmonyOS SDK）
+#      **没有公开的 GitHub Action，也没有可用的免费 runner**——SDK 受华为专有 EULA
+#      约束，不能在公共 CI 镜像里分发；ubuntu-latest 上既装不了 DevEco，也跑不了 hvigor。
+#   2. 因此本仓库当前**不存在**能在 GitHub 托管 runner 上跑通的构建步骤。
+#      写一个 `hvigorw assembleHap` 只会得到一个必然红的 job——
+#      长期红灯的 CI 等于没有 CI，还会淹没 compliance.yml 的真实信号。
+#   3. 静态合规门禁不依赖构建链，已单独放在 compliance.yml，在免费 runner 上正常跑。
+#
+# 所以：本 workflow 仅 workflow_dispatch（手动触发）占位，不挂 pull_request / push。
+#
+# ----------------------------------------------------------------------------
+# TODO(T0.9-22): 接入**自托管 runner**（装有 DevEco Studio 6.x + HarmonyOS SDK + 三台真机）后，
+#                在此实现构建与真机冒烟四用例（开发计划 §10 / §0-7 / §5.4-4）：
+#
+#                  构建：hvigorw --mode module -p product=default assembleHap
+#                  冒烟四用例（模型加载 / 生成 / abort / embed）
+#                    × 三真机（Mate 手机 / MatePad / 鸿蒙笔记本）
+#
+#                生效点：W5 首跑；W8 起入发版检查单（每次发版必过，§10）。
+#                届时把 `runs-on` 换成自托管标签（如 [self-hosted, harmonyos, deveco6]），
+#                并把触发器改为 pull_request + push。
+# ----------------------------------------------------------------------------
+
+name: build (placeholder)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  placeholder:
+    name: 构建占位（说明为何暂不构建）
+    runs-on: ubuntu-latest
+    steps:
+      - name: 说明
+        run: |
+          echo "本 job 不执行构建，只输出说明。"
+          echo ""
+          echo "HarmonyOS 构建链（DevEco/hvigor/ohpm/HarmonyOS SDK）无公开 GitHub Action"
+          echo "与免费 runner，故此处为 workflow_dispatch 占位。"
+          echo ""
+          echo "静态合规门禁见 .github/workflows/compliance.yml（在免费 runner 上正常跑）。"
+          echo "真机构建与冒烟四用例（加载/生成/abort/embed × 三真机）待接入自托管 runner，"
+          echo "见本文件 TODO(T0.9-22) 与开发计划 §10。"

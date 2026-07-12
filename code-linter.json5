@@ -1,0 +1,20 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  // 参与静态检查的文件
+  "files": [
+    "**/*.ets"
+  ],
+  // 排除目录：依赖与构建产物
+  "ignore": [
+    "**/node_modules/**",
+    "**/oh_modules/**",
+    "**/build/**"
+  ],
+  // 规则集：性能推荐规则 + TypeScript 推荐规则
+  "ruleSet": [
+    "plugin:@performance/recommended",
+    "plugin:@typescript-eslint/recommended"
+  ],
+  "rules": {}
+}

@@ -1,0 +1,15 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  "name": "memory",
+  "version": "1.0.0",
+  "description": "AgentDock 记忆浏览与整理 UI（HSP，V1.0 启用）",
+  "main": "Index.ets",
+  "author": "AgentDock",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "core-memory": "file:../../common/core-memory",
+    "core-data": "file:../../common/core-data",
+    "core-infra": "file:../../common/core-infra"
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "string": [
+    {
+      "name": "app_name",
+      "value": "AgentDock"
+    },
+    {
+      "name": "module_desc",
+      "value": "AgentDock 入口模块：窗口策略、三端断点布局装配与 PC 快捷键注册"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "AgentDock 主入口 Ability"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "AgentDock"
+    },
+    {
+      "name": "permission_internet_reason",
+      "value": "用于访问您配置的远程模型服务与下载本地模型文件；未配置远程服务时不会联网发送任何内容"
+    },
+    {
+      "name": "tab_chat",
+      "value": "会话"
+    },
+    {
+      "name": "tab_agents",
+      "value": "智能体"
+    },
+    {
+      "name": "tab_knowledge",
+      "value": "知识库"
+    },
+    {
+      "name": "tab_memory",
+      "value": "记忆"
+    },
+    {
+      "name": "tab_settings",
+      "value": "设置"
+    }
+  ]
+}

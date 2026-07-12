@@ -1,0 +1,14 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  "name": "core-llm",
+  "version": "1.0.0",
+  "description": "推理层：InferenceProvider 抽象、流式协议归一化、ModelRouter 路由与 R3 优先级抢占队列",
+  "main": "Index.ets",
+  "author": "AgentDock",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "core-infra": "file:../core-infra",
+    "llama-bridge": "file:../../native/llama_bridge"
+  }
+}

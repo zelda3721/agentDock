@@ -1,0 +1,15 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  "modelVersion": "6.0.0",
+  // hvigor 插件依赖：由 DevEco Studio 自动补全 @ohos/hvigor-ohos-plugin 版本
+  "dependencies": {},
+  // 构建执行配置（analyze / daemon / incremental / parallel / typeCheck 等）
+  "execution": {},
+  // 日志配置（level）
+  "logging": {},
+  // 调试配置（stacktrace）
+  "debugging": {},
+  // Node 运行参数（maxOldSpaceSize / exposeGC 等）
+  "nodeOptions": {}
+}

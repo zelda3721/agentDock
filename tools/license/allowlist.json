@@ -1,0 +1,36 @@
+{
+  "_comment": "外部依赖许可白名单（§22.1/§22.4，红线 21）。严格 JSON 不支持注释，故说明字段以 _ 前缀承载。新增外部依赖必须先在 dependencies 中登记（含 license/来源/用途），且 license 必须落在 allowedLicenses 内，否则 check-deps 门禁 fail。",
+  "allowedLicenses": [
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Apache-2.0",
+    "ISC",
+    "Zlib",
+    "Public-Domain"
+  ],
+  "_forbiddenNote": "GPL / AGPL / LGPL / SSPL / proprietary 一律 fail——防 R1 类问题（MuPDF AGPL-3.0）复发，见开发计划红线 10/21。",
+  "forbiddenLicensePatterns": [
+    "GPL",
+    "AGPL",
+    "LGPL",
+    "SSPL",
+    "proprietary",
+    "commercial",
+    "CC-BY-NC",
+    "BUSL",
+    "Elastic",
+    "SSPL-1.0"
+  ],
+  "_dependenciesNote": "V0.9 骨架期只登记测试框架一项（编码规范：禁止引入业务第三方依赖，依赖在对应任务里再加）。每条登记项格式：{ name, version, license, sourceUrl, usedBy, note }。新增任何一条都必须先在此登记，否则 check-deps 门禁 fail。",
+  "dependencies": [
+    {
+      "name": "@ohos/hypium",
+      "version": "1.0.21",
+      "license": "Apache-2.0",
+      "sourceUrl": "https://ohpm.openharmony.cn/#/cn/detail/@ohos%2Fhypium",
+      "usedBy": "根 oh-package.json5（devDependencies）",
+      "note": "OpenHarmony 官方 ArkTS 单元测试框架（DevEco 工程默认自带），随 T0.9-22 单测框架使用；仅测试期依赖，不进安装包。"
+    }
+  ]
+}

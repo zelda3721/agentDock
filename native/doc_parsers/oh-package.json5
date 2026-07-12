@@ -1,0 +1,13 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  "name": "doc-parsers",
+  "version": "1.0.0",
+  "description": "文档解析 NAPI 模块（PDF 引擎强制 PDFium/BSD-3；MuPDF 永久禁用——R1），见设计文档 §25",
+  "main": "Index.ets",
+  "author": "AgentDock",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "libdoc_parsers.so": "file:./src/main/cpp/types/libdoc_parsers"
+  }
+}

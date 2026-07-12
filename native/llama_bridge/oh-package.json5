@@ -1,0 +1,14 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  "name": "llama-bridge",
+  "version": "1.0.0",
+  "description": "本地 LLM 推理 NAPI 桥（llama.cpp / GGUF），见设计文档 §3.2",
+  "main": "Index.ets",
+  "author": "AgentDock",
+  "license": "Apache-2.0",
+  "dependencies": {
+    // NAPI 产物的 ArkTS 类型声明包（鸿蒙标准做法：cpp/types/lib<name>）
+    "libllama_bridge.so": "file:./src/main/cpp/types/libllama_bridge"
+  }
+}

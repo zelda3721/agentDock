@@ -1,0 +1,50 @@
+AgentDock
+Copyright (c) 2026 AgentDock Contributors
+
+This product includes software developed by the AgentDock Contributors.
+
+Licensed under the Apache License, Version 2.0 (the "License").
+You may obtain a copy of the License in the accompanying LICENSE file or at
+http://www.apache.org/licenses/LICENSE-2.0
+
+================================================================================
+上游 Apache-2.0 组件 NOTICE 汇总区
+================================================================================
+
+本区域用于汇总所有 **Apache-2.0 许可** 的上游依赖自带的 NOTICE 文本。
+Apache-2.0 第 4(d) 条要求：若上游发行版包含 NOTICE 文件，则本项目的再分发物
+（源码仓库与安装包）必须随附其中的归属声明。
+
+当前状态：**本仓库处于工程骨架阶段，尚未引入任何第三方依赖**（编译/链接进产物的
+依赖一个都没有），因此本汇总区为空。
+
+维护规则（随依赖引入逐条追加，不得事后补）：
+
+1. 每引入一个新的编译/链接依赖，在同一个 PR 内完成三件事，缺一不可：
+   a. 将该依赖的**原始许可证全文**放入 `THIRD_PARTY_LICENSES/<依赖名>/LICENSE`；
+   b. 若该依赖是 Apache-2.0 且上游带 NOTICE 文件，将其 NOTICE **原文**追加到本文件下方，
+      使用下述条目模板；非 Apache-2.0 依赖（MIT/BSD/PD）无需在此追加，只需 (a)；
+   c. 更新 `THIRD_PARTY_LICENSES/README.md` 的依赖许可审计表状态列。
+2. 依赖白名单：MIT / BSD / Apache-2.0 / ISC / Zlib / Public Domain。
+   GPL / AGPL / LGPL / SSPL / 任何专有许可 —— CI 许可扫描直接 fail（红线 21，§22.4）。
+   特别地：**MuPDF（AGPL-3.0）永久禁用**（R1），PDF 解析强制 PDFium（BSD-3-Clause）。
+3. 模型权重不在此列。仓库与安装包一律不内置任何模型权重（R5），模型许可与出处见
+   `models/manifest.json` 与 `models/README.md`，由 App 在下载页向用户展示。
+4. 华为 HarmonyOS SDK / DevEco Studio 为平台专有 EULA，属运行时平台而非本项目分发的组件，
+   不在本文件披露范围；SDK 二进制与签名材料（.p7b/.cer/keystore）禁止入仓（红线 23）。
+
+条目模板（追加时照此格式，保持依赖名字母序）：
+
+--------------------------------------------------------------------------------
+Component: <依赖名> <版本/锁定 tag>
+License:   Apache-2.0
+Homepage:  <上游仓库 URL>
+Upstream NOTICE:
+
+  <此处逐字粘贴上游 NOTICE 文件原文，不得改写、不得摘要>
+
+--------------------------------------------------------------------------------
+
+预期将在后续任务中进入本汇总区的 Apache-2.0 依赖（依据设计文档 §22.2，尚未引入）：
+hnswlib、sherpa-onnx、mozilla/readability、MNN（备选后端）、MindSpore Lite（NPU 插槽）、
+PaddleOCR（V2 期 OCR 档）。

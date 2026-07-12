@@ -1,0 +1,8 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "本地 LLM 推理 NAPI 桥（llama.cpp / GGUF）"
+    }
+  ]
+}

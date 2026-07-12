@@ -1,0 +1,10 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  "name": "libvec_index.so",
+  "types": "./index.d.ts",
+  "version": "1.0.0",
+  "description": "libvec_index.so 的 ArkTS 类型声明",
+  "author": "AgentDock",
+  "license": "Apache-2.0"
+}

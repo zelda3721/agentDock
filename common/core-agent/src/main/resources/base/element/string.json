@@ -1,0 +1,8 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "AgentDock Agent 运行时内核（ReAct 循环、工具总线、上下文治理）"
+    }
+  ]
+}
