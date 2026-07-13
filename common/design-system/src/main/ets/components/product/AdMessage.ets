@@ -18,10 +18,10 @@ import { AdBrainKind, AdMessageRole, AdMessageStatus, AdProvenance } from '../..
  * 结构：**左侧 3vp 语义色带 + 通栏排版**。没有左右气泡、没有圆头像、没有大发送按钮——
  * AgentDock 的世界是"坞站与仪器"，不是通用聊天 App。
  *
- * | 角色      | 3vp 左色带                       | 眉标     | 正文            | 底            |
- * | user      | inkTertiary                      | "你"     | body_l / ink    | surface       |
- * | assistant | **localFg 或 remoteFg**（实际来源）| Agent 名 | body_l / ink    | surface       |
- * | tool      | inkTertiary                      | 工具名   | 折叠卡片        | surfaceSunken |
+ * | 角色      | 3vp 左色带                       | 眉标     | 正文            | 底                          |
+ * | user      | inkTertiary                      | "你"     | body_l / ink    | surfaceSunken（§4.2 R-38a）  |
+ * | assistant | **localFg 或 remoteFg**（实际来源）| Agent 名 | body_l / ink    | 透明（叠在消息流的 surface 上）|
+ * | tool      | inkTertiary                      | 工具名   | 折叠卡片        | surfaceSunken               |
  *
  * **助手色带即语义**：色带颜色**就是**这条回答的来源。一屏扫下去，全青 = 全在本地，
  * 出现琥珀 = 这一句出过端。这是"每一屏都可见"的最低成本实现。
@@ -85,6 +85,12 @@ export struct AdMessage {
   @Prop provenance: AdProvenance = new AdProvenance(AdBrainKind.LOCAL, '');
   /** 是否渲染溯源条（tool / user 消息不渲染） */
   @Prop showRail: boolean = true;
+  /**
+   * 是否渲染眉标行（角色 + 时间戳）。B4 默认渲染，本组件保留全量能力；
+   * §4.2 会话页三端线框中**助手轮次不带眉标行**（署名由 3vp 语义色带 + 溯源条的模型芯片承担），
+   * 连续同角色消息的重复头部也可省略——显隐由消费方（features/chat 的 MessageStream）按 §4.2 裁决。
+   */
+  @Prop showHeader: boolean = true;
   /** 中断时已生成的 token 数（仪表体） */
   @Prop generatedTokens: number = 0;
   /** 错误文案：不道歉、不含糊，说清发生了什么（如"远程 Provider 返回 429（限流）"） */
@@ -146,16 +152,13 @@ export struct AdMessage {
   }
 
   build() {
-    Row() {
-      // 3vp 左语义色带：assistant 的色带**就是**这条回答的来源
-      Column()
-        .width(AdStroke.marker)
-        .backgroundColor(this.bandColor())
-        .height('100%')
-        .hitTestBehavior(HitTestMode.None)
-
-      Column({ space: AdSpace.s2 }) {
-        // 眉标行：角色 + 时间戳
+    // 左 3vp 语义色带用 **border-left** 实现（assistant 的色带**就是**这条回答的来源）。
+    // 不用「兄弟 Column + height('100%')」：百分比高度在自适应高度的父容器里按父的**最大约束**解析，
+    // 真机（T0.9-15 打磨）上它把每条消息的 ListItem 撑成整个视口高——一条消息一整屏，
+    // 「一个块一个块」的卡片墙即源于此。border 天然与内容盒等高，零测量成本。
+    Column({ space: AdSpace.s2 }) {
+      // 眉标行：角色 + 时间戳（显隐由 showHeader 裁决，见其注释）
+      if (this.showHeader) {
         Row() {
           Text(this.roleLabel).msgEyebrow(this.bandColor()).layoutWeight(1)
           if (this.timestamp.length > 0) {
@@ -164,6 +167,7 @@ export struct AdMessage {
         }
         .width('100%')
         .alignItems(VerticalAlign.Bottom)
+      }
 
         // 正文 + 流式光标（同一行尾）
         Row({ space: AdSpace.hairline }) {
@@ -270,29 +274,45 @@ export struct AdMessage {
         // 附加槽（工具卡片 / 附件）
         this.extra()
 
-        // 溯源条：与正文列**左对齐同一基线**（[R-72]）——它是正文的仪表脚注
-        if (this.showRail && this.role === AdMessageRole.ASSISTANT) {
-          AdProvenanceRail({
-            data: this.provenance,
-            settled: this.status !== AdMessageStatus.STREAMING,
-            onSegmentTap: (segment: number): void => {
-              this.onRailSegment(segment);
-            }
-          })
-        }
+      // 溯源条：与正文列**左对齐同一基线**（[R-72]）——它是正文的仪表脚注
+      if (this.showRail && this.role === AdMessageRole.ASSISTANT) {
+        AdProvenanceRail({
+          data: this.provenance,
+          settled: this.status !== AdMessageStatus.STREAMING,
+          onSegmentTap: (segment: number): void => {
+            this.onRailSegment(segment);
+          }
+        })
       }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-      .padding({ left: AdSpace.s3, right: AdSpace.s3, top: AdSpace.s2, bottom: AdSpace.s2 })
     }
+    .alignItems(HorizontalAlign.Start)
     .width('100%')
     // 聊天正文最大宽度 720vp：超宽窗口下居中，不铺满（长行破坏阅读）
     .constraintSize({ maxWidth: AdBreakpoints.readingMaxVp })
-    .alignItems(VerticalAlign.Top)
-    .backgroundColor(this.role === AdMessageRole.TOOL ? AdColor.surfaceSunken : AdColor.surface)
+    .padding({ left: AdSpace.s3, right: AdSpace.s3, top: AdSpace.s2, bottom: AdSpace.s2 })
+    // 3vp 语义色带（B4）：border 与内容盒等高，背景与圆角照常生效
+    .border({ width: { left: AdStroke.marker }, color: this.bandColor() })
+    .backgroundColor(this.surfaceOf())
     .borderRadius(this.role === AdMessageRole.TOOL ? AdRadius.md : AdRadius.none)
     .accessibilityGroup(true)
     .accessibilityText(this.a11y())
+  }
+
+  /**
+   * 消息底色（§4.2 [R-38a] + §3 B4 表）：
+   *  - user：`surfaceSunken` ——「输入井的那个面」。助手轮次按 §4.2 线框不带眉标行，
+   *    说话人区分改由底色承担，正是 [R-38a]「需要区分说话人时，把用户轮次的底改为
+   *    surface_sunken（保持直角或 radius_sm）」授权的手段；此处取直角（仪表是直角的，§3 B1）。
+   *  - assistant：透明——融入消息流的 surface，整个聊天栏是一张连续的「对话窗口」，
+   *    而不是一叠 surface 卡片（B4 表的底为 surface，透明底叠在消息流的 surface 上等价成立，
+   *    且消除了「卡片墙」；卡片墙是 §1.2.1 非气泡立场的反面）。
+   *  - tool：`surfaceSunken` 折叠卡片（B4 表）。
+   */
+  private surfaceOf(): ResourceColor {
+    if (this.role === AdMessageRole.ASSISTANT) {
+      return Color.Transparent;
+    }
+    return AdColor.surfaceSunken;
   }
 
   /** 助手色带 = 本次生成的实际来源；错误 / 预算耗尽覆盖为状态色 */

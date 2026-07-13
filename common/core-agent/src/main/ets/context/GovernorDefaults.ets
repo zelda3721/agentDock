@@ -51,6 +51,53 @@ export const FOLD_AFTER_STEPS: number = 3;
 /** 长 Run 阈值：步数 >15 启用 L4 阶段汇总（§23.3-L4；V2 随 Long Job 交付） */
 export const L4_STAGE_SUMMARY_MIN_STEPS: number = 15;
 
+// ---------------------------------------------------------------------------
+// 聊天预算结算（§23.2）——纯函数，无平台依赖（Node harness 直接跑本函数验证水位数学）
+// ---------------------------------------------------------------------------
+
+/** ctx 预算（与 ChatService 的 CtxUsage 同一口径：promptCapacity 是可用于 prompt 的预算） */
+export interface ChatBudgetSpec {
+  /** 模型 ctx 上限（本地模型已由 Provider 按 KV 内存预算下调；开发覆盖生效时为覆盖值） */
+  ctxTotal: number;
+  /** 预留生成空间 = maxTokens × 1.1（§23.2） */
+  reservedOutput: number;
+  /** 可用于 prompt 的容量 = ctxTotal − reservedOutput */
+  promptCapacity: number;
+  /** 本轮允许的最大输出 token */
+  maxOutputTokens: number;
+}
+
+/**
+ * 结算聊天预算（§23.2）：reserved_output = maxTokens × 1.1，promptCapacity = ctxTotal − reserved。
+ *
+ * @param contextWindow    Provider 声明的 ctx 上限
+ * @param providerMaxOutput Provider 声明的单次最大输出（≤0 表示未声明）
+ * @param defaultMaxOutput  产品默认单轮输出上限（ChatTypes.CHAT_DEFAULT_MAX_OUTPUT_TOKENS）
+ * @param devCtxOverride    **仅开发用**的 ctx 覆盖（kv_config 键 `dev.ctx_override`，>0 生效）。
+ *   真机上把 32k ctx 填到 70% 触发压缩太慢，开发时用小 ctx（如 1024）当预算上限快速触发。
+ *   覆盖生效时同时把 maxOutputTokens 收缩到 ctx/4：否则 reserved = 1024×1.1 会把
+ *   promptCapacity 直接压成 0，一条消息都发不出去——覆盖就失去了"能对话着触发压缩"的意义。
+ *   TODO(上架前移除): 删除本参数与 ChatRepository.devCtxOverride() 的读取路径（红线：开发后门不上生产）。
+ */
+export function computeChatBudget(contextWindow: number, providerMaxOutput: number,
+                                  defaultMaxOutput: number, devCtxOverride: number): ChatBudgetSpec {
+  const ctxTotal: number = devCtxOverride > 0 ? devCtxOverride : contextWindow;
+  let maxOut: number = providerMaxOutput > 0
+    ? Math.min(providerMaxOutput, defaultMaxOutput)
+    : defaultMaxOutput;
+  if (devCtxOverride > 0) {
+    maxOut = Math.min(maxOut, Math.max(16, Math.floor(devCtxOverride / 4)));
+  }
+  const reserved: number = Math.ceil(maxOut * RESERVED_OUTPUT_MARGIN);
+  const spec: ChatBudgetSpec = {
+    ctxTotal: ctxTotal,
+    reservedOutput: reserved,
+    promptCapacity: Math.max(0, ctxTotal - reserved),
+    maxOutputTokens: maxOut
+  };
+  return spec;
+}
+
 /**
  * token 估算（粗）：CJK 字符 ≈ 1 token，其余 ≈ 4 字符 1 token。
  *

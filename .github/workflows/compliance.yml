@@ -88,6 +88,22 @@ jobs:
 
       # TODO(T0.9-22): 待金标集建成（W7）后接入——涉及 core-rag 的 PR 必跑 recall@6 ≥85%。
       #                当前检索链路未通，仅做金标集格式校验（金标文件尚未创建时跳过）。
-      # TODO(T0.9-22): 待 ContextGovernor（T0.9-17）交付后，接入压缩回归 V0.9 最小子集，
-      #                W8 起对压缩逻辑改动作**合并门禁**（红线 27，无豁免期）：
-      #                node tools/eval/compression-regression/run-regression.mjs
+
+  compression-regression:
+    name: 压缩回归 V0.9 最小子集（红线 27）
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 红线 27：压缩逻辑改动没有回归套件不许合并（无豁免期）。
+      # 套件转译并直接运行 common/core-agent 下的真实 .ets 源码（FidelityGate/ContextGovernor/
+      # ChatCompactor/ChatPromptBuilder…），三项机械核对：溯源指针可寻回 / 实体机械核对 / 植入约束召回。
+      # 全仓 PR 恒跑（套件秒级，不做路径过滤——过滤条件本身也会腐烂）。
+      - name: 压缩回归（跑真实源码）
+        run: node tools/eval/compression-regression/run-regression.mjs

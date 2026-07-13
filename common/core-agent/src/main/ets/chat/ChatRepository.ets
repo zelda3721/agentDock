@@ -28,6 +28,7 @@ import {
   ChatMessageRecord,
   ChatMessageStatus,
   ChatProvenance,
+  ChatSummaryState,
   ConversationSummary,
   ProvenanceCodec,
   fromDbStatus,
@@ -42,10 +43,18 @@ export interface ConversationRow {
   messageCount: number;
 }
 
-/** conversations.meta 的 JSON 结构（会话级元数据；lastProviderKind 供列表行的 local/remote 芯片用） */
+/**
+ * conversations.meta 的 JSON 结构（会话级元数据）。
+ * - lastProviderKind：会话列表行的 local/remote 芯片；
+ * - l3Summary：L3 滚动摘要状态（T0.9-17）——摘要是持久进度，重启后必须能恢复，
+ *   否则重启一次就退回"上下文已满"。**不改表结构**，借既有 JSON 列存放。
+ * 写入纪律：任何写 meta 的方法必须**读改写合并**，不得整列覆盖——否则
+ * touchConversation 会把 l3Summary 抹掉（或反之），这是最难查的一类静默丢数据。
+ */
 interface ConversationMeta {
   lastProviderId?: string;
   lastProviderKind?: string;
+  l3Summary?: ChatSummaryState;
 }
 
 export class ChatRepository {
@@ -147,13 +156,15 @@ export class ChatRepository {
 
   /**
    * 刷新计数与时间，并归档本轮使用的 Provider（会话列表行的 local/remote 芯片取自 meta.lastProviderKind）。
+   *
+   * meta 采用**读改写合并**而非整列覆盖：meta 里还住着 l3Summary（T0.9-17），
+   * 覆盖式写入会把摘要状态抹掉——用户的会话会在下一轮突然"失忆"且无任何报错。
    */
   async touchConversation(convId: string, providerId: string, providerKind: string): Promise<void> {
     const now: number = Date.now();
-    const meta: string = JSON.stringify({
-      lastProviderId: providerId,
-      lastProviderKind: providerKind
-    } as ConversationMeta);
+    const meta: ConversationMeta = await this.readMeta(convId);
+    meta.lastProviderId = providerId;
+    meta.lastProviderKind = providerKind;
     await this.rdb.exec(
       `UPDATE conversations
           SET message_count = (SELECT COUNT(*) FROM messages WHERE conv_id = ?),
@@ -161,8 +172,57 @@ export class ChatRepository {
               meta = ?,
               updated_at = ?
         WHERE id = ?;`,
-      [convId, now, meta, now, convId] as Array<SqlArg>
+      [convId, now, JSON.stringify(meta), now, convId] as Array<SqlArg>
     );
+  }
+
+  // --- L3 摘要状态（T0.9-17，存 conversations.meta.l3Summary，不改表结构） -----
+
+  /** 读摘要状态；无摘要或 meta 损坏返回 null（读路径不抛：会话必须能继续用） */
+  async loadSummaryState(convId: string): Promise<ChatSummaryState | null> {
+    const meta: ConversationMeta = await this.readMeta(convId);
+    const state: ChatSummaryState | undefined = meta.l3Summary;
+    if (state === undefined || typeof state.summaryText !== 'string' ||
+      typeof state.coveredUpToSeq !== 'number' || state.summaryText.length === 0) {
+      return null;
+    }
+    return state;
+  }
+
+  /** 写摘要状态（读改写合并，保留 lastProvider* 字段） */
+  async saveSummaryState(convId: string, state: ChatSummaryState): Promise<void> {
+    const meta: ConversationMeta = await this.readMeta(convId);
+    meta.l3Summary = state;
+    await this.rdb.exec(
+      `UPDATE conversations SET meta = ?, updated_at = ? WHERE id = ?;`,
+      [JSON.stringify(meta), Date.now(), convId] as Array<SqlArg>
+    );
+  }
+
+  // --- 开发用 ctx 覆盖（**仅开发用**，TODO(上架前移除)） -------------------------
+
+  /**
+   * 读 kv_config 的 `dev.ctx_override`：>0 时 ChatService 用它替代 Provider 的 contextWindow
+   * 做预算结算——真机上把 32k ctx 填到 70% 触发压缩太慢，开发时设成 1024 快速触发（T0.9-17 验证用）。
+   *
+   * **仅开发用**：不影响 llama 会话真实 n_ctx（模型仍按原 ctx 加载，生成不会溢出），只收紧预算账本。
+   * TODO(上架前移除): 删除本方法与 GovernorDefaults.computeChatBudget 的 devCtxOverride 参数，
+   *   并清理 kv_config 中的该键——开发后门不得进生产（红线：可辩护的仪表不含隐藏旋钮）。
+   */
+  async devCtxOverride(): Promise<number> {
+    try {
+      const value: string | null = await this.rdb.queryScalarString(
+        `SELECT value FROM kv_config WHERE key = 'dev.ctx_override';`,
+        [] as Array<SqlArg>
+      );
+      if (value === null) {
+        return 0;
+      }
+      const parsed: number = Number.parseInt(value, 10);
+      return Number.isNaN(parsed) || parsed <= 0 ? 0 : parsed;
+    } catch (e) {
+      return 0;   // 读失败按"无覆盖"处理：开发旋钮绝不能把生产路径拖垮
+    }
   }
 
   // --- 消息 -----------------------------------------------------------------
@@ -247,7 +307,7 @@ export class ChatRepository {
   /** 最近 limit 条消息（返回时按时间升序，UI 直接从上往下渲染） */
   async listMessages(convId: string, limit: number): Promise<ChatMessageRecord[]> {
     const rows: ChatMessageRecord[] = await this.rdb.queryRows<ChatMessageRecord>(
-      `SELECT id, conv_id, role, content, status, error, citations, created_at
+      `SELECT id, conv_id, seq, role, content, status, error, citations, created_at
          FROM messages
         WHERE conv_id = ?
         ORDER BY seq DESC
@@ -265,7 +325,7 @@ export class ChatRepository {
    */
   async loadHistoryForPrompt(convId: string): Promise<ChatMessageRecord[]> {
     const rows: ChatMessageRecord[] = await this.rdb.queryRows<ChatMessageRecord>(
-      `SELECT id, conv_id, role, content, status, error, citations, created_at
+      `SELECT id, conv_id, seq, role, content, status, error, citations, created_at
          FROM messages
         WHERE conv_id = ? AND role IN ('user', 'assistant') AND status <> 'failed'
         ORDER BY seq ASC;`,
@@ -302,6 +362,15 @@ export class ChatRepository {
 
   // --- 内部 -----------------------------------------------------------------
 
+  /** 读并解析 meta（损坏/缺失返回空对象；写侧据此做读改写合并） */
+  private async readMeta(convId: string): Promise<ConversationMeta> {
+    const json: string | null = await this.rdb.queryScalarString(
+      `SELECT meta FROM conversations WHERE id = ?;`,
+      [convId] as Array<SqlArg>
+    );
+    return ChatRepository.parseMeta(json ?? '');
+  }
+
   private static mapMessage(rs: relationalStore.ResultSet): ChatMessageRecord {
     const errIdx: number = rs.getColumnIndex('error');
     const citeIdx: number = rs.getColumnIndex('citations');
@@ -310,6 +379,7 @@ export class ChatRepository {
     const record: ChatMessageRecord = {
       id: rs.getString(rs.getColumnIndex('id')),
       convId: rs.getString(rs.getColumnIndex('conv_id')),
+      seq: rs.getLong(rs.getColumnIndex('seq')),
       role: role === 'user' ? 'user' : (role === 'system' ? 'system' : 'assistant'),
       content: rs.getString(rs.getColumnIndex('content')),
       createdAt: rs.getLong(rs.getColumnIndex('created_at')),

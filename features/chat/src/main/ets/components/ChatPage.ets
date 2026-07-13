@@ -81,6 +81,8 @@ export struct ChatPage {
   @State private messagesLoading: boolean = false;
   @State private messageCount: number = 0;
   @State private streaming: boolean = false;
+  /** L3 滚动摘要进行中（T0.9-17）：AdCtxGauge 显示「整理思路中…」，输入框不禁用（规范 B3） */
+  @State private compressing: boolean = false;
   @State private ctx: CtxUsageVM = new CtxUsageVM();
   @State private pageError: string = '';
   /**
@@ -131,6 +133,9 @@ export struct ChatPage {
     };
     host.onStreaming = (streaming: boolean): void => {
       this.streaming = streaming;
+    };
+    host.onCompressing = (compressing: boolean): void => {
+      this.compressing = compressing;
     };
     host.onCtxUsage = (usage: CtxUsageVM): void => {
       this.ctx = usage;
@@ -341,6 +346,7 @@ export struct ChatPage {
       ChatComposer({
         ctx: this.ctx,
         streaming: this.streaming,
+        compressing: this.compressing,
         // 无模型 ⇒ 输入区禁用。**这不是防御性冗余**：ChatTurn 里的 Provider 校验会诚实失败，
         // 但让用户把一段话打完、按下发送、再收到一条失败消息，是在浪费他的时间。
         composerEnabled: this.selectedId.length > 0 && this.brainVM.available,
@@ -512,8 +518,16 @@ export struct ChatPage {
     return AdBreakpoint.SM;
   }
 
-  /** 列表栏宽（§2.5.2 关键栏宽：lg 280 / md 320） */
+  /**
+   * 列表栏宽（§2.5.2 关键栏宽 / §4.2 会话页 md 线框）。
+   *  - lg：280vp——规范区间「列表(280–320)」的下限（三栏下把宽度留给聊天主区）。
+   *  - md：240vp（listPaneMinVp）。**聊天是主区**：§4.2 的 md 线框里列表约占 1/4、聊天约占 3/4；
+   *    而 §2.5.2 表的基线 320（旧实现更是写成了 400-40=360）在 600–840vp 的 md 窗宽里会让列表
+   *    吃掉 43–60%——真机 674vp 竖屏（叠加 entry 的 96vp 导航栏）下聊天被挤到 216vp，比列表还窄，
+   *    主从颠倒。裁量：§2.5.2 表值与 §4.2 线框冲突时，以会话页线框的主从关系为准，
+   *    取关键栏宽令牌下限 240vp（674vp 竖屏下聊天得 336vp ≈ 58%）。
+   */
   private listPaneWidth(): number {
-    return this.bp() === 'lg' ? AdBreakpoints.listPaneMinVp + AdSpace.s8 : AdBreakpoints.listPaneMaxVp - AdSpace.s8;
+    return this.bp() === 'lg' ? AdBreakpoints.listPaneMinVp + AdSpace.s8 : AdBreakpoints.listPaneMinVp;
   }
 }

@@ -30,22 +30,30 @@
 | V1.0 v1（T1.0-12，W13） | 扩展 L2 观察折叠 + `trace.read` 补救核对 | 约束召回 100%（L3 链路）、实体 ≥95%、trace.read 补救后 100% |
 | V2 全量金标 | 50+ 步、≥2 次段重启 | 约束召回 100% |
 
-## 当前状态
+## 当前状态（随 T0.9-17 交付，已入 CI）
 
-**尚未实现**——依赖 T0.9-17（ContextGovernor L1/L3，W7 交付）。本目录当前只有本说明。
+**已实现，已作为合并门禁接入** `.github/workflows/compliance.yml` 的 `compression-regression` job。
 
-TODO(T0.9-22): 按设计文档 §27.3 与 §23.3 实现，与 T0.9-17 压缩逻辑**同批交付**（W7 合成会话脚本 + 保真门正则，W8 入 CI 作合并门禁）。产出物预计为：
+产出物与最初设想的差异（裁量记录）：**不是**另写一套 `.mjs` 正则副本（`synth-session.mjs` /
+`fidelity-gate.mjs` 的三件套方案已废弃），而是**转译并直接运行真实 .ets 源码**——
+FidelityGate.ets 头注释承诺"套件直接复用本文件的正则与 check()"，复制一份副本迟早与源码漂移，
+门禁就退化成"考自己抄的答案"。植入实体与约束的合成会话直接内联在用例里（无随机性，天然可复现）。
 
-- `synth-session.mjs`：合成多轮会话生成器（植入实体与约束，可复现随机种子）
-- `fidelity-gate.mjs`：M2 保真门正则核对（实体/约束召回）
-- `run-regression.mjs`：跑 L1/L3 压缩 → 三项核对 → 门禁判定
+- `run-regression.mjs`：门禁入口。把 6 个压缩链路源文件（GovernorDefaults / FidelityGate /
+  ContextGovernor / ChatTypes / ChatPromptBuilder / ChatCompactor）原字节拷入临时目录
+  （仅重写 import 说明符 + 为纯类型导出补运行时占位），用 Node ≥22.7 的
+  `--experimental-transform-types` 执行用例。源码任何逻辑改动立刻反映在门禁结果里。
+- `cases.ts`：54 项断言，8 组——水位数学（70/85/50，含 dev.ctx_override 收缩与除零防护）、
+  实体抽取（中文金额/千分位/日期/编号/URL/路径，碎片与稀释防护）、保真门三态与机械附录、
+  L1 外置溯源指针往返（核对项 1）、L3 植入约束召回 + 保守档重压 + 溯源行（核对项 3）、
+  R2 装配顺序、折叠数学与覆盖水位、ChatCompactor 端到端（滚动并入 / 两档策略 / 诚实空结果）。
 
-同样遵守「禁止伪实现」：在 ContextGovernor 可用前，绝不输出假的回归通过结论。
-
-## 运行（待实现后）
+## 运行
 
 ```bash
-node tools/eval/compression-regression/run-regression.mjs
+node tools/eval/compression-regression/run-regression.mjs   # 退出码即门禁判定
+KEEP_BUILD=1 node tools/eval/compression-regression/run-regression.mjs   # 调试：保留转译产物
 ```
 
-CI 接入点：压缩逻辑（`common/core-agent` 下 ContextGovernor 相关文件）有改动的 PR 必跑，见 `.github/workflows/compliance.yml` 中的 TODO 说明。
+V1.0（T1.0-12）扩展方向：L2 观察折叠 + `trace.read` 补救核对进 `cases.ts` 新分组；
+真实 Nano 模型在环的摘要质量评测（非机械核对）另起脚本，不混进本门禁。

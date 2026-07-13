@@ -20,7 +20,8 @@ import {
   Logger, LogLevel, TaskQueue, TaskKind, TaskState, TaskHandler, TaskContext, TaskResult,
   SecretStore, SecretAlias, NoopBackgroundScheduler
 } from 'core-infra';
-import { AppRdbStore, RdbTaskStore, FileRepo } from 'core-data';
+import { AppRdbStore, RdbTaskStore, FileRepo, RdbConfigStore } from 'core-data';
+import { ConfigEntry, ConfigValueType } from 'core-infra';
 import { AdColor, AdSpace, AdType, AdGlyph, AdGlyphKind } from 'design-system';
 
 const TAG: string = 'DevData';
@@ -89,6 +90,29 @@ struct DevData {
           this.runAll();
         })
 
+      // T0.9-17 压缩联调：把 ctx 预算压到 1024，几轮对话就能触发 L3 压缩（32k 真 ctx 要聊到天荒地老）。
+      // ChatService 每轮 send 都重读该键，写入即对下一条消息生效。TODO(上架前移除)：随 dev.ctx_override 后门一起删。
+      Row({ space: AdSpace.s2 }) {
+        Button('压缩联调 ctx=1024')
+          .layoutWeight(1)
+          .onClick((): void => {
+            this.setCtxOverride(1024);
+          })
+        // 2048 档：1024 下近窗 6 条（含两个 256 token 回答）本身就超容量，压完必然诚实失败；
+        // 2048 才能验证"压缩后会话还能继续 + 实体穿过摘要可召回"的正路径
+        Button('ctx=2048')
+          .layoutWeight(1)
+          .onClick((): void => {
+            this.setCtxOverride(2048);
+          })
+        Button('清除覆盖')
+          .layoutWeight(1)
+          .onClick((): void => {
+            this.setCtxOverride(null);
+          })
+      }
+      .width('100%')
+
       ForEach(this.checks, (c: Check): void => {
         Row({ space: AdSpace.s2 }) {
           AdGlyph({
@@ -129,6 +153,35 @@ struct DevData {
     .height('100%')
     .padding(AdSpace.s4)
     .backgroundColor(AdColor.bg)
+  }
+
+  /**
+   * 写/清 kv_config 的 `dev.ctx_override`（T0.9-17 压缩联调后门，读取侧在 ChatRepository.devCtxOverride）。
+   * 为什么在这写：kv_config 在**加密** RDB 里，hdc 从外面写不进去；本页本就是临时验证台。
+   */
+  private async setCtxOverride(value: number | null): Promise<void> {
+    try {
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const rdb: AppRdbStore = AppRdbStore.get();
+      await rdb.init(ctx, '0.1.0');
+      const store: RdbConfigStore = new RdbConfigStore(rdb);
+      if (value === null) {
+        await store.remove('dev.ctx_override');
+        this.output += '\n[dev] dev.ctx_override 已清除——下一条消息恢复 Provider 真实 ctx';
+      } else {
+        const entry: ConfigEntry = {
+          key: 'dev.ctx_override',
+          value: String(value),
+          valueType: ConfigValueType.NUMBER,
+          updatedAt: Date.now()
+        };
+        await store.write(entry);
+        this.output += `\n[dev] dev.ctx_override=${value} 已写入——对下一条消息生效（ChatService 每轮 send 重读）`;
+      }
+    } catch (e) {
+      const err = e as BusinessError;
+      this.output += `\n[dev] dev.ctx_override 写入失败：code=${err.code} ${err.message}`;
+    }
   }
 
   private async runAll(): Promise<void> {

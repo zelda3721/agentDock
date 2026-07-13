@@ -30,16 +30,31 @@
 import { ChatMessage, ProviderKind } from 'core-llm';
 import { ChatMessageRecord } from './ChatTypes';
 
+/**
+ * 摘要段的固定抬头（T0.9-17 / §23.3-L3）。
+ * 摘要以 user 角色注入而非 system：LocalProvider.renderPrompt 会把一切 system 消息
+ * 归入【稳定前缀】段（promptParts[0]），而摘要属于**半稳定区**（每次压缩都会改写）——
+ * 混进稳定前缀会让"前缀字节级稳定"的承诺失真（红线 11 / §23.4）。
+ * 抬头写明"这是压缩产物"：模型不至于把摘要正文误当成用户刚说的话。
+ */
+export const SUMMARY_SEGMENT_HEADER: string = '【前情摘要】以下是本会话较早对话的压缩摘要（原文已按预算折叠）：';
+
 /** 装配输入 */
 export interface PromptAssembly {
   /** 【稳定前缀】system prompt（会话绑定 Agent 时为 Agent 的 system_prompt，否则用默认值） */
   systemPrompt: string;
-  /** 【半稳定】会话历史（升序；不含本轮用户消息） */
+  /** 【半稳定】会话历史（升序；不含本轮用户消息；已剔除被摘要覆盖的 seq ≤ coveredUpToSeq 原文） */
   history: ChatMessageRecord[];
   /** 【易变尾部】本轮用户消息 */
   userText: string;
   /** 目标 Provider 类型：隐私围栏的判定依据（红线 17）；V0.9 无可过滤内容，仅用于溯源与后续接线 */
   targetProviderKind: ProviderKind;
+  /**
+   * 【半稳定·头部】L3 摘要段（T0.9-17）。有值时插在历史区**开头**（摘要在前、近窗原文在后），
+   * 前缀仍保持单调增长——两次压缩之间它字节级不变，KV 前缀照常命中；
+   * 压缩当轮前缀被改写、KV 失效是 §23.4 已定价的代价（攒批摊薄）。
+   */
+  summaryText?: string;
 }
 
 /** 装配结果：messages + 围栏统计（喂给 ChatProvenance） */
@@ -64,9 +79,16 @@ export class ChatPromptBuilder {
 
     // ---------------- [半稳定] 会话历史 ----------------
     // 只在轮末追加，前缀不动——这正是 KV cache 能持续命中的原因。
-    // 超窗时**不在这里掐头**：V0.9 由 ChatService 诚实报错（§23.3 "宁可诚实失败，不做静默掐头截尾"）；
-    // TODO(T0.9-17): 接 ContextGovernor.rollingSummary（L3）——把最早的若干轮换成一段结构化摘要段，
-    //   摘要段插入的位置就是本区的**开头**（摘要在前、近 K 轮原文在后），前缀仍保持单调增长。
+    //
+    // [T0.9-17] 摘要段（若有）在本区**开头**：摘要在前、近 K 轮原文在后（§23.3-L3）。
+    // 超窗时的处理链：ChatService 先触发 L3 压缩（70% 水位，§23.2），压缩后仍装不下才
+    // 诚实报错（§23.3 "宁可诚实失败，不做静默掐头截尾"）——本方法自身仍不做任何截断。
+    if (input.summaryText !== undefined && input.summaryText.length > 0) {
+      messages.push({
+        role: 'user',
+        content: `${SUMMARY_SEGMENT_HEADER}\n${input.summaryText}`
+      } as ChatMessage);
+    }
     for (const record of input.history) {
       if (record.content.length === 0) {
         continue;

@@ -12,8 +12,9 @@
  * 版本纪律（V0.9 明确不做，全部留 TODO，不伪实现）：
  * - 无工具循环（ReActLoop 是 T1.0-01）
  * - 无 RAG、无记忆（装配分区已在 ChatPromptBuilder 里留位并注明）
- * - 无上下文压缩：ctx 超预算时**诚实失败**并提示"新建会话"（§23.3：宁可诚实失败，不做静默掐头截尾），
- *   L3 滚动摘要见 TODO(T0.9-17)
+ * - 上下文压缩（T0.9-17 已接）：working 水位 >70% 时本轮**先压缩再发送**
+ *   （L3 滚动摘要 + 保真门，编排在 ChatCompactor）；压缩后仍装不下才诚实失败并提示"新建会话"
+ *   （§23.3：宁可诚实失败，不做静默掐头截尾——压缩是显式、有日志、有保真门的操作，与截断有本质区别）
  *
  * 落库纪律（合同 §二）：见 ChatRepository 的文件头。
  */
@@ -26,22 +27,26 @@ import {
   GenerateOptions,
   InferenceProvider,
   ProviderCaps,
+  ProviderKind,
   ProviderRegistry,
   StreamDelta,
   TokenUsage
 } from 'core-llm';
 import { AppRdbStore } from 'core-data';
-import { Logger } from 'core-infra';
+import { Logger, Metrics } from 'core-infra';
 import { AsyncEventQueue } from '../chat/AsyncEventQueue';
+import { ChatCompactor, CompactResult, dropCoveredHistory } from '../chat/ChatCompactor';
 import { ChatPromptBuilder, PromptResult } from '../chat/ChatPromptBuilder';
 import { ChatRepository, ConversationRow } from '../chat/ChatRepository';
+import { BudgetLedger, WaterlineStatus } from '../context/ContextGovernor';
+import { ChatBudgetSpec, computeChatBudget } from '../context/GovernorDefaults';
 import {
   CHAT_DEFAULT_MAX_OUTPUT_TOKENS,
-  CTX_RESERVED_OUTPUT_MARGIN,
   ChatErrorCode,
   ChatMessageRecord,
   ChatMessageStatus,
   ChatProvenance,
+  ChatSummaryState,
   ChatTurnEvent,
   ChatTurnHandle,
   ConversationSummary,
@@ -61,36 +66,59 @@ const TAG: string = 'ChatService';
  */
 const CHECKPOINT_INTERVAL_MS: number = 2000;
 
-/** ctx 预算（与 CtxUsage 同一口径，见 ChatTypes.CtxUsage 的注释） */
-interface ChatBudget {
-  /** 模型 ctx 上限（本地模型已由 Provider 按 KV 内存预算下调） */
-  ctxTotal: number;
-  /** 预留生成空间 = maxTokens × 1.1（§23.2） */
-  reservedOutput: number;
-  /** 可用于 prompt 的容量 = ctxTotal − reservedOutput */
-  promptCapacity: number;
-  /** 本轮允许的最大输出 token */
-  maxOutputTokens: number;
-}
-
 // ============================================================================
 // 模块级工具函数
 // （不做成 ChatService 的 private static：ChatTurn 是另一个类，ArkTS 严格禁止跨类访问私有成员）
 // ============================================================================
 
-/** ctx 预算（§23.2）：reserved_output = maxTokens × 1.1，promptCapacity = ctxTotal − reserved */
-function budgetOf(caps: ProviderCaps): ChatBudget {
-  const maxOut: number = caps.maxOutputTokens > 0
-    ? Math.min(caps.maxOutputTokens, CHAT_DEFAULT_MAX_OUTPUT_TOKENS)
-    : CHAT_DEFAULT_MAX_OUTPUT_TOKENS;
-  const reserved: number = Math.ceil(maxOut * CTX_RESERVED_OUTPUT_MARGIN);
-  const budget: ChatBudget = {
-    ctxTotal: caps.contextWindow,
-    reservedOutput: reserved,
-    promptCapacity: Math.max(0, caps.contextWindow - reserved),
-    maxOutputTokens: maxOut
+/**
+ * ctx 预算（§23.2）：数学在 GovernorDefaults.computeChatBudget（纯函数，Node harness 直接验证）。
+ * devCtxOverride 是**仅开发用**的 ctx 覆盖（kv_config 'dev.ctx_override'，见 ChatRepository.devCtxOverride）。
+ */
+function budgetOf(caps: ProviderCaps, devCtxOverride: number): ChatBudgetSpec {
+  return computeChatBudget(caps.contextWindow, caps.maxOutputTokens,
+    CHAT_DEFAULT_MAX_OUTPUT_TOKENS, devCtxOverride);
+}
+
+/** 按 R2 顺序装配（含 L3 摘要段与覆盖水位过滤，T0.9-17）：send 与 ctxUsage 共用，两处永远同源 */
+function assembleWithSummary(systemPrompt: string, history: ChatMessageRecord[],
+                             summary: ChatSummaryState | null, userText: string,
+                             kind: ProviderKind): PromptResult {
+  return ChatPromptBuilder.build({
+    systemPrompt: systemPrompt,
+    history: dropCoveredHistory(history, summary),
+    userText: userText,
+    targetProviderKind: kind,
+    summaryText: summary === null ? undefined : summary.summaryText
+  });
+}
+
+/**
+ * anchor 区实测 token（§23.2 的 V0.9 聊天裁剪）：
+ * 稳定前缀 system + 最新用户消息——二者永不参与压缩（anchor 区定义）。
+ * V0.9 无 Agent 定义/L3 画像/TaskLedger，anchor 就这两段。
+ */
+async function anchorTokensOf(provider: InferenceProvider, assembly: PromptResult): Promise<number> {
+  const msgs: ChatMessage[] = [];
+  if (assembly.messages.length > 0) {
+    msgs.push(assembly.messages[0]);                            // system
+  }
+  if (assembly.messages.length > 1) {
+    msgs.push(assembly.messages[assembly.messages.length - 1]); // 本轮 user
+  }
+  return provider.countTokens(msgs);
+}
+
+/** 水位线结算（§23.2）：账本喂给 ContextGovernor.settle（阈值同源，[R-18]/红线 28） */
+function settleWaterline(compactor: ChatCompactor, budget: ChatBudgetSpec,
+                         anchorTokens: number, promptTokens: number): WaterlineStatus {
+  const ledger: BudgetLedger = {
+    ctxTotal: budget.ctxTotal,
+    reservedOutput: budget.reservedOutput,
+    anchorTokens: anchorTokens,
+    workingTokens: Math.max(0, promptTokens - anchorTokens)
   };
-  return budget;
+  return compactor.settle(ledger);
 }
 
 /** 【稳定前缀】的 system prompt：会话绑定 Agent 时用其 system_prompt，否则用默认值 */
@@ -243,32 +271,92 @@ class ChatTurn implements ChatTurnHandle {
         return;
       }
 
-      // ---- [4] 按 R2 顺序组 prompt（稳定前缀 → 会话历史 → 易变尾部） ----
+      // ---- [4] 按 R2 顺序组 prompt（稳定前缀 → 摘要段（若有）→ 会话历史 → 易变尾部） ----
       const systemPrompt: string = await systemPromptOf(this.repo, conv);
-      const history: ChatMessageRecord[] = await this.repo.loadHistoryForPrompt(this.convId);
       // loadHistoryForPrompt 已包含刚落库的本轮 user 消息：它属于【易变尾部】，
       // 不能同时出现在【半稳定】历史区，否则重复 → 剔除末尾那条 user。
-      const assembly: PromptResult = ChatPromptBuilder.build({
-        systemPrompt: systemPrompt,
-        history: dropTrailingUser(history),
-        userText: text,
-        targetProviderKind: provider.kind
-      });
+      const history: ChatMessageRecord[] = dropTrailingUser(await this.repo.loadHistoryForPrompt(this.convId));
+      // L3 摘要状态从 conversations.meta 恢复（T0.9-17）：seq ≤ coveredUpToSeq 的原文已在摘要段里
+      let summaryState: ChatSummaryState | null = await this.repo.loadSummaryState(this.convId);
+      let assembly: PromptResult = assembleWithSummary(systemPrompt, history, summaryState, text, provider.kind);
 
       // ---- [5] 预算结算：用 provider.countTokens **真算**，不估（§23.2） ----
-      const budget: ChatBudget = budgetOf(provider.capabilities());
-      const promptTokens: number = await provider.countTokens(assembly.messages);
+      const devCtxOverride: number = await this.repo.devCtxOverride();   // 仅开发用，见方法注释
+      const budget: ChatBudgetSpec = budgetOf(provider.capabilities(), devCtxOverride);
+      let promptTokens: number = await provider.countTokens(assembly.messages);
+
+      // ---- [5b] 水位线（§23.2）：working >70% → 本轮**先压缩再发送**（T0.9-17） ----
+      const compactor: ChatCompactor = new ChatCompactor(provider);
+      const anchorTokens: number = await anchorTokensOf(provider, assembly);
+      const waterline: WaterlineStatus = settleWaterline(compactor, budget, anchorTokens, promptTokens);
+      let didCompact: boolean = false;
+
+      if (waterline.action !== 'ok') {
+        // §23.4 攒批纪律：一次压到 ≤50%（不是每轮微调）——压缩必然改写 prompt 前缀，
+        // KV cache 失效、下一轮全量 prefill（S1 实测秒级），代价必须摊到多轮。
+        // 压缩期间 UI 显示「整理思路中…」（AdCtxGauge），输入框不禁用（UI 规范 B3）。
+        const compactStartedAt: number = Date.now();
+        this.events.push({ type: 'compressing', compressing: true });
+        try {
+          const outcome: CompactResult = await compactor.compact({
+            convId: this.convId,
+            systemPrompt: systemPrompt,
+            history: history,
+            userText: text,
+            prev: summaryState,
+            targetProviderKind: provider.kind,
+            targetTokens: anchorTokens + waterline.compactionTargetTokens
+          });
+          if (outcome.compacted && outcome.state !== null && outcome.assembly !== null) {
+            // 摘要先落库再采用：它是持久进度（重启可恢复），也让 ctxUsage 与 send 立即同源
+            await this.repo.saveSummaryState(this.convId, outcome.state);
+            const tokensBefore: number = promptTokens;
+            summaryState = outcome.state;
+            assembly = outcome.assembly;
+            promptTokens = outcome.promptTokens;
+            didCompact = true;
+
+            // ---- 可观测（§24.4 / §10）：PERF 单行日志 + metrics ----
+            // 只记标量与低基数标签，绝不落用户内容（红线 20）；百分比取整，
+            // 浮点格式在 hilog 有静默丢日志的坑（spike S1 §5.3），一律整数。
+            const after: WaterlineStatus = settleWaterline(compactor, budget, anchorTokens, promptTokens);
+            const costMs: number = Date.now() - compactStartedAt;
+            Logger.info(TAG,
+              `PERF|compaction conv=${this.convId} tokens_before=${tokensBefore} tokens_after=${promptTokens}` +
+              ` ratio_before=${Math.round(waterline.workingRatio * 100)} ratio_after=${Math.round(after.workingRatio * 100)}` +
+              ` target=${anchorTokens + waterline.compactionTargetTokens} capacity=${budget.promptCapacity}` +
+              ` summarized_msgs=${outcome.summarizedCount} appendix_entities=${outcome.appendixEntities}` +
+              ` verdict=${outcome.verdict} attempts=${outcome.attempts} summary_version=${outcome.state.version}` +
+              ` cost_ms=${costMs}`);
+            Metrics.recordCtxPeakTokens(this.runId, tokensBefore);
+            Metrics.recordCompaction(this.runId, 'L3', costMs);
+          } else {
+            // 近窗之外无可折叠消息（历史本就短，超预算的是 anchor/近窗本身）：压缩帮不上忙，
+            // 走下方的容量硬判定——该失败就诚实失败，绝不静默截断。
+            Logger.warn(TAG, 'compaction skipped: nothing foldable', [
+              { key: 'conv', value: this.convId },
+              { key: 'prompt_tokens', value: promptTokens }
+            ]);
+          }
+        } finally {
+          // 无论成败都要熄灭「整理思路中…」——UI 状态不许悬挂
+          this.events.push({ type: 'compressing', compressing: false });
+        }
+      }
 
       if (promptTokens > budget.promptCapacity) {
-        // §23.3：**宁可诚实失败，不做静默掐头截尾**。V0.9 无压缩，直接报错并给出下一步。
-        // TODO(T0.9-17): 接 ContextGovernor 的 L3 滚动摘要——把最早若干轮压成结构化摘要段后重试；
-        //   仍不够再走本分支（届时 finishReason 用 'context_exhausted'，见 AgentRun.RunFinishReason）。
-        const detail: string = `上下文已满（${promptTokens} / ${budget.promptCapacity} token），请新建会话继续。`;
+        // §23.3：压缩已尽力（或无可压缩）仍装不下——**宁可诚实失败，不做静默掐头截尾**。
+        // 紧急线（>85%，红线 28）之上没有可丢弃类（V0.9 无 RAG 注入/折叠桩，
+        // 见 ContextGovernor.emergencyDegrade 注释），诚实失败是唯一正确出口。
+        const detail: string = didCompact
+          ? `上下文已满（压缩后仍需 ${promptTokens} / ${budget.promptCapacity} token），请新建会话继续。`
+          : `上下文已满（${promptTokens} / ${budget.promptCapacity} token），请新建会话继续。`;
         await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, detail);
         await this.repo.touchConversation(this.convId, providerId, provider.kind);
         Logger.warn(TAG, 'context budget exhausted', [
           { key: 'prompt_tokens', value: promptTokens },
-          { key: 'capacity', value: budget.promptCapacity }
+          { key: 'capacity', value: budget.promptCapacity },
+          { key: 'compacted', value: didCompact }
         ]);
         this.fail(ChatErrorCode.CTX_EXHAUSTED, detail);
         return;
@@ -300,7 +388,7 @@ class ChatTurn implements ChatTurnHandle {
 
   /** 流式主循环：消费 StreamDelta → 回吐 ChatTurnEvent → 结束时按 done/aborted/failed 落库 */
   private async generate(provider: InferenceProvider, providerId: string, assembly: PromptResult,
-                         promptTokens: number, budget: ChatBudget, startedAt: number): Promise<void> {
+                         promptTokens: number, budget: ChatBudgetSpec, startedAt: number): Promise<void> {
     const options: GenerateOptions = {
       maxTokens: budget.maxOutputTokens,
       signal: this.controller.signal
@@ -593,14 +681,17 @@ export class ChatService {
     }
 
     const history: ChatMessageRecord[] = await repo.loadHistoryForPrompt(convId);
-    const assembly: PromptResult = ChatPromptBuilder.build({
-      systemPrompt: await systemPromptOf(repo, conv),
-      history: history,
-      userText: '',   // 尚未输入的本轮消息不计入水位（它还不存在）
-      targetProviderKind: provider.kind
-    });
+    // 与 send() 完全同一装配（含摘要段与覆盖水位过滤、开发用 ctx 覆盖）：
+    // 口径分叉 = "水位显示 60% 却发送失败"，那是最伤信任的 bug（[R-18]）。
+    const summaryState: ChatSummaryState | null = await repo.loadSummaryState(convId);
+    const assembly: PromptResult = assembleWithSummary(
+      await systemPromptOf(repo, conv), history, summaryState,
+      '',   // 尚未输入的本轮消息不计入水位（它还不存在）
+      provider.kind
+    );
 
-    const budget: ChatBudget = budgetOf(provider.capabilities());
+    const devCtxOverride: number = await repo.devCtxOverride();   // 仅开发用
+    const budget: ChatBudgetSpec = budgetOf(provider.capabilities(), devCtxOverride);
     const used: number = await provider.countTokens(assembly.messages);
     const usage: CtxUsage = {
       usedTokens: used,

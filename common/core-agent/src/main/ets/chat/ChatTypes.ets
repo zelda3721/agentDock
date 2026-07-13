@@ -25,7 +25,7 @@ export { FinishReason, TokenUsage };
 // 事件流（合同 §二）
 // ---------------------------------------------------------------------------
 
-export type ChatTurnEventType = 'text' | 'usage' | 'done' | 'error';
+export type ChatTurnEventType = 'text' | 'usage' | 'done' | 'error' | 'compressing';
 
 export interface ChatTurnEvent {
   type: ChatTurnEventType;
@@ -36,6 +36,13 @@ export interface ChatTurnEvent {
   finishReason?: FinishReason;
   code?: number;
   message?: string;
+  /**
+   * type==='compressing'：L3 滚动摘要是否进行中（T0.9-17 / §23.4）。
+   * true 在压缩开始时发出、false 在压缩结束（无论成败）时发出——UI 据此点亮
+   * AdCtxGauge 的「整理思路中…」态。压缩**必须显示，不许静默**（UI 规范 B3），
+   * 且不可取消（它是本轮生成的必要前置）；输入框不禁用。
+   */
+  compressing?: boolean;
 }
 
 /**
@@ -119,6 +126,11 @@ export type ChatMessageStatus = 'streaming' | 'done' | 'aborted' | 'failed';
 export interface ChatMessageRecord {
   id: string;
   convId: string;
+  /**
+   * 会话内单调序号（messages.seq）。L3 滚动摘要的覆盖水位（ChatSummaryState.coveredUpToSeq）
+   * 以它为准：seq ≤ coveredUpToSeq 的消息已并入摘要段，组 prompt 时不再重复注入原文。
+   */
+  seq: number;
   role: 'user' | 'assistant' | 'system';
   content: string;
   createdAt: number;
@@ -126,6 +138,26 @@ export interface ChatMessageRecord {
   /** assistant 消息才有（存 messages.citations 的 JSON 信封，见 ProvenanceCodec） */
   provenance?: ChatProvenance;
   errorMessage?: string;
+}
+
+// ---------------------------------------------------------------------------
+// L3 滚动摘要的持久化状态（T0.9-17，存 conversations.meta 的 l3Summary 字段）
+// ---------------------------------------------------------------------------
+
+/**
+ * L3 摘要状态（§23.3-L3）。存进 conversations.meta（JSON 列，**不改表结构**），
+ * 重启后可恢复——压缩是持久进度，不是内存里的临时优化。
+ *
+ * summaryText 已含保真门的机械附录与溯源行（ContextGovernor.rollingSummary 的产物）；
+ * 装配时它作为【半稳定】历史区的头部注入（R2 顺序：system → 摘要段 → 近窗原文 → 易变尾部）。
+ */
+export interface ChatSummaryState {
+  /** 结构化摘要正文（三项强制：已达成结论 / 未决问题 / 用户明确约束 + 保真附录 + 溯源行） */
+  summaryText: string;
+  /** 已被摘要覆盖的最大 messages.seq；组 prompt 时 seq ≤ 此值的原文不再注入 */
+  coveredUpToSeq: number;
+  /** 摘要版本（每次滚动 +1）；诊断与回归套件用 */
+  version: number;
 }
 
 export interface ConversationSummary {

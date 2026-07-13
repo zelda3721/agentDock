@@ -292,10 +292,16 @@ export class ContextGovernor {
     return lines.join('\n');
   }
 
-  /** 渲染溯源指针（红线 25：摘要段/折叠桩必带） */
+  /**
+   * 渲染溯源指针（红线 25：摘要段/折叠桩必带）。
+   * 聊天路径的 step_range 即 messages.seq 区间——原文永远在 messages 表里全量保留，
+   * 压缩是"可逆的缓存淘汰"而非信息销毁（§27.2-M1）。
+   * TODO(T1.0-04): trace.read 工具落地后，在此补回「可用 trace.read 回读原文」的提示——
+   *   V0.9 无工具循环，向模型承诺一个不存在的工具是伪实现。
+   */
   static renderProvenance(p: ProvenanceRef): string {
     const artifacts: string = p.artifactIds.length > 0 ? `, artifacts:${p.artifactIds.join(',')}` : '';
-    return `[溯源 step_range=${p.stepFrom}-${p.stepTo}${artifacts}（可用 trace.read 回读原文）]`;
+    return `[溯源 step_range=${p.stepFrom}-${p.stepTo}${artifacts}]`;
   }
 
   // -------------------- L2 / L4 / M3 --------------------
@@ -338,10 +344,13 @@ export class ContextGovernor {
    * 仍不够则中止本步，向用户报告"上下文预算耗尽"并给出已有部分结果
    * ——**宁可诚实失败，不做静默掐头截尾**（finishReason='context_exhausted'）。
    *
-   * TODO(T0.9-17): 按设计文档 §23.3 实现紧急降级的三级丢弃序与诚实失败出口。
+   * T0.9-17 的裁决：V0.9 聊天链路**没有任何可丢弃类**——无 RAG 注入、无折叠桩（L2 是 T1.0-04），
+   * 唯一的摘要段就是全部历史的化身，丢它等于静默截断（红线：禁止）。因此三级丢弃序在 V0.9
+   * 为空集，紧急线上的诚实失败出口落在 ChatService.ChatTurn（压缩后仍超预算 → CTX_EXHAUSTED）。
+   * TODO(T1.0-04): L2 折叠桩与 RAG 注入落地后，在此实现真正的三级丢弃序。
    */
   emergencyDegrade(ledger: BudgetLedger): WaterlineStatus {
-    throw new Error('Not implemented: T0.9-17');
+    throw new Error('Not implemented: T1.0-04（V0.9 聊天链路无可丢弃类，诚实失败出口在 ChatService，见方法注释）');
   }
 
   /**
@@ -351,10 +360,12 @@ export class ContextGovernor {
    *   [易变尾部] 本轮记忆召回 + 本轮 RAG + 用户消息（+ M3 复诵节，T1.0-04）
    * 隐私围栏在装配记忆/RAG 前按 Provider.kind 过滤（红线 17 / §9.2），强制执行点即在此。
    *
-   * TODO(T0.9-17): 按设计文档 §23.2/附录 B/R2 实现装配与预算结算；
-   * 隐私围栏过滤挂点与 core-rag 的 ContextBuilder 于 W7 联调（T0.9-09/T0.9-14）。
+   * T0.9-17 的裁决：V0.9 聊天路径的装配已由 ChatPromptBuilder.build 落地（含摘要段位次），
+   * 预算结算与压缩编排在 ChatService.ChatTurn + ChatCompactor——本方法留给 AgentRun 路径。
+   * TODO(T1.0-01/T1.0-04): ReActLoop 落地时把工具轨迹/RAG/记忆的装配收敛到此入口，
+   * 隐私围栏过滤挂点与 core-rag 的 ContextBuilder 联调（T0.9-09/T0.9-14）。
    */
   buildPrompt(): Promise<string> {
-    throw new Error('Not implemented: T0.9-17');
+    throw new Error('Not implemented: T1.0-01（V0.9 聊天装配在 ChatPromptBuilder，见方法注释）');
   }
 }

@@ -35,6 +35,12 @@ export class ChatHost {
   /** 流式是否进行中：决定「发送 ↔ 停止」按钮与输入区状态 */
   onStreaming: (streaming: boolean) => void = () => {
   };
+  /**
+   * L3 滚动摘要进行中（T0.9-17 / §23.4）：AdCtxGauge 显示「整理思路中…」。
+   * 压缩期间输入框**不禁用**（UI 规范 B3：整理思路中是承诺不是遮羞布，必须显示、不许静默）。
+   */
+  onCompressing: (compressing: boolean) => void = () => {
+  };
   onCtxUsage: (usage: CtxUsageVM) => void = () => {
   };
   /**
@@ -309,6 +315,12 @@ export class ChatController {
       const delta: string = ev.text !== undefined ? ev.text : '';
       // ← 攒批：只累加字符串，不碰 @State、不 notifyDataChange
       this.pendingText += delta;
+      return;
+    }
+    if (ev.type === 'compressing') {
+      // L3 滚动摘要进行中（T0.9-17）：透传给页面点亮 AdCtxGauge 的「整理思路中…」。
+      // 压缩必须显示、不许静默（UI 规范 B3）；结束时（无论成败）ChatService 会发 false。
+      this.host.onCompressing(ev.compressing === true);
       return;
     }
     if (ev.type === 'usage') {
