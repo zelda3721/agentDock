@@ -33,7 +33,8 @@ export {
   SQL_CREATE_TASK_QUEUE,
   SQL_CREATE_KV_CONFIG,
   SQL_CREATE_METRICS,
-  SQL_CREATE_SCHEMA_VERSION
+  SQL_CREATE_SCHEMA_VERSION,
+  SQL_ALTER_MODELS_LOCAL_ADD_FAILURE_KIND
 } from './src/main/ets/db/Schema';
 
 export {
@@ -59,6 +60,8 @@ export {
 export {
   FileRepo,
   DownloadState,
+  DownloadFailureKind,
+  downloadFailureKindOf,
   DownloadRequest,
   DownloadProgress,
   DownloadProgressListener,

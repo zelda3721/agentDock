@@ -19,6 +19,8 @@ import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import {
   AppRdbStore,
+  DownloadFailureKind,
+  downloadFailureKindOf,
   DownloadPausedError,
   DownloadProgress,
   DownloadRequest,
@@ -75,6 +77,11 @@ export interface ModelEntry {
   advice: string;
   /** 失败原因（下载失败 / sha256 校验失败）。 */
   error: string;
+  /**
+   * 失败**类别**（DownloadFailureKind 的字符串值：''/transfer/checksum）。
+   * error 是给人看的一句话，failureKind 是给 UI 做判据的那个字段——**UI 不从话里反推判据**。
+   */
+  failureKind: string;
 }
 
 /** 远程 Provider 的表单入参（**apiKey 只进不出**：读取时恒为空串）。 */
@@ -203,7 +210,8 @@ export class ModelFacade {
         residentGb: run.residentGb,
         reason: run.reason,
         advice: run.advice,
-        error: row !== undefined && row.error !== null ? row.error : ''
+        error: row !== undefined && row.error !== null ? row.error : '',
+        failureKind: row !== undefined ? row.failureKind : ''
       });
     }
     // 小的排前面：首启要一眼看到"秒级体验档"。
@@ -252,7 +260,8 @@ export class ModelFacade {
     };
 
     await this.repo().updateProgress(modelId, DownloadState.QUEUED, 0);
-    this.publishDownload(modelId, DownloadState.QUEUED as string, 0, item.sizeBytes, 0, '');
+    this.publishDownload(modelId, DownloadState.QUEUED as string, 0, item.sizeBytes, 0, '',
+      DownloadFailureKind.NONE);
 
     // 刻意不 await：传输是长任务，UI 不等它。
     repo.download(req, (p: DownloadProgress): void => {
@@ -262,7 +271,7 @@ export class ModelFacade {
       if (final.state === DownloadState.READY) {
         await this.repo().markReady(modelId, final.targetPath, final.downloadedBytes);
         this.publishDownload(modelId, DownloadState.READY as string, final.downloadedBytes,
-          final.totalBytes, 0, '');
+          final.totalBytes, 0, '', DownloadFailureKind.NONE);
         // 首个就绪的本地模型自动选中：[R-53] 默认值必须是好的——
         // 用户下完模型就该能问第一句，而不是再去找一个"启用"开关。
         // 已经有选中的模型时**不抢**（§4.1：完成时只提示 [切换]，绝不自动替换正在用的大脑）。
@@ -273,7 +282,7 @@ export class ModelFacade {
       } else if (final.state === DownloadState.PAUSED) {
         await this.repo().updateProgress(modelId, DownloadState.PAUSED, final.downloadedBytes);
         this.publishDownload(modelId, DownloadState.PAUSED as string, final.downloadedBytes,
-          final.totalBytes, 0, '');
+          final.totalBytes, 0, '', DownloadFailureKind.NONE);
       }
     }).catch(async (e: Object): Promise<void> => {
       this.inFlight.delete(modelId);
@@ -281,9 +290,16 @@ export class ModelFacade {
         return;
       }
       const message: string = (e as Error).message;
-      await this.repo().markFailed(modelId, message);
-      this.publishDownload(modelId, DownloadState.FAILED as string, 0, item.sizeBytes, 0, message);
-      Logger.error(TAG, 'download failed', [{ key: 'model_id', value: modelId }]);
+      // 失败**类别**由 core-data 的那一份映射给出（downloadFailureKindOf），这里不按错误串猜：
+      // 'transfer' = 所有源都下不动（sha256 从未校验过）；'checksum' = 下全了但哈希对不上。
+      // UI 的 sha256 行据此决定说"未下载"还是"校验失败"——少了它，网络超时会被渲染成校验失败。
+      const kind: DownloadFailureKind = downloadFailureKindOf(e);
+      await this.repo().markFailed(modelId, message, kind as string);
+      this.publishDownload(modelId, DownloadState.FAILED as string, 0, item.sizeBytes, 0, message, kind);
+      Logger.error(TAG, 'download failed', [
+        { key: 'model_id', value: modelId },
+        { key: 'kind', value: kind as string }
+      ]);
     });
   }
 
@@ -305,7 +321,7 @@ export class ModelFacade {
     await this.repo().clearActiveIfMatches(modelId);
     // 记录不删：清单里仍有这个模型，它只是回到"未下载"态（删了记录下次 init 又会登记回来）。
     await this.repo().updateProgress(modelId, DownloadState.NONE, 0);
-    this.publishDownload(modelId, DownloadState.NONE as string, 0, 0, 0, '');
+    this.publishDownload(modelId, DownloadState.NONE as string, 0, 0, 0, '', DownloadFailureKind.NONE);
     Logger.info(TAG, 'model deleted', [{ key: 'model_id', value: modelId }]);
   }
 
@@ -441,14 +457,16 @@ export class ModelFacade {
     }
     // 中间进度只广播不落库（每秒几十次写库会把 WAL 撑爆）；
     // 断点游标在暂停/失败/完成这三个**终态**上才落库，那才是重启后要恢复的东西。
+    // 中间态一律不是失败态，failureKind 恒为 NONE（FAILED 在上面已经 return 掉了）。
     this.publishDownload(modelId, p.state as string, p.downloadedBytes, p.totalBytes,
-      p.bytesPerSec, p.error ?? '');
+      p.bytesPerSec, p.error ?? '', DownloadFailureKind.NONE);
   }
 
   private publishDownload(modelId: string, state: string, done: number, total: number,
-    rate: number, error: string): void {
+    rate: number, error: string, failureKind: DownloadFailureKind): void {
     EventBus.get().publish(MODEL_DOWNLOAD_CHANGED, {
-      modelId, state, downloadedBytes: done, totalBytes: total, bytesPerSec: rate, error
+      modelId, state, downloadedBytes: done, totalBytes: total, bytesPerSec: rate, error,
+      failureKind: failureKind as string
     } as ModelDownloadChanged);
   }
 

@@ -83,6 +83,26 @@ export interface ChatProvenance {
   tokensPerSec: number;
 }
 
+/**
+ * 「**下一条消息会用谁**」——当前大脑的只读快照（AdBrainIndicator 的数据源）。
+ *
+ * 与 ChatProvenance 的区别是**时态**，这一点决定了顶栏不撒谎：
+ *  - ChatProvenance = 某条**已完成回答**的来源（历史事实，写死在那条消息上）；
+ *  - CurrentBrain   = **此刻**发送会落到哪个 Provider（当前事实）。
+ * 顶栏只能用后者：真机上出现过"一个模型都没有，顶栏仍显示 本地 · local:qwen2.5-0.5b"
+ * （沿用了历史事实），用户以为能发送，一按发送必然以 NO_PROVIDER 失败——
+ * 指示器给出的是**发送前的承诺**，承诺不兑现就是撒谎（§1.4 可辩护的仪表）。
+ *
+ * 无可用 Provider 时 ChatService.currentBrain() 返回 **null**（不是一个"空模型"对象）：
+ * 缺席必须是类型层面的缺席，UI 才不可能把它渲染成一个看起来能用的大脑。
+ */
+export interface CurrentBrain {
+  providerId: string;
+  providerKind: 'local' | 'remote';
+  /** 展示名；providers 表未登记时回退 providerId（**不编造型号名**，与 ChatProvenance.modelLabel 同口径） */
+  modelLabel: string;
+}
+
 // ---------------------------------------------------------------------------
 // 消息与会话
 // ---------------------------------------------------------------------------

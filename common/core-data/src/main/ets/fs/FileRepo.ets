@@ -51,6 +51,33 @@ export enum DownloadState {
   FAILED = 'failed'
 }
 
+/**
+ * 失败**类别**判别符（state=FAILED 时才有意义）。
+ *
+ * 为什么必须有它：DownloadState.FAILED 是**两种互不相干的失败**的公共出口——
+ *   (a) 传输失败：所有镜像源都下不动（超时 / DNS / 404 / 断网）。**sha256 校验根本没跑过。**
+ *   (b) 校验失败：文件下全了，但 sha256 对不上（Sha256MismatchError）。
+ * 只给 UI 一个自由文本 error 字段，UI 就**无法**区分这两者，于是网络超时时 sha256 行渲染出
+ * 「✗ 校验失败」——一句凭空捏造的结论（校验都没跑，何来失败）。判别符让判据只留在这一处：
+ * **谁知道为什么失败，谁就把类别写下来**，UI 只转述，不猜。
+ */
+export enum DownloadFailureKind {
+  /** 非失败态（state ≠ FAILED）。 */
+  NONE = '',
+  /** 传输失败：所有源都失败。哈希状态 = **未校验**，不是"校验失败"。 */
+  TRANSFER = 'transfer',
+  /** sha256 校验失败：文件已下全但哈希对不上（文件已被删除）。 */
+  CHECKSUM = 'checksum'
+}
+
+/**
+ * 异常 → 失败类别的**唯一映射**（调用方在 catch 里用它，绝不自己按错误串猜类别）。
+ * 注意：DownloadPausedError 不是失败，调用方必须在此之前拦掉它。
+ */
+export function downloadFailureKindOf(e: Object): DownloadFailureKind {
+  return e instanceof Sha256MismatchError ? DownloadFailureKind.CHECKSUM : DownloadFailureKind.TRANSFER;
+}
+
 /** 断点续传的下载进度（持久化到 models_local.downloaded_bytes；也是 TaskQueue 的 cursor 内容）。 */
 export interface DownloadProgress {
   /** 当前实际生效的下载源（多源回退后可能不是清单里的第一个）。 */
@@ -65,6 +92,8 @@ export interface DownloadProgress {
   state: DownloadState;
   /** 失败原因（state=FAILED 时非空；已脱敏，只含 URL 主机与系统错误码）。 */
   error?: string;
+  /** 失败**类别**（state=FAILED 时必填）：UI 据此决定 sha256 行该说什么，不得由 error 文本反推。 */
+  failureKind?: DownloadFailureKind;
 }
 
 /** 下载请求（模型权重；R5：运行时下载）。 */
@@ -538,9 +567,12 @@ export class FileRepo {
       }
     }
 
+    // 所有源都下不动 = **传输**失败。哈希从未被计算过——failureKind 说的就是这件事，
+    // UI 据此把 sha256 行渲染成"未下载"，而不是编一句"校验失败"。
     const failed: DownloadProgress = {
       url: req.urls[req.urls.length - 1], targetPath: req.targetPath, downloadedBytes: 0,
-      totalBytes: req.expectedSize, bytesPerSec: 0, state: DownloadState.FAILED, error: lastError
+      totalBytes: req.expectedSize, bytesPerSec: 0, state: DownloadState.FAILED, error: lastError,
+      failureKind: DownloadFailureKind.TRANSFER
     };
     onProgress(failed);
     throw new Error(`download(${req.modelId}) failed on all ${req.urls.length} source(s): ${lastError}`);
@@ -722,9 +754,11 @@ export class FileRepo {
         { key: 'model_id', value: req.modelId },
         { key: 'host', value: FileRepo.hostOf(url) }
       ]);
+      // 这才是**真正**的校验失败：文件下全了、哈希算过了、对不上。
       onProgress({
         url, targetPath: req.targetPath, downloadedBytes: 0, totalBytes: req.expectedSize,
-        bytesPerSec: 0, state: DownloadState.FAILED, error: detail
+        bytesPerSec: 0, state: DownloadState.FAILED, error: detail,
+        failureKind: DownloadFailureKind.CHECKSUM
       });
       throw new Sha256MismatchError(`download(${req.modelId}) ${detail}. The file was deleted.`);
     }

@@ -50,6 +50,14 @@ export interface ModelDownloadChanged extends EventPayload {
   bytesPerSec: number;
   /** 失败原因（state=failed 时非空）。 */
   error: string;
+  /**
+   * 失败**类别**（DownloadFailureKind 的字符串值：''/transfer/checksum；state=failed 时非空）。
+   *
+   * 只有 error 这一个自由文本字段是不够的：failed 是"全源传输失败"与"sha256 对不上"的公共出口，
+   * UI 无法从一句人话里反推类别，只能猜——而它猜出来的「✗ 校验失败」在网络超时时是**假话**
+   * （校验根本没跑过）。类别由**知道原因的那一层**（FileRepo）填，UI 只转述。
+   */
+  failureKind: string;
 }
 
 /** 当前本地模型变更。entry 订阅本主题重建 LocalProvider。 */

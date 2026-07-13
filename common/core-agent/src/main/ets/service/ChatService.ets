@@ -46,6 +46,7 @@ import {
   ChatTurnHandle,
   ConversationSummary,
   CtxUsage,
+  CurrentBrain,
   DEFAULT_SYSTEM_PROMPT,
   TITLE_MAX_CHARS
 } from '../chat/ChatTypes';
@@ -498,6 +499,37 @@ export class ChatService {
 
   listMessages(convId: string, limit: number): Promise<ChatMessageRecord[]> {
     return this.requireRepo().listMessages(convId, limit);
+  }
+
+  // --- 当前大脑（只读） ----------------------------------------------------------
+
+  /**
+   * 「下一条消息会用谁」——**只读**快照，无副作用（新增方法，不改任何已有签名）。
+   *
+   * 为什么必须有这个口子：在它之前，UI 唯一能拿到的"大脑"是**最近一条已完成回答的溯源**
+   * （历史事实）。于是真机上出现了这一幕——一个模型都没有，顶栏却照旧显示
+   * 「本地 · local:qwen2.5-0.5b」，输入区可用；用户一发送，走到 ChatTurn.run 的
+   * Provider 校验分支（NO_PROVIDER）必然失败。**UI 不该有第二条路去猜当前大脑**，
+   * 所以真值从这里出，与 send()/ctxUsage() 共用同一个 resolveProvider()——三处永远同源。
+   *
+   * 无可用 Provider → 返回 null（不是"空模型"对象）。null 是 UI 禁用输入区、
+   * 给出「去模型页下载一个」行动邀请的唯一依据。
+   */
+  async currentBrain(): Promise<CurrentBrain | null> {
+    const provider: InferenceProvider | null = resolveProvider();
+    if (provider === null) {
+      return null;
+    }
+    // repo 尚未装配（启动竞态）时不阻塞：退回 providerId 当展示名，而不是编一个型号名出来
+    const label: string = this.repo === null
+      ? provider.id
+      : await modelLabelOf(this.repo, provider.id);
+    const brain: CurrentBrain = {
+      providerId: provider.id,
+      providerKind: provider.kind,
+      modelLabel: label
+    };
+    return brain;
   }
 
   // --- 发送 -------------------------------------------------------------------

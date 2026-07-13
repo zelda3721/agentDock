@@ -1,0 +1,8 @@
+[2026-07-13T19:14:25.429] [ERROR] [23477] - Dir json parse error: /Users/ailab/Documents/codes/AgentDock/common/core-data/src,/Users/ailab/Documents/codes/AgentDock/features/models/src,/Users/ailab/Documents/codes/AgentDock/common/design-system/src
+
+[2026-07-13T19:14:34.108] [INFO] [23496] - targets: undefined
+
+[2026-07-13T19:14:34.109] [INFO] [23496] - The configuration file /Users/ailab/Documents/codes/AgentDock/code-linter.json5 is in use.
+
+[2026-07-13T19:14:34.112] [ERROR] [23496] - Some error occurred during linting. This may cause incomplete report results.
+

@@ -142,6 +142,7 @@ export struct AdProgress {
       }
 
       // 轨道 + 填充：radius_none（仪表是直角的）
+      // 结构与 AdCtxGauge 的水位线**逐节点一致**——那一条是真机跑过的，仪表不该有第二种写法。
       Stack({ alignContent: Alignment.Start }) {
         Column()
           .width('100%')
@@ -167,7 +168,6 @@ export struct AdProgress {
       }
       .width('100%')
       .height(4)
-      .clip(true)
 
       Row({ space: AdSpace.s2 }) {
         // 百分比：0ms 跳变（[R-30]，与减弱动效开关无关）
@@ -240,11 +240,22 @@ export struct AdProgress {
     }
   }
 
+  /** 总量未知（服务端没给 Content-Length）→ 不确定进度。**NaN 不算未知**，见 clamped()。 */
   private isIndeterminate(): boolean {
-    return this.percent < 0;
+    return Number.isFinite(this.percent) && this.percent < 0;
   }
 
+  /**
+   * 0–100，且**恒为有限数**。
+   *
+   * 为什么要防 NaN：barPercent 直接进 `.width(`${barPercent}%`)`。调用方一次
+   * `x / 0`（总字节为 0 时算百分比）就会把 `width('NaN%')` 喂给布局——一个数值字段
+   * 能把整块 UI 拖下水，这种耦合必须在组件这一侧掐死，而不是指望每个调用方都记得防。
+   */
   private clamped(): number {
+    if (!Number.isFinite(this.percent)) {
+      return 0;
+    }
     return Math.min(100, Math.max(0, this.percent));
   }
 

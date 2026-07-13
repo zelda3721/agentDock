@@ -69,6 +69,27 @@ export class ConversationVM {
   }
 }
 
+/**
+ * 顶栏「当前大脑」的视图模型 —— **当前事实，不是历史事实**。
+ *
+ * available=false 表示 core-agent 报「此刻没有可用 Provider」（ChatService.currentBrain() 返回 null）。
+ * 此时**绝不能**渲染 AdBrainIndicator：那个组件的三态（本地/远程/接管中）每一态都是在断言
+ * "有一个大脑正等着回答你"。真机上正是这里撒的谎——一个模型都没有，顶栏仍写着
+ * 「本地 · local:qwen2.5-0.5b」，用户以为能发送，一发送必然失败。
+ *
+ * checked=false 表示还没读到（启动瞬间）：**既不说有也不说无**，顶栏此刻什么都不显示。
+ */
+@Observed
+export class BrainVM {
+  /** 是否已经问过 core-agent（false 时不许渲染任何大脑断言） */
+  checked: boolean = false;
+  /** 此刻是否有可用 Provider */
+  available: boolean = false;
+  kind: AdBrainKind = AdBrainKind.LOCAL;
+  /** 模型展示名；providers 表未登记时是 providerId（不编造型号名） */
+  modelName: string = '';
+}
+
 /** ctx 水位（AdCtxGauge 入参）。percent < 0 表示尚未测得——**不显示 0%**。 */
 @Observed
 export class CtxUsageVM {

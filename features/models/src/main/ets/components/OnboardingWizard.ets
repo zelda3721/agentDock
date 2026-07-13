@@ -28,16 +28,14 @@ import {
   AdDivider,
   AdGlyph,
   AdGlyphKind,
-  AdHashState,
-  AdModelTier,
-  AdModelTierCard,
-  AdRunnability,
   AdSpace,
   AdStroke,
   AdType
 } from 'design-system';
 import { BreakpointKey, ModelEntry, ModelFacade } from '../model/ModelViewModel';
 import { DeviceBudget, ModelCatalog } from '../model/ModelManifest';
+import { ModelRow } from '../model/ModelRow';
+import { ModelTierRow } from './ModelTierRow';
 
 const TAG: string = 'OnboardingWizard';
 
@@ -101,10 +99,10 @@ export struct OnboardingWizard {
   };
 
   @State private step: WizardStep = 'choose_channel';
-  /** 秒级体验档候选（quickStart=true 且已核验）。 */
-  @State private quick: ModelEntry[] = [];
+  /** 秒级体验档候选（quickStart=true 且已核验）。@Observed 行状态：进度就地刷新，卡片不重建。 */
+  @State private quick: ModelRow[] = [];
   /** 可后台续传的更强档位（路径 A 第 2 步的可选卡片，§4.1）。 */
-  @State private bigger: ModelEntry[] = [];
+  @State private bigger: ModelRow[] = [];
   @State private budget: DeviceBudget = { totalRamGb: 0, budgetGb: 0, deviceType: '' };
   @State private failure: string = '';
   @State private loading: boolean = true;
@@ -140,34 +138,34 @@ export struct OnboardingWizard {
   }
 
   private async refresh(): Promise<void> {
-    this.quick = await this.facade.quickStartCandidates();
+    const candidates: ModelEntry[] = await this.facade.quickStartCandidates();
+    this.quick = candidates.map((e: ModelEntry): ModelRow => new ModelRow(e));
     const all: ModelEntry[] = await this.facade.listModels();
     // "顺带下一个更强的"：本机跑得动、且不是秒级体验档的那些（后台续传，不挡用户开始用）。
-    this.bigger = all.filter((e: ModelEntry): boolean =>
-      !e.item.quickStart && e.runnable && e.state !== 'ready');
+    this.bigger = all
+      .filter((e: ModelEntry): boolean => !e.item.quickStart && e.runnable && e.state !== 'ready')
+      .map((e: ModelEntry): ModelRow => new ModelRow(e));
   }
 
+  /** 进度到达：**就地改字段**（@Observed 局部刷新），不重建数组、不换 ForEach 的 key。 */
   private applyProgress(p: ModelDownloadChanged): void {
-    this.quick = this.quick.map((e: ModelEntry): ModelEntry => OnboardingWizard.merge(e, p));
-    this.bigger = this.bigger.map((e: ModelEntry): ModelEntry => OnboardingWizard.merge(e, p));
+    for (const row of this.quick) {
+      if (row.item.id === p.modelId) {
+        row.applyProgress(p);
+      }
+    }
+    for (const row of this.bigger) {
+      if (row.item.id === p.modelId) {
+        row.applyProgress(p);
+      }
+    }
     if (p.state === 'ready' && this.step === 'nano_download') {
-      const isQuick: boolean = this.quick.some((e: ModelEntry): boolean => e.item.id === p.modelId);
+      const isQuick: boolean = this.quick.some((r: ModelRow): boolean => r.item.id === p.modelId);
       if (isQuick) {
         // 秒级体验档就绪 = 路径 A 走完：直接落会话页问第一句（§4.1 第 3 步，激活事件在那里打点）。
         this.finish();
       }
     }
-  }
-
-  private static merge(e: ModelEntry, p: ModelDownloadChanged): ModelEntry {
-    if (e.item.id !== p.modelId) {
-      return e;
-    }
-    return {
-      item: e.item, state: p.state, downloadedBytes: p.downloadedBytes, bytesPerSec: p.bytesPerSec,
-      active: e.active, runnable: e.runnable, residentGb: e.residentGb, reason: e.reason,
-      advice: e.advice, error: p.error
-    };
   }
 
   private async finish(): Promise<void> {
@@ -180,9 +178,9 @@ export struct OnboardingWizard {
     this.onFinished();
   }
 
-  private async startNano(entry: ModelEntry): Promise<void> {
+  private async startNano(row: ModelRow): Promise<void> {
     try {
-      await this.facade.startDownload(entry.item.id);
+      await this.facade.startDownload(row.item.id);
     } catch (e) {
       this.failure = (e as BusinessError).message;
     }
@@ -404,15 +402,16 @@ export struct OnboardingWizard {
 
       Scroll() {
         Column({ space: AdSpace.s4 }) {
-          ForEach(this.quick, (entry: ModelEntry) => {
-            this.quickCard(entry)
-          }, (entry: ModelEntry) => `${entry.item.id}:${entry.state}:${this.pct(entry)}`)
+          // key 恒为 model id：稳定 key + @Observed 行状态 = 下载中局部刷新，卡片不重建
+          ForEach(this.quick, (row: ModelRow) => {
+            this.quickCard(row)
+          }, (row: ModelRow) => row.item.id)
 
           if (this.bigger.length > 0) {
             AdDivider({ label: '顺带下一个更强的（可选）' })
-            ForEach(this.bigger, (entry: ModelEntry) => {
-              this.biggerRow(entry)
-            }, (entry: ModelEntry) => `bg:${entry.item.id}:${entry.state}:${this.pct(entry)}`)
+            ForEach(this.bigger, (row: ModelRow) => {
+              this.biggerRow(row)
+            }, (row: ModelRow) => `bg:${row.item.id}`)
           }
         }
         .width('100%')
@@ -426,48 +425,64 @@ export struct OnboardingWizard {
     .alignItems(HorizontalAlign.Start)
   }
 
+  /** 秒级体验档：与模型页**同一个** ModelTierRow（同一份映射、同一套动作区，杜绝两处口径漂移）。 */
   @Builder
-  quickCard(entry: ModelEntry) {
-    AdModelTierCard({
-      tier: this.toTier(entry),
-      onDownload: () => {
-        this.startNano(entry);
+  quickCard(row: ModelRow) {
+    ModelTierRow({
+      row: row,
+      budget: this.budget,
+      onDownload: (r: ModelRow) => {
+        this.startNano(r);
       },
-      onPauseToggle: () => {
-        this.facade.pauseDownload(entry.item.id);
+      onPauseToggle: (r: ModelRow) => {
+        this.facade.pauseDownload(r.item.id);
       },
-      onCancel: () => {
-        this.facade.deleteModel(entry.item.id);
+      onCancel: (r: ModelRow) => {
+        this.facade.deleteModel(r.item.id);
       },
-      onRedownload: () => {
-        this.startNano(entry);
+      onUse: (r: ModelRow) => {
+        // 向导里"用这个模型" = 路径 A 走完：选中 + 落会话页（§4.1 第 3 步）
+        this.useAndFinish(r);
       },
-      onOpenSource: () => {
-        Logger.info(TAG, 'open source url requested', [{ key: 'model_id', value: entry.item.id }]);
+      onDelete: (r: ModelRow) => {
+        this.facade.deleteModel(r.item.id);
+      },
+      onOpenSource: (r: ModelRow) => {
+        Logger.info(TAG, 'open source url requested', [{ key: 'model_id', value: r.item.id }]);
       }
     })
   }
 
+  private async useAndFinish(row: ModelRow): Promise<void> {
+    try {
+      await this.facade.selectModel(row.item.id);
+    } catch (e) {
+      this.failure = (e as BusinessError).message;
+      return;
+    }
+    this.finish();
+  }
+
   /** 更强的档位：后台续传，**不挡用户现在开始用**（§4.1）。 */
   @Builder
-  biggerRow(entry: ModelEntry) {
+  biggerRow(row: ModelRow) {
     Row({ space: AdSpace.s2 }) {
       AdGlyph({ kind: AdGlyphKind.LOCAL_DOCK, glyphSize: 12, color: AdColor.localFg })
       Column({ space: AdSpace.hairline }) {
-        Text(`${entry.item.name} ${entry.item.quant}`).wizardBody(AdColor.ink)
-        Text(`${Math.round(entry.item.sizeBytes / MB)}MB · 后台续传，不挡你现在开始用`)
+        Text(`${row.item.name} ${row.item.quant}`).wizardBody(AdColor.ink)
+        Text(`${Math.round(row.item.sizeBytes / MB)}MB · 后台续传，不挡你现在开始用`)
           .wizardHint(AdColor.inkTertiary)
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
 
       AdButton({
-        label: entry.state === 'downloading' ? '下载中' : '加入后台下载',
+        label: row.state === 'downloading' ? '下载中' : '加入后台下载',
         variant: AdButtonVariant.SECONDARY,
         btnSize: AdButtonSize.SM,
-        btnEnabled: entry.state !== 'downloading',
+        btnEnabled: row.state !== 'downloading',
         onAction: () => {
-          this.startNano(entry);
+          this.startNano(row);
         }
       })
     }
@@ -475,44 +490,11 @@ export struct OnboardingWizard {
     .alignItems(VerticalAlign.Center)
   }
 
-  private pct(entry: ModelEntry): number {
-    const total: number = entry.item.sizeBytes;
-    return total > 0 ? Math.floor(entry.downloadedBytes * 100 / total) : 0;
-  }
-
   private quickLabel(): string {
     if (this.quick.length === 0) {
       return '极小模型';
     }
-    const item: ModelEntry = this.quick[0];
-    return `${item.item.name} · ${Math.round(item.item.sizeBytes / MB)}MB`;
-  }
-
-  /** ModelEntry → B7 入参（与模型页同一口径：许可/出处/sha256 四态全都不能少）。 */
-  private toTier(entry: ModelEntry): AdModelTier {
-    const tier: AdModelTier = new AdModelTier(entry.item.tier.toUpperCase(), entry.item.name, entry.item.quant);
-    tier.sizeGb = ModelCatalog.sizeGb(entry.item);
-    tier.memoryGb = entry.residentGb;
-    tier.budgetGb = this.budget.budgetGb;
-    tier.contextTokens = entry.item.contextLength;
-    tier.expectedSpeed = entry.item.measured !== null ? entry.item.measured.tokensPerSec.toFixed(1) : '—';
-    tier.license = entry.item.license;
-    tier.source = entry.item.sourceUrl.replace('https://', '');
-    tier.sha256Short = entry.item.sha256.length >= 8
-      ? `${entry.item.sha256.substring(0, 4)}…${entry.item.sha256.substring(entry.item.sha256.length - 4)}`
-      : entry.item.sha256;
-    tier.hashState = entry.state === 'ready' ? AdHashState.PASSED
-      : (entry.state === 'verifying' ? AdHashState.VERIFYING
-        : (entry.state === 'failed' ? AdHashState.FAILED : AdHashState.NOT_DOWNLOADED));
-    tier.runnability = entry.runnable ? AdRunnability.RUNNABLE : AdRunnability.NOT_RUNNABLE;
-    tier.advice = entry.advice;
-    if (entry.state === 'downloading' || entry.state === 'paused' || entry.state === 'queued') {
-      tier.downloadedPercent = this.pct(entry);
-      tier.downloadedGb = entry.downloadedBytes / (1024 * 1024 * 1024);
-      tier.downloadPaused = entry.state === 'paused';
-    } else {
-      tier.downloadedPercent = -1;
-    }
-    return tier;
+    const row: ModelRow = this.quick[0];
+    return `${row.item.name} · ${Math.round(row.item.sizeBytes / MB)}MB`;
   }
 }

@@ -29,12 +29,8 @@ import {
   AdEmptyStateVariant,
   AdGlyph,
   AdGlyphKind,
-  AdHashState,
   AdListItem,
-  AdModelTier,
-  AdModelTierCard,
   AdRadius,
-  AdRunnability,
   AdSkeleton,
   AdSpace,
   AdTag,
@@ -42,7 +38,9 @@ import {
   AdType
 } from 'design-system';
 import { BreakpointKey, ModelEntry, ModelFacade, RemoteProviderView } from '../model/ModelViewModel';
-import { DeviceBudget, isDownloadable, ModelCatalog, ModelManifestItem } from '../model/ModelManifest';
+import { DeviceBudget, ModelCatalog, ModelManifestItem } from '../model/ModelManifest';
+import { ModelRow } from '../model/ModelRow';
+import { ModelTierRow } from './ModelTierRow';
 
 const TAG: string = 'ModelListPage';
 
@@ -84,7 +82,8 @@ export struct ModelListPage {
   };
 
   @State private tab: ModelTab = 'local';
-  @State private entries: ModelEntry[] = [];
+  /** 行状态：@Observed 对象，进度事件**就地改字段**（见 model/ModelRow.ets 文件头）。 */
+  @State private rows: ModelRow[] = [];
   @State private remotes: RemoteProviderView[] = [];
   @State private loading: boolean = true;
   @State private failure: string = '';
@@ -113,7 +112,8 @@ export struct ModelListPage {
       const context: common.Context = this.getUIContext().getHostContext() as common.Context;
       await this.facade.init(context);
       this.budget = this.facade.deviceBudget();
-      this.entries = await this.facade.listModels();
+      const entries: ModelEntry[] = await this.facade.listModels();
+      this.rows = entries.map((e: ModelEntry): ModelRow => new ModelRow(e));
       this.remotes = await this.facade.listRemoteProviders();
       this.failure = '';
     } catch (e) {
@@ -125,144 +125,74 @@ export struct ModelListPage {
     this.loading = false;
   }
 
-  /** 进度事件 → 就地更新那一行（不重查库：每秒几十次的进度不该打库）。 */
+  /**
+   * 进度事件 → **就地改那一行的字段**（不重查库：每秒几十次的进度不该打库；
+   * 也不重建数组：@Observed + 稳定 key 才能只重绘这一行，见 model/ModelRow.ets 文件头）。
+   */
   private applyProgress(p: ModelDownloadChanged): void {
-    const next: ModelEntry[] = this.entries.map((e: ModelEntry): ModelEntry => {
-      if (e.item.id !== p.modelId) {
-        return e;
-      }
-      return {
-        item: e.item,
-        state: p.state,
-        downloadedBytes: p.downloadedBytes,
-        bytesPerSec: p.bytesPerSec,
-        active: e.active,
-        runnable: e.runnable,
-        residentGb: e.residentGb,
-        reason: e.reason,
-        advice: e.advice,
-        error: p.error
-      };
-    });
-    this.entries = next;
+    const row: ModelRow | undefined = this.rows.find((r: ModelRow): boolean => r.item.id === p.modelId);
+    if (row !== undefined) {
+      row.applyProgress(p);
+    }
     // 终态要回库对齐（选中状态可能因"首个就绪自动选中"而变）。
     if (p.state === 'ready' || p.state === 'none') {
-      this.refreshEntries();
+      this.refreshRows();
     }
   }
 
-  private async refreshEntries(): Promise<void> {
+  /** 回库对齐：**逐行 sync，不换对象**——换对象会让 @ObjectLink 指向被丢弃的旧实例。 */
+  private async refreshRows(): Promise<void> {
     try {
-      this.entries = await this.facade.listModels();
+      const entries: ModelEntry[] = await this.facade.listModels();
+      const byId: Map<string, ModelEntry> = new Map<string, ModelEntry>();
+      for (const e of entries) {
+        byId.set(e.item.id, e);
+      }
+      for (const row of this.rows) {
+        const fresh: ModelEntry | undefined = byId.get(row.item.id);
+        if (fresh !== undefined) {
+          row.sync(fresh);
+        }
+      }
     } catch (e) {
       Logger.warn(TAG, 'refresh failed', [{ key: 'err', value: (e as BusinessError).message }]);
     }
   }
 
-  // --- 动作 -------------------------------------------------------------------
+  // --- 动作（注入给 B7 的动作区；features 不装配 core，只调 facade）-------------
 
-  private async onDownload(entry: ModelEntry): Promise<void> {
+  private async onDownload(row: ModelRow): Promise<void> {
     try {
-      await this.facade.startDownload(entry.item.id);
+      await this.facade.startDownload(row.item.id);
     } catch (e) {
       this.failure = (e as BusinessError).message;
     }
   }
 
-  private async onPauseToggle(entry: ModelEntry): Promise<void> {
-    if (entry.state === 'downloading' || entry.state === 'queued') {
-      await this.facade.pauseDownload(entry.item.id);
+  private async onPauseToggle(row: ModelRow): Promise<void> {
+    if (row.state === 'downloading' || row.state === 'queued') {
+      await this.facade.pauseDownload(row.item.id);
     } else {
-      await this.onDownload(entry);
+      await this.onDownload(row);
     }
   }
 
-  private async onDelete(entry: ModelEntry): Promise<void> {
+  private async onDelete(row: ModelRow): Promise<void> {
     try {
-      await this.facade.deleteModel(entry.item.id);
-      await this.refreshEntries();
+      await this.facade.deleteModel(row.item.id);
+      await this.refreshRows();
     } catch (e) {
       this.failure = (e as BusinessError).message;
     }
   }
 
-  private async onSelect(entry: ModelEntry): Promise<void> {
+  private async onSelect(row: ModelRow): Promise<void> {
     try {
-      await this.facade.selectModel(entry.item.id);
-      await this.refreshEntries();
+      await this.facade.selectModel(row.item.id);
+      await this.refreshRows();
     } catch (e) {
       this.failure = (e as BusinessError).message;
     }
-  }
-
-  // --- 映射：ModelEntry → B7 的入参 -------------------------------------------
-
-  private toTier(entry: ModelEntry): AdModelTier {
-    const item: ModelManifestItem = entry.item;
-    const tier: AdModelTier = new AdModelTier(item.tier.toUpperCase(), item.name, item.quant);
-    tier.sizeGb = ModelCatalog.sizeGb(item);
-    tier.memoryGb = entry.residentGb;
-    tier.budgetGb = this.budget.budgetGb;
-    tier.contextTokens = item.contextLength;
-    // 实测才有数；没实测就是"—"，**绝不显示 0**，也绝不填厂商标称值（§4.6）。
-    tier.expectedSpeed = item.measured !== null ? item.measured.tokensPerSec.toFixed(1) : '—';
-    tier.license = item.license;
-    tier.source = ModelListPage.sourceLabel(item.sourceUrl);
-    tier.sha256Short = ModelListPage.shortHash(item.sha256);
-    tier.hashState = ModelListPage.hashState(entry.state);
-    tier.runnability = entry.runnable ? AdRunnability.RUNNABLE : AdRunnability.NOT_RUNNABLE;
-    tier.advice = entry.advice;
-
-    // 进度：只有"下载中/已暂停"才给百分比（>=0 会让 B7 渲染进度条）。
-    if (entry.state === 'downloading' || entry.state === 'paused' || entry.state === 'queued') {
-      const total: number = item.sizeBytes;
-      tier.downloadedPercent = total > 0 ? Math.min(100, entry.downloadedBytes * 100 / total) : 0;
-      tier.downloadedGb = entry.downloadedBytes / (1024 * 1024 * 1024);
-      tier.downloadPaused = entry.state === 'paused';
-    } else {
-      tier.downloadedPercent = -1;
-    }
-    return tier;
-  }
-
-  /**
-   * ForEach 的 key。
-   *
-   * 必须把**会变的状态**编进 key：ArkUI 的 ForEach 对"key 未变"的项不重建也不更新，
-   * 只用 id 当 key 会让进度条永远停在第一帧（这是 ForEach 最经典的坑）。
-   * 百分比取整入 key —— 每 1% 才重建一次，既保证刷新又不至于每个进度包都重建整张卡。
-   */
-  private static entryKey(entry: ModelEntry): string {
-    const total: number = entry.item.sizeBytes;
-    const pct: number = total > 0 ? Math.floor(entry.downloadedBytes * 100 / total) : 0;
-    return `${entry.item.id}:${entry.state}:${pct}:${entry.active}`;
-  }
-
-  private static hashState(state: string): AdHashState {
-    if (state === 'ready') {
-      return AdHashState.PASSED;
-    }
-    if (state === 'verifying') {
-      return AdHashState.VERIFYING;
-    }
-    if (state === 'failed') {
-      return AdHashState.FAILED;
-    }
-    return AdHashState.NOT_DOWNLOADED;
-  }
-
-  /** 出处标签：只显示主机名 + 仓库路径（完整 URL 太长，点击可跳原站）。 */
-  private static sourceLabel(url: string): string {
-    const stripped: string = url.replace('https://', '').replace('http://', '');
-    const parts: string[] = stripped.split('/');
-    return parts.length >= 3 ? `${parts[0]}/${parts[1]}` : stripped;
-  }
-
-  private static shortHash(sha256: string): string {
-    if (sha256.length < 12) {
-      return sha256;
-    }
-    return `${sha256.substring(0, 4)}…${sha256.substring(sha256.length - 4)}`;
   }
 
   private openSource(item: ModelManifestItem): void {
@@ -349,110 +279,48 @@ export struct ModelListPage {
     .alignItems(HorizontalAlign.Start)
   }
 
+  /**
+   * ForEach 的 key **恒为 model id**：稳定 key + @Observed 行状态 = 局部刷新，卡片不重建。
+   * （上一版把下载百分比编进 key，等于每 1% 销毁重建整张卡片——见 model/ModelRow.ets 文件头。）
+   */
   @Builder
   localTab() {
     List({ space: AdSpace.s3 }) {
-      ForEach(this.entries, (entry: ModelEntry) => {
+      ForEach(this.rows, (row: ModelRow) => {
         ListItem() {
-          this.modelCard(entry)
+          ModelTierRow({
+            row: row,
+            budget: this.budget,
+            onDownload: (r: ModelRow) => {
+              this.onDownload(r);
+            },
+            onPauseToggle: (r: ModelRow) => {
+              this.onPauseToggle(r);
+            },
+            onCancel: (r: ModelRow) => {
+              this.onDelete(r);
+            },
+            onUse: (r: ModelRow) => {
+              this.onSelect(r);
+            },
+            onDelete: (r: ModelRow) => {
+              this.onDelete(r);
+            },
+            onSuggestAlternative: (r: ModelRow) => {
+              // 替代方案就在同一屏的更小档位上——把用户送到那里，而不是让他自己找
+              // TODO(T0.9-27): 滚动定位到 advice 指名的那张卡（需要 List 的 scroller）
+              Logger.info(TAG, 'suggest alternative', [{ key: 'model_id', value: r.item.id }]);
+            },
+            onOpenSource: (r: ModelRow) => {
+              this.openSource(r.item);
+            }
+          })
         }
-      }, (entry: ModelEntry) => ModelListPage.entryKey(entry))
+      }, (row: ModelRow) => row.item.id)
     }
     .layoutWeight(1)
     .width('100%')
     .scrollBar(BarState.Auto)
-  }
-
-  @Builder
-  modelCard(entry: ModelEntry) {
-    Column({ space: AdSpace.s2 }) {
-      // B7：档位三态 + sha256 四态 + 许可与出处常显（全部由组件兑现，本页不自造）
-      AdModelTierCard({
-        tier: this.toTier(entry),
-        onDownload: () => {
-          this.onDownload(entry);
-        },
-        onPauseToggle: () => {
-          this.onPauseToggle(entry);
-        },
-        onCancel: () => {
-          this.onDelete(entry);
-        },
-        onRedownload: () => {
-          this.onDownload(entry);
-        },
-        onSuggestAlternative: () => {
-          // 替代方案就在同一屏的更小档位上——把用户送到那里，而不是让他自己找
-          Logger.info(TAG, 'suggest alternative', [{ key: 'model_id', value: entry.item.id }]);
-        },
-        onOpenSource: () => {
-          this.openSource(entry.item);
-        }
-      })
-
-      // 实测速度（**真机实测，非厂商标称**）——没测过就不显示这一行，不用"预计"糊弄
-      if (entry.item.measured !== null) {
-        Row({ space: AdSpace.s2 }) {
-          Text(`${entry.item.measured.tokensPerSec.toFixed(1)} tok/s`).instrument(AdColor.inkSecondary)
-          Text(`首字 ${entry.item.measured.firstTokenMs}ms`).instrument(AdColor.inkTertiary)
-          Text('真机实测，非厂商标称').prose(AdColor.inkTertiary)
-        }
-        .width('100%')
-        .alignItems(VerticalAlign.Bottom)
-      }
-
-      // 待核验：不给下载入口，但许可与出处照常展示（models/README.md §1）
-      if (!isDownloadable(entry.item)) {
-        Row({ space: AdSpace.s1 }) {
-          AdGlyph({ kind: AdGlyphKind.TRIANGLE, glyphSize: 10, color: AdColor.warningFg })
-          Text('待核验：许可或校验和尚未人工核对，暂不提供下载').prose(AdColor.warningFg)
-        }
-        .width('100%')
-        .alignItems(VerticalAlign.Center)
-      }
-
-      if (entry.state === 'failed' && entry.error.length > 0) {
-        Row({ space: AdSpace.s1 }) {
-          AdGlyph({ kind: AdGlyphKind.TRIANGLE, glyphSize: 10, color: AdColor.dangerFg })
-          Text(entry.error).prose(AdColor.dangerFg).layoutWeight(1)
-        }
-        .width('100%')
-        .alignItems(VerticalAlign.Center)
-      }
-
-      // 就绪后的动作区：切换当前模型 / 删除。
-      // （B7 目前没有"已安装"态的动作区——它在 ready 时仍渲染[下载]按钮，
-      //   点它等于重下并重新校验，无害但冗余；补 @Prop installed 的建议见交付说明。）
-      if (entry.state === 'ready') {
-        Row({ space: AdSpace.s2 }) {
-          if (entry.active) {
-            AdTag({ kind: AdTagKind.LOCAL, text: '当前模型', inline: true })
-          } else {
-            AdButton({
-              label: '使用这个模型',
-              variant: AdButtonVariant.PRIMARY,
-              btnSize: AdButtonSize.SM,
-              onAction: () => {
-                this.onSelect(entry);
-              }
-            })
-          }
-          Blank()
-          AdButton({
-            label: '删除',
-            variant: AdButtonVariant.GHOST,
-            btnSize: AdButtonSize.SM,
-            onAction: () => {
-              this.onDelete(entry);
-            }
-          })
-        }
-        .width('100%')
-        .alignItems(VerticalAlign.Center)
-      }
-    }
-    .width('100%')
-    .alignItems(HorizontalAlign.Start)
   }
 
   @Builder

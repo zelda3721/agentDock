@@ -55,6 +55,7 @@ export {
   AdToolCall,
   AdRunnability,
   AdHashState,
+  AdModelState,
   AdModelTier
 } from './src/main/ets/model/Provenance';
 

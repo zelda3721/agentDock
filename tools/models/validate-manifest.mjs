@@ -12,7 +12,11 @@
  *   3. sourceUrl 必须是 https（明文 http 下载权重不可接受）；
  *   4. **sha256 为 null 时 status 必须是 "pending-verification"**——
  *      防止「假装校验过」：没有校验和就必须显式标记为待核验，不允许静默当成已验证；
- *   5. id 全局唯一；默认档（isDefault）不得为 pending-verification。
+ *   5. id 全局唯一；默认档（isDefault）不得为 pending-verification；
+ *   6. verified 条目的常驻内存估算不得超过 §3.2 最宽的 PC 档预算（8GB）——否则是永远跑不动的死条目；
+ *   7. **禁止手填导出量**（schema v3）：minRamGb 已移除，设备内存下限从 sizeBytes 推导。
+ *      清单只登记**事实**（体积/校验和/许可/出处），**判据留在代码里**——手填的判据会漂移，
+ *      而它确实漂移了（见 FORBIDDEN_DERIVED_FIELDS）。
  *
  * 权重文件本身永不入仓（R5 由 check-forbidden.mjs 保证），本清单只登记「许可 + 出处 + 校验和」，
  * 供下载前在 App 内展示（§22.4 应用内要求）。
@@ -52,6 +56,36 @@ const DOWNLOAD_FIELDS = ['fileName', 'downloadUrls'];
 
 /** 允许的 status 取值 */
 const VALID_STATUS = ['verified', 'pending-verification', 'deprecated'];
+
+/**
+ * schema v3 起**禁止**出现的字段：手填的"判据"。
+ *
+ * minRamGb（v2 遗留）是从 sizeBytes 导出的量，手填等于给同一条判据造第二个事实源——
+ * 它一定会漂移，而它确实漂移了：11.87GB 的真机上 Qwen3-4B 常驻 2.83GB ≤ 3GB 预算（§3.2 可以跑），
+ * 却因手填的 minRamGb=12 被判"本机不可运行"；更糟的是手填值是**标称内存**，
+ * 运行时比的却是 /proc/meminfo 的 MemTotal（标称 12GB 的机器只有 11.87GB），单位根本对不上。
+ *
+ * 现在设备内存下限由 ModelCatalog.minDeviceRamGb() 从 sizeBytes 推导。
+ * 这条门禁的作用是**防复发**：清单只登记事实，判据留在代码里。
+ */
+const FORBIDDEN_DERIVED_FIELDS = {
+  minRamGb:
+    '设备内存下限是 sizeBytes 的导出量，不是事实——已于 schema v3 移除，' +
+    '改由 features/models/src/main/ets/model/ModelManifest.ets 的 ModelCatalog.minDeviceRamGb() 推导。' +
+    '手填会与 §3.2 内存预算表打架（v2 真机翻车实例：4B 被 minRamGb=12 挡在 11.87GB 的设备外）'
+};
+
+/**
+ * §3.2 内存预算上限（PC 档 8GB）与权重之外的常驻估算（KV cache + 计算缓冲）。
+ *
+ * 这里只做**粗粒度的死条目检查**：常驻估算连最宽的 PC 预算都超了的模型，
+ * 在任何设备档位上都不可运行，登记它等于在清单里挂一个永远跑不了的条目。
+ * 精确判定（含手机/平板 3GB 档与设备总内存下限）在 ModelManifest.ets——
+ * 那里是权威，这里只兜最外层的底。
+ */
+const BUDGET_PC_GB = 8;
+const KV_AND_COMPUTE_RESERVE_GB = 0.5;
+const BYTES_PER_GB = 1024 ** 3;
 
 /** sha256 十六进制格式 */
 const SHA256_RE = /^[a-f0-9]{64}$/i;
@@ -222,6 +256,23 @@ function main() {
         }
       } else if (typeof sizeValue === 'number' && !(Number.isFinite(sizeValue) && sizeValue > 0)) {
         failures.push(`${label}：${sizeField} 必须是正数（字节）`);
+      } else if (typeof sizeValue === 'number' && model.status === 'verified') {
+        // 死条目检查：常驻估算超过最宽的 PC 预算 → 任何设备都跑不动（见 BUDGET_PC_GB 注释）。
+        const residentGb = sizeValue / BYTES_PER_GB + KV_AND_COMPUTE_RESERVE_GB;
+        if (residentGb > BUDGET_PC_GB) {
+          failures.push(
+            `${label}：常驻内存估算 ~${residentGb.toFixed(1)}GB（权重 + KV/计算缓冲 ` +
+              `${KV_AND_COMPUTE_RESERVE_GB}GB）超过 §3.2 最宽的 PC 档预算 ${BUDGET_PC_GB}GB` +
+              `——该模型在任何设备档位上都不可运行，不应登记为 verified`
+          );
+        }
+      }
+    }
+
+    // 7. 禁止手填导出量（schema v3）——见 FORBIDDEN_DERIVED_FIELDS 注释。
+    for (const [field, why] of Object.entries(FORBIDDEN_DERIVED_FIELDS)) {
+      if (Object.prototype.hasOwnProperty.call(model, field)) {
+        failures.push(`${label}：不得出现字段 "${field}"——${why}`);
       }
     }
   });
@@ -233,7 +284,8 @@ function main() {
   finish(
     'validate-manifest',
     failures,
-    `${models.length} 个模型条目：必填字段齐全、许可在白名单、sourceUrl 为 https、sha256/status 自洽、id 唯一`
+    `${models.length} 个模型条目：必填字段齐全、许可在白名单、sourceUrl 为 https、sha256/status 自洽、` +
+      `id 唯一、常驻估算在 §3.2 预算内、无手填导出量`
   );
 }
 

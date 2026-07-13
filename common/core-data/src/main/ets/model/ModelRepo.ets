@@ -61,6 +61,12 @@ export interface LocalModelRow {
   downloadedBytes: number;
   etag: string | null;
   error: string | null;
+  /**
+   * 失败**类别**（DownloadFailureKind 的字符串值：transfer / checksum；非失败态为空串）。
+   * 与 error 一起落库：重启后 UI 从库重建行状态，只有一句自由文本时它只能猜类别——
+   * 而它猜出来的「✗ 校验失败」在传输失败时是假话（校验从未跑过）。
+   */
+  failureKind: string;
   installedAt: number | null;
   createdAt: number;
   updatedAt: number;
@@ -136,20 +142,28 @@ export class ModelRepo {
 
   // --- 下载状态 ---------------------------------------------------------------
 
-  /** 更新下载进度（断点续传游标随之落库：进程被杀后 UI 仍能显示"已下 62%"）。 */
+  /**
+   * 更新下载进度（断点续传游标随之落库：进程被杀后 UI 仍能显示"已下 62%"）。
+   *
+   * **只用于非失败态**（queued/downloading/paused/verifying/none；失败走 markFailed）——
+   * 因此顺手清掉上一次失败的 error 与 failure_kind：重下一遍还挂着上次的失败类别，
+   * 重启后 UI 就会照着一个已经不成立的类别去渲染 sha256 行。陈旧的判据比没有判据更危险。
+   */
   async updateProgress(id: string, state: DownloadState, downloadedBytes: number): Promise<void> {
     await this.rdb.exec(
-      `UPDATE models_local SET download_state = ?, downloaded_bytes = ?, updated_at = ? WHERE id = ?;`,
+      `UPDATE models_local
+         SET download_state = ?, downloaded_bytes = ?, error = NULL, failure_kind = NULL, updated_at = ?
+       WHERE id = ?;`,
       [state as string, downloadedBytes, Date.now(), id]
     );
   }
 
-  /** 置就绪：写入落盘路径与安装时间，并清空错误。 */
+  /** 置就绪：写入落盘路径与安装时间，并清空错误（含失败类别）。 */
   async markReady(id: string, filePath: string, sizeBytes: number): Promise<void> {
     const now: number = Date.now();
     await this.rdb.exec(
       `UPDATE models_local
-         SET download_state = ?, file_path = ?, downloaded_bytes = ?, error = NULL,
+         SET download_state = ?, file_path = ?, downloaded_bytes = ?, error = NULL, failure_kind = NULL,
              installed_at = ?, updated_at = ?
        WHERE id = ?;`,
       [DownloadState.READY as string, filePath, sizeBytes, now, now, id]
@@ -158,17 +172,25 @@ export class ModelRepo {
   }
 
   /**
-   * 置失败并记录原因。file_path 一并清空——**失败的模型绝不能留下一个可被加载的路径**
+   * 置失败并记录原因**与类别**。file_path 一并清空——**失败的模型绝不能留下一个可被加载的路径**
    * （sha256 校验失败时文件已被 FileRepo 删除，路径留着只会让 Provider 去加载一个不存在的文件）。
+   *
+   * failureKind 是必填参数而不是可选：failed 是"传输失败"与"校验失败"两种失败的公共出口，
+   * 少写一个类别，UI 就要去猜——猜出来的那句话在半数情况下是假的（见 FileRepo.DownloadFailureKind）。
+   * 取 DownloadFailureKind 的字符串值（'transfer' / 'checksum'）。
    */
-  async markFailed(id: string, error: string): Promise<void> {
+  async markFailed(id: string, error: string, failureKind: string): Promise<void> {
     await this.rdb.exec(
       `UPDATE models_local
-         SET download_state = ?, error = ?, file_path = NULL, downloaded_bytes = 0, updated_at = ?
+         SET download_state = ?, error = ?, failure_kind = ?, file_path = NULL,
+             downloaded_bytes = 0, updated_at = ?
        WHERE id = ?;`,
-      [DownloadState.FAILED as string, error, Date.now(), id]
+      [DownloadState.FAILED as string, error, failureKind, Date.now(), id]
     );
-    Logger.warn(TAG, 'model download failed', [{ key: 'model_id', value: id }]);
+    Logger.warn(TAG, 'model download failed', [
+      { key: 'model_id', value: id },
+      { key: 'kind', value: failureKind }
+    ]);
   }
 
   /** 删除登记（权重文件的删除由调用方走 FileRepo；本方法只管库）。 */
@@ -263,7 +285,7 @@ export class ModelRepo {
 
   private static readonly COLUMNS: string =
     'id, name, family, purpose, quant, tier, ctx_len, file_path, size, sha256, source_url, license, ' +
-    'download_state, downloaded_bytes, etag, error, installed_at, created_at, updated_at';
+    'download_state, downloaded_bytes, etag, error, failure_kind, installed_at, created_at, updated_at';
 
   private static mapRow(rs: relationalStore.ResultSet): LocalModelRow {
     return {
@@ -283,9 +305,10 @@ export class ModelRepo {
       downloadedBytes: rs.getLong(13),
       etag: rs.isColumnNull(14) ? null : rs.getString(14),
       error: rs.isColumnNull(15) ? null : rs.getString(15),
-      installedAt: rs.isColumnNull(16) ? null : rs.getLong(16),
-      createdAt: rs.getLong(17),
-      updatedAt: rs.getLong(18)
+      failureKind: rs.isColumnNull(16) ? '' : rs.getString(16),
+      installedAt: rs.isColumnNull(17) ? null : rs.getLong(17),
+      createdAt: rs.getLong(18),
+      updatedAt: rs.getLong(19)
     };
   }
 }

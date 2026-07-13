@@ -218,6 +218,28 @@ export enum AdHashState {
   FAILED = 'failed'
 }
 
+/**
+ * 模型在本机的下载 / 安装状态（B7 AdModelTierCard 的**动作区判据**）。
+ *
+ * 为什么必须是一个显式枚举：B7 的上一版用 `downloadedPercent >= 0` 当"要不要画进度区"的哨兵——
+ * 把「进度是多少」和「处于哪个状态」压进了同一个 number。可 queued 态的进度**合法地就是 0**，
+ * 而 0 也是合法的进度值：于是"未开始"和"排队中"在这个字段上根本不可区分，
+ * 只能靠 `-1` 这个魔数硬撑。判据寄生在数值里，调用方漏设一次整块动作区就渲染错
+ * ——真机上"点了下载卡片就空了"正是这么来的（见 AdModelTierCard 文件头）。
+ * **状态是状态，数字是数字。**
+ */
+export enum AdModelState {
+  NOT_DOWNLOADED = 'not_downloaded',
+  QUEUED = 'queued',
+  DOWNLOADING = 'downloading',
+  PAUSED = 'paused',
+  /** 传输已完成，正在算 sha256 */
+  VERIFYING = 'verifying',
+  /** 已安装：权重在本机且 sha256 通过 —— **动作区让位，不再显示[下载]** */
+  READY = 'ready',
+  FAILED = 'failed'
+}
+
 /** 一个模型档位（B7 AdModelTierCard）。许可与出处**强制常显**（下载前展示，可点跳原站） */
 @Observed
 export class AdModelTier {
@@ -232,8 +254,10 @@ export class AdModelTier {
   /** 本机内存预算（GB），用于"不可运行"时的数字对比 */
   budgetGb: number = 0;
   contextTokens: number = 0;
-  /** 如 "8–15" */
+  /** 速度值（tok/s，不含单位）。未实测时为空串——**卡片不显示 0，也不显示厂商标称值**（§4.6） */
   expectedSpeed: string = '';
+  /** expectedSpeed 是否为**真机实测**值：决定指标表的标签是"实测速度"还是"预期速度" */
+  speedMeasured: boolean = false;
   /** 如 Apache-2.0 —— 强制常显 */
   license: string = '';
   /** 如 HuggingFace/Qwen —— 强制常显，可点跳原站 */
@@ -242,12 +266,31 @@ export class AdModelTier {
   sha256Short: string = '';
   hashState: AdHashState = AdHashState.NOT_DOWNLOADED;
   runnability: AdRunnability = AdRunnability.UNKNOWN;
-  /** 不可运行时的出路建议，如「这台设备（12 GB RAM）建议使用 Standard 档。」 */
+  /**
+   * 不可运行的**原因**，由调用方算好后传入（features/models 的 `ModelCatalog.runnability().reason`）。
+   *
+   * **卡片只渲染这句话，绝不自己造句。** 上一版的 B7 无条件渲染
+   * 「内存占用 ~{memoryGb} GB > 本机预算 {budgetGb} GB」，可真机上判负的是**另一条**判据，
+   * 屏上就出现了「~2.8 GB > 3.0 GB」这种自相矛盾的假话（2.8 并不大于 3.0）。
+   * 判据只有一处、结论只有一处——**UI 不重算判据**（与 AdPrivacyFenceNotice 同一条纪律）。
+   */
+  reason: string = '';
+  /** 不可运行时的出路建议，如「这台设备（内存 11.9GB）建议使用 Qwen3-4B。」 */
   advice: string = '';
-  /** 下载进度 0–100；<0 表示未开始 */
-  downloadedPercent: number = -1;
+  /** 本机下载 / 安装状态：**动作区由它决定**（不再看 downloadedPercent 的正负） */
+  state: AdModelState = AdModelState.NOT_DOWNLOADED;
+  /** 是否为当前选中的模型（仅 state=READY 时有意义） */
+  active: boolean = false;
+  /**
+   * 是否可提供下载入口（清单 status=verified 且有 sha256）。
+   * false 时**不渲染[下载]**——没有校验和就没法验真，给一个点了必被拒的按钮本身就是说谎。
+   */
+  downloadable: boolean = true;
+  /** 下载进度 0–100；**< 0 = 总量未知**（服务端没给 Content-Length），此时进度条走 indeterminate */
+  downloadedPercent: number = 0;
   downloadedGb: number = 0;
-  downloadPaused: boolean = false;
+  /** 瞬时速率（字节 / 秒），仅下载中有意义；0 = 不显示速率（不编一个数出来） */
+  bytesPerSec: number = 0;
 
   constructor(tier: string, name: string, quant: string) {
     this.tier = tier;

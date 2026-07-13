@@ -17,7 +17,12 @@
  */
 
 import { Logger } from 'core-infra';
-import { FTS_ROUTE, SCHEMA_VERSION, initialSchemaSqls } from './Schema';
+import {
+  FTS_ROUTE,
+  SCHEMA_VERSION,
+  SQL_ALTER_MODELS_LOCAL_ADD_FAILURE_KIND,
+  initialSchemaSqls
+} from './Schema';
 
 const TAG: string = 'Migrations';
 
@@ -43,8 +48,11 @@ export interface Migration {
  * 迁移脚本数组（**只增不改**）。
  *
  * #1 初始 schema（§7 全表）。FTS 虚表按 FTS_ROUTE 生成——§4.4 双路线，默认影子列路线。
+ * #2 models_local.failure_kind：下载失败的类别判别符（传输失败 vs sha256 校验失败）。
+ *    没有它，UI 只能从一句自由文本 error 里猜类别，并在网络超时时把 sha256 行渲染成
+ *    「✗ 校验失败」——校验根本没跑过。**判别符与它描述的状态必须一起落库**（重启后 UI 从库重建）。
  *
- * TODO(T0.9-05): 中文分词 spike 若定案为 native simple 路线，追加 #2：
+ * TODO(T0.9-05): 中文分词 spike 若定案为 native simple 路线，追加 #3：
  *   DROP 触发器与 kb_chunk_fts → 以 tokenize='simple' 重建 → 从 kb_chunk 全量重灌
  *   （SQL 片段见 Schema.ets 的 SQL_DROP_KB_CHUNK_FTS / SQL_CREATE_KB_CHUNK_FTS_NATIVE_SIMPLE）。
  */
@@ -53,6 +61,11 @@ export const MIGRATIONS: Migration[] = [
     version: 1,
     name: 'initial_schema',
     sqls: initialSchemaSqls(FTS_ROUTE)
+  },
+  {
+    version: 2,
+    name: 'models_local_failure_kind',
+    sqls: [SQL_ALTER_MODELS_LOCAL_ADD_FAILURE_KIND]
   }
 ];
 

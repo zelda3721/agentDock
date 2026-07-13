@@ -25,7 +25,7 @@
 // ---------------------------------------------------------------------------
 
 /** 当前 schema 版本号（每次新增迁移脚本时 +1，与 Migrations.ets 的最大编号一致）。 */
-export const SCHEMA_VERSION: number = 1;
+export const SCHEMA_VERSION: number = 2;
 
 /** RDB 库名。 */
 export const DB_NAME: string = 'agentdock.db';
@@ -562,7 +562,22 @@ CREATE TABLE IF NOT EXISTS models_local (
   installed_at     INTEGER,
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
+  -- 注意：v2 追加了 failure_kind 列（见下方 SQL_ALTER_MODELS_LOCAL_ADD_FAILURE_KIND）。
+  -- 本常量是 migration #1 的一部分，**一经发布即不可修改**（Migrations.ets 规则 1），
+  -- 所以新列不写在这里，而是由 migration #2 ALTER 追加——新库与老库因此走同一条路径，
+  -- 不会出现"新装的库有列、升级的库没列"这种只在真机上才炸的分叉。
 );`;
+
+/**
+ * v2：models_local 追加 failure_kind（下载失败的**类别**判别符）。
+ *
+ * 为什么要落库而不只放在事件里：进程被杀后 UI 从库重建行状态（ModelFacade.listModels），
+ * 只留 download_state='failed' + 一句自由文本 error，重启后的 UI 又只能靠猜——
+ * 于是"网络超时"在重启后重新被渲染成「✗ 校验失败」。**判别符必须和它描述的那个状态一起持久化。**
+ * 取值见 FileRepo.DownloadFailureKind（''/transfer/checksum）；非失败态为 NULL。
+ */
+export const SQL_ALTER_MODELS_LOCAL_ADD_FAILURE_KIND: string =
+  `ALTER TABLE models_local ADD COLUMN failure_kind TEXT;`;
 
 // ---------------------------------------------------------------------------
 // 基础设施表（§4.2 / §7 / §10）

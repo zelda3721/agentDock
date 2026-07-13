@@ -10,9 +10,10 @@ import {
   ChatTurnHandle,
   ConversationSummary,
   CtxUsage,
+  CurrentBrain,
   COMPACTION_TRIGGER_RATIO
 } from 'core-agent';
-import { ChatMessageVM, ConversationVM, CtxUsageVM, formatClock, MessageDataSource } from './ChatViewModel';
+import { BrainVM, ChatMessageVM, ConversationVM, CtxUsageVM, formatClock, MessageDataSource } from './ChatViewModel';
 
 /**
  * 会话页的控制器：**唯一**与 core-agent 打交道的地方（三层合同 §2 ChatService）。
@@ -35,6 +36,12 @@ export class ChatHost {
   onStreaming: (streaming: boolean) => void = () => {
   };
   onCtxUsage: (usage: CtxUsageVM) => void = () => {
+  };
+  /**
+   * 当前大脑（**当前事实**：下一条消息会用谁）。available=false ⇒ 顶栏不得渲染大脑指示器、
+   * 输入区必须禁用——见 BrainVM 的注释（真机上"没有模型却显示本地 · qwen"的那条谎）。
+   */
+  onBrain: (brain: BrainVM) => void = () => {
   };
   /** 页面级错误（会话列表 / 消息加载失败）；消息级错误走消息本身的 ERROR 态 */
   onPageError: (reason: string) => void = () => {
@@ -71,6 +78,14 @@ export class ChatController {
   private readonly service: ChatService = ChatService.get();
 
   private convId: string = '';
+  /**
+   * 此刻是否有可用 Provider（由 refreshBrain 刷新）。
+   * 它不只喂顶栏：**没有 Provider 就没有 tokenizer，也就没有诚实的 ctx 水位可报**
+   * （ChatService.ctxUsage 会直接抛"没有可用的 Provider"）。用它把那次注定失败的查询
+   * 挡在前面——否则用户看到的是一条与他无关的错误"上下文水位没能读出来"，
+   * 而真正该说的是"还没有可用的模型"。
+   */
+  private brainAvailable: boolean = false;
   private handle: ChatTurnHandle | null = null;
   private streamingIndex: number = -1;
   /** 最近一次用户输入，用于「重试」（中断/失败后原样重发） */
@@ -101,6 +116,44 @@ export class ChatController {
     return CTX_DANGER_PERCENT;
   }
 
+  // ——————————————— 当前大脑 ———————————————
+
+  /**
+   * 读「下一条消息会用谁」（core-agent 的只读口 currentBrain()）。
+   *
+   * 必须先 await whenReady()：entry 的装配顺序是 **注册 Provider → ChatService.init()**，
+   * 抢在门闩前读注册表会读到一个空表，于是页面在启动瞬间闪一句"还没有可用的模型"——
+   * 那是**抢跑造成的假话**，比不显示更糟。
+   *
+   * 调用点（都在 UI 侧，业务层不感知渲染）：页面首次加载、聊天页重新可见（用户从模型页
+   * 下载完模型回来）、每轮生成落定后（模型可能在会话中途被卸载）。
+   */
+  async refreshBrain(): Promise<void> {
+    const vm: BrainVM = new BrainVM();
+    try {
+      await this.service.whenReady();
+      const brain: CurrentBrain | null = await this.service.currentBrain();
+      vm.checked = true;
+      if (brain !== null) {
+        vm.available = true;
+        vm.kind = brain.providerKind === 'remote' ? AdBrainKind.REMOTE : AdBrainKind.LOCAL;
+        vm.modelName = brain.modelLabel;
+      }
+    } catch (err) {
+      // 数据层没起来：此刻同样**不能发送**，所以照实报 available=false。
+      // 真实原因（开库失败）由 loadConversations 的 onPageError 单独暴露，不在这里改写成模型问题。
+      vm.checked = true;
+    }
+    const wasAvailable: boolean = this.brainAvailable;
+    this.brainAvailable = vm.available;
+    this.host.onBrain(vm);
+
+    // 模型刚就绪（用户下完模型回到聊天页）：水位线要立刻从"没有读数"变成真读数
+    if (!wasAvailable && this.brainAvailable && this.convId.length > 0) {
+      await this.refreshCtx();
+    }
+  }
+
   // ——————————————— 会话 ———————————————
 
   async loadConversations(limit: number): Promise<void> {
@@ -109,6 +162,9 @@ export class ChatController {
       // 结果弹"会话列表没能读出来"，用户以为数据丢了，其实只是还没开门）。
       // init 真的失败时 whenReady() 会 reject，错误照常走下面的 catch 暴露出来。
       await this.service.whenReady();
+      // 大脑先于会话列表读一次：自动选中会立刻去读 ctx 水位，而水位读得成读不成
+      // 取决于有没有 Provider——顺序颠倒就会白发一次注定失败的查询。
+      await this.refreshBrain();
       const list: ConversationSummary[] = await this.service.listConversations(limit);
       this.host.onConversations(list.map((s: ConversationSummary): ConversationVM => ChatController.toConvVM(s)));
     } catch (err) {
@@ -144,6 +200,11 @@ export class ChatController {
 
   async refreshCtx(): Promise<void> {
     if (this.convId.length === 0) {
+      return;
+    }
+    // 没有 Provider 就没有 tokenizer，也就没有诚实的水位可报。这里**不查**（查必失败），
+    // 也**不编一个 0%**——水位线由 UI 在无模型时整条隐藏（假值即错误）。
+    if (!this.brainAvailable) {
       return;
     }
     try {
@@ -293,6 +354,9 @@ export class ChatController {
     this.handle = null;
     this.streamingIndex = -1;
     this.host.onStreaming(false);
+    // 大脑可能在这一轮里没了（用户在模型页删了模型 / 远程 Provider 被移除）：
+    // 落定后重读一次，顶栏与输入区跟着变——绝不让它停在上一轮的旧事实上。
+    this.refreshBrain();
     this.refreshCtx();
     this.reloadProvenance();
   }
