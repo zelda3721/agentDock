@@ -78,7 +78,7 @@ export struct AdPrivacyFenceNotice {
   onAdjustPrivacy: () => void = () => {
   };
 
-  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = true;
+  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = false;
   @State private expanded: boolean = false;
 
   aboutToAppear(): void {
@@ -115,7 +115,7 @@ export struct AdPrivacyFenceNotice {
       .constraintSize({ minHeight: AdTouch.pointer })
       .focusable(true)
       .onClick(() => {
-        animateTo({
+        this.getUIContext().animateTo({
           duration: MotionPreference.motion(AdDuration.normal, this.reduceMotion),
           curve: AdCurve.decelerate
         }, () => {

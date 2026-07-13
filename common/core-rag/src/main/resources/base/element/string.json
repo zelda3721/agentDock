@@ -1,7 +1,7 @@
 {
   "string": [
     {
-      "name": "module_desc",
+      "name": "core_rag_desc",
       "value": "AgentDock 知识库子系统：摄取流水线、混合检索与上下文装配"
     }
   ]

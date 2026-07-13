@@ -4,7 +4,7 @@
   "module": {
     "name": "chat",
     "type": "shared",
-    "description": "$string:module_desc",
+    "description": "$string:chat_desc",
     "deviceTypes": [
       "phone",
       "tablet",

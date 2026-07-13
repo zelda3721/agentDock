@@ -61,7 +61,7 @@ if(EXISTS ${LLAMA_CPP_DIR}/CMakeLists.txt)
   add_subdirectory(${LLAMA_CPP_DIR} ${CMAKE_CURRENT_BINARY_DIR}/llama.cpp EXCLUDE_FROM_ALL)
   set(LLAMA_BRIDGE_HAS_LLAMA ON)
 else()
-  message(WARNING
+  message(STATUS
     "[llama_bridge] 未找到 llama.cpp 子模块（${LLAMA_CPP_DIR}）——按骨架模式构建：\n"
     "  不链接 llama，所有 NAPI 入口返回 NOT_IMPLEMENTED(1099)。\n"
     "  拉取方式见 native/llama_bridge/third_party/README.md（由 T0.9-01 执行）。")

@@ -61,7 +61,7 @@ export struct AdButton {
   onAction: () => void = () => {
   };
 
-  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = true;
+  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = false;
   @State private hovered: boolean = false;
   @State private pressed: boolean = false;
   @State private focused: boolean = false;
@@ -131,13 +131,13 @@ export struct AdButton {
     })
     // hover 仅在 2in1 指针下触发；触摸端不会收到 onHover
     .onHover((isHover: boolean) => {
-      animateTo({ duration: this.feedbackDuration(), curve: AdCurve.standard }, () => {
+      this.getUIContext().animateTo({ duration: this.feedbackDuration(), curve: AdCurve.standard }, () => {
         this.hovered = isHover;
       });
     })
     .onTouch((event: TouchEvent) => {
       const down: boolean = event.type === TouchType.Down || event.type === TouchType.Move;
-      animateTo({ duration: this.feedbackDuration(), curve: AdCurve.standard }, () => {
+      this.getUIContext().animateTo({ duration: this.feedbackDuration(), curve: AdCurve.standard }, () => {
         this.pressed = down;
       });
     })

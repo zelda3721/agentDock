@@ -62,7 +62,7 @@ export struct AdCtxGauge {
   @Prop dangerAt: number = 90;
 
   @StorageProp(AD_BREAKPOINT_KEY) bp: AdBreakpoint = AdBreakpoint.SM;
-  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = true;
+  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = false;
 
   /** 条形补间目标；文本恒绑 this.percent（0ms 跳变） */
   @State private barPercent: number = 0;
@@ -79,7 +79,7 @@ export struct AdCtxGauge {
 
   onPercentChanged(): void {
     // 条形：300ms 补间；减弱动效 → 0ms 跳变
-    animateTo({
+    this.getUIContext().animateTo({
       duration: MotionPreference.motion(AdDuration.gaugeBar, this.reduceMotion),
       curve: AdCurve.decelerate
     }, () => {
@@ -100,7 +100,7 @@ export struct AdCtxGauge {
       this.breathe = 1;
       return;
     }
-    animateTo({
+    this.getUIContext().animateTo({
       duration: AdDuration.breath,
       curve: AdCurve.standard,
       iterations: -1,

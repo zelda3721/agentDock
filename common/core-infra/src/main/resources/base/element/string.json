@@ -1,7 +1,7 @@
 {
   "string": [
     {
-      "name": "module_desc",
+      "name": "core_infra_desc",
       "value": "AgentDock 基础设施层（日志/事件总线/任务队列/配置/密钥/指标）"
     }
   ]

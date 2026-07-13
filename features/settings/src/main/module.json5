@@ -4,7 +4,7 @@
   "module": {
     "name": "settings",
     "type": "shared",
-    "description": "$string:module_desc",
+    "description": "$string:settings_desc",
     "deviceTypes": [
       "phone",
       "tablet",

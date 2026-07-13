@@ -1,7 +1,7 @@
 {
   "string": [
     {
-      "name": "module_desc",
+      "name": "core_data_desc",
       "value": "AgentDock 数据层（RDB 加密存储、schema 迁移、文件仓库、备份）"
     }
   ]

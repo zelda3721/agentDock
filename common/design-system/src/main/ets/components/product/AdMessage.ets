@@ -108,7 +108,7 @@ export struct AdMessage {
   @BuilderParam extra: () => void = this.emptySlot;
 
   @StorageProp(AD_BREAKPOINT_KEY) bp: AdBreakpoint = AdBreakpoint.SM;
-  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = true;
+  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = false;
   /** 流式光标 opacity（1 → 0.2 → 1 循环）；减弱动效时常亮不闪 */
   @State private cursorOpacity: number = 1;
 
@@ -135,7 +135,7 @@ export struct AdMessage {
       this.cursorOpacity = 1;
       return;
     }
-    animateTo({
+    this.getUIContext().animateTo({
       duration: AdDuration.cursorBlink,
       curve: AdCurve.standard,
       iterations: -1,

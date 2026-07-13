@@ -1,7 +1,7 @@
 {
   "string": [
     {
-      "name": "module_desc",
+      "name": "core_llm_desc",
       "value": "AgentDock 推理层：Provider 抽象、路由与推理队列"
     }
   ]

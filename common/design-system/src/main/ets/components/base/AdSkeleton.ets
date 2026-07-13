@@ -25,7 +25,7 @@ export struct AdSkeleton {
   /** 各行宽度百分比（60–95%）。缺省时用内置序列 */
   @Prop widths: number[] = [];
 
-  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = true;
+  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = false;
   /** 呼吸相位：0 = surfaceSunken，1 = surfaceSelected（用叠加层的 opacity 表达，不做色值插值） */
   @State private pulse: number = 0;
 
@@ -37,7 +37,7 @@ export struct AdSkeleton {
       this.pulse = 0;
       return;
     }
-    animateTo({
+    this.getUIContext().animateTo({
       duration: AdDuration.breath,
       curve: AdCurve.standard,
       iterations: -1,

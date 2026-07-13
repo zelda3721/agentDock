@@ -58,7 +58,7 @@ elseif(EXISTS ${PDFIUM_DIR}/include/fpdfview.h)
     INTERFACE_INCLUDE_DIRECTORIES ${PDFIUM_DIR}/include)
   set(DOC_PARSERS_HAS_PDFIUM ON)
 else()
-  message(WARNING
+  message(STATUS
     "[doc_parsers] 未找到 PDFium（${PDFIUM_DIR}）——按骨架模式构建：\n"
     "  不含解析实现，所有 NAPI 入口返回 NOT_IMPLEMENTED(3099)。\n"
     "  引入方式见 native/doc_parsers/third_party/README.md（由 T0.9-12 执行）。")

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
 {
   "app": {
     // 签名配置留空，由开发者在 DevEco Studio 中自动生成或手动配置

@@ -4,7 +4,7 @@
   "module": {
     "name": "models",
     "type": "shared",
-    "description": "$string:module_desc",
+    "description": "$string:models_desc",
     "deviceTypes": [
       "phone",
       "tablet",

@@ -53,18 +53,25 @@ export class AdCurve {
   static readonly spring: ICurve = curves.springMotion(0.35, 0.9);
 }
 
-/** AppStorage 键：是否开启"减少动画"。由 entry 在启动时从无障碍配置读取并监听变更后写入 */
+/** AppStorage 键：是否减弱动效。entry 用 PersistentStorage 持久化，设置页开关写入 */
 export const AD_REDUCE_MOTION_KEY: string = 'adReduceMotion';
 
 /**
  * 动效减弱偏好（§2.7.4）。
  *
- * **读不到配置时按"已开启"保守处理**——故 AppStorage 未初始化时 isReduced() 返回 true。
- * entry 必须在启动流程中调用 `MotionPreference.set(...)`（读取系统无障碍"关闭动画"开关，
- * 并监听其变更）；组件侧用 `@StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = true` 订阅，
+ * **平台事实（HarmonyOS 6.1 / API 23 实测，决定了这里为什么不读系统开关）**：
+ * 三方应用**无法**读取系统的"减少动画/关闭动画"设置——
+ *   · `@ohos.accessibility.config`（含 animationOff）是**系统接口**，公开 SDK 不提供声明；
+ *   · `settings.display.ANIMATOR_DURATION_SCALE` 等三个动画缩放常量自 **API 21 起废弃且无替代**。
+ * 因此本 App 的动效减弱偏好以 **App 内设置为唯一来源**（设置页开关，PersistentStorage 持久化），
+ * 默认 **false（动效开启）**：没有系统信号时若默认"减弱"，等于给所有用户永久关掉动效，
+ * 与设计立场（溯源条点亮、ctx 水位补间是产品语言的一部分）相悖。
+ * 系统层面的动画时长缩放仍由渲染层全局生效，不需要也无法由 App 复刻。
+ *
+ * 组件侧用 `@StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = false` 订阅，
  * 保证开关翻转时界面即时响应。
  *
- * TODO(T0.9-27)：在 features/settings 暴露 App 内"减少动画"覆盖项，并在 entry 接入系统无障碍配置监听。
+ * TODO(T0.9-27)：在 features/settings 暴露"减少动画"开关（写 AppStorage，PersistentStorage 已持久化）。
  */
 export class MotionPreference {
   /** 供 entry / settings 写入 */
@@ -72,10 +79,10 @@ export class MotionPreference {
     AppStorage.setOrCreate<boolean>(AD_REDUCE_MOTION_KEY, reduced);
   }
 
-  /** 同步读取；未初始化时保守返回 true（宁可不动，不可失控） */
+  /** 同步读取；未初始化时返回 false（动效开启，理由见类注释的平台事实） */
   static isReduced(): boolean {
     const value: boolean | undefined = AppStorage.get<boolean>(AD_REDUCE_MOTION_KEY);
-    return value === undefined ? true : value;
+    return value === undefined ? false : value;
   }
 
   /** 位移 / 缩放 / 宽度补间：减弱时 → 0ms 直接到终态 */

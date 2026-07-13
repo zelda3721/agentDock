@@ -91,7 +91,7 @@ export struct AdProvenanceRail {
   };
 
   @StorageProp(AD_BREAKPOINT_KEY) bp: AdBreakpoint = AdBreakpoint.SM;
-  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = true;
+  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = false;
 
   /** 已点亮的段数（左→右）。动效减弱时一次性拉满 */
   @State private revealed: number = 0;
@@ -126,7 +126,7 @@ export struct AdProvenanceRail {
     for (let i = 1; i <= total; i++) {
       const step: number = i;
       setTimeout(() => {
-        animateTo({ duration: AdDuration.fast, curve: AdCurve.decelerate }, () => {
+        this.getUIContext().animateTo({ duration: AdDuration.fast, curve: AdCurve.decelerate }, () => {
           this.revealed = step;
         });
       }, (step - 1) * stagger);
@@ -211,7 +211,7 @@ export struct AdProvenanceRail {
       this.onSegmentTap(RailSegment.MODEL);
       return;
     }
-    animateTo({
+    this.getUIContext().animateTo({
       duration: MotionPreference.motion(AdDuration.normal, this.reduceMotion),
       curve: AdCurve.decelerate
     }, () => {

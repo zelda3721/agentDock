@@ -65,7 +65,7 @@ export struct AdBrainIndicator {
   };
 
   @StorageProp(AD_BREAKPOINT_KEY) bp: AdBreakpoint = AdBreakpoint.SM;
-  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = true;
+  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = false;
   @State private focused: boolean = false;
   @State private hovered: boolean = false;
   /** 接管态箭头的滑入进度（0→1，只滑一次） */
@@ -86,7 +86,7 @@ export struct AdBrainIndicator {
       return;
     }
     // 接管中：箭头滑一次（dur_normal）；减弱动效 → 0ms 直接到终态（信息不丢）
-    animateTo({
+    this.getUIContext().animateTo({
       duration: MotionPreference.motion(AdDuration.normal, this.reduceMotion),
       curve: AdCurve.decelerate
     }, () => {

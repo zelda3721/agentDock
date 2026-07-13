@@ -69,7 +69,7 @@ export struct AdListItem {
   @BuilderParam trailing: () => void = this.emptySlot;
 
   @StorageProp(AD_BREAKPOINT_KEY) bp: AdBreakpoint = AdBreakpoint.SM;
-  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = true;
+  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = false;
   @State private hovered: boolean = false;
   @State private pressed: boolean = false;
   @State private focused: boolean = false;
@@ -147,14 +147,14 @@ export struct AdListItem {
       this.focused = false;
     })
     .onHover((isHover: boolean) => {
-      animateTo({ duration: MotionPreference.motion(AdDuration.fast, this.reduceMotion), curve: AdCurve.standard },
+      this.getUIContext().animateTo({ duration: MotionPreference.motion(AdDuration.fast, this.reduceMotion), curve: AdCurve.standard },
         () => {
           this.hovered = isHover;
         });
     })
     .onTouch((event: TouchEvent) => {
       const down: boolean = event.type === TouchType.Down || event.type === TouchType.Move;
-      animateTo({ duration: MotionPreference.motion(AdDuration.fast, this.reduceMotion), curve: AdCurve.standard },
+      this.getUIContext().animateTo({ duration: MotionPreference.motion(AdDuration.fast, this.reduceMotion), curve: AdCurve.standard },
         () => {
           this.pressed = down;
         });

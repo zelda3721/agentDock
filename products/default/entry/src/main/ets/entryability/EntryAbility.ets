@@ -13,10 +13,7 @@ import window from '@ohos.window';
 import display from '@ohos.display';
 import deviceInfo from '@ohos.deviceInfo';
 import hilog from '@ohos.hilog';
-import settings from '@ohos.settings';
-import common from '@ohos.app.ability.common';
-import { BusinessError } from '@ohos.base';
-import { MotionPreference } from 'design-system';
+import { MotionPreference, AD_REDUCE_MOTION_KEY } from 'design-system';
 import { BreakpointSystem } from '../common/BreakpointSystem';
 
 const DOMAIN: number = 0x1001;
@@ -35,8 +32,7 @@ const PC_MIN_HEIGHT_VP: number = 600;
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(DOMAIN, TAG, 'onCreate, deviceType=%{public}s', deviceInfo.deviceType);
-    // 动效减弱偏好（§2.7.4）：读取系统"减少动画"配置并监听变更。
-    // **读不到配置时按"已开启"保守处理**——MotionPreference 默认即 true，此处只在读到时下调。
+    // 动效减弱偏好（§2.7.4）：App 内设置，PersistentStorage 持久化（系统开关三方不可读，见方法注释）
     this.initMotionPreference();
     // TODO(T0.9-03): 按设计文档 §7 在此初始化 core-data（RDB 打开 + schema 迁移 + 文件沙箱布局）
     // TODO(T0.9-04): 按设计文档 §2 在此初始化 core-infra（日志、事件总线、配置、任务队列）
@@ -50,14 +46,14 @@ export default class EntryAbility extends UIAbility {
   onWindowStageCreate(windowStage: window.WindowStage): void {
     hilog.info(DOMAIN, TAG, 'onWindowStageCreate');
 
-    // 断点监听必须在 UI 上下文可用后注册（mediaquery 依赖 UI 线程）
-    BreakpointSystem.getInstance().register();
-
     windowStage.loadContent('pages/Index', (err: Error | null): void => {
       if (err) {
         hilog.error(DOMAIN, TAG, 'loadContent failed: %{public}s', JSON.stringify(err));
         return;
       }
+      // 断点监听在 loadContent 之后注册：新的 mediaquery 接口只能从 UIContext 取
+      // （全局 mediaquery.matchMediaSync 自 API 18 废弃），而 UIContext 在内容加载后才可用。
+      BreakpointSystem.getInstance().register(windowStage.getMainWindowSync().getUIContext());
       this.applyPcWindowPolicy(windowStage);
     });
   }
@@ -76,48 +72,19 @@ export default class EntryAbility extends UIAbility {
   }
 
   /**
-   * 动效减弱偏好接线（design-system Index.ets 头注释要求：entry 启动时必须调用 MotionPreference.set）。
+   * 动效减弱偏好接线（design-system Motion.ets 要求：entry 启动时必须初始化 AD_REDUCE_MOTION_KEY）。
    *
-   * 数据源为系统设置的动画时长缩放 `ANIMATOR_DURATION_SCALE`（DEVICE_SHARED 域，读取免权限）：
-   * 值为 0 即用户在系统里关闭了动画 → 等价于"减弱动效"。
-   * 不用 `@ohos.accessibility.config`：那是系统接口，公开 SDK 未提供，三方应用无法调用。
-   *
-   * 读取失败时**不改动**默认值（保守按"已开启减弱"处理，见 MotionPreference 默认值）。
+   * **平台事实（API 23 实测）：三方应用读不到系统的"减少动画"设置**——
+   *   · `@ohos.accessibility.config`（animationOff）是系统接口，公开 SDK 无声明；
+   *   · `settings.display.ANIMATOR_DURATION_SCALE` 等动画缩放常量自 API 21 起废弃且无替代。
+   * 故偏好以 **App 内设置为唯一来源**：PersistentStorage 持久化，设置页开关写入（T0.9-27），
+   * 默认 false（动效开启）——没有系统信号时默认"减弱"等于给所有人永久关掉动效。
+   * 系统的动画时长缩放仍在渲染层全局生效，App 不需要也无法复刻。
    */
   private initMotionPreference(): void {
-    const ctx: common.UIAbilityContext = this.context;
-    const readAndApply = (): void => {
-      try {
-        // 缺省 '1' = 正常动画速度；'0' = 系统已关闭动画
-        const scale: string =
-          settings.getValueSync(ctx, settings.display.ANIMATOR_DURATION_SCALE, '1', settings.domainName.DEVICE_SHARED);
-        const reduced: boolean = Number.parseFloat(scale) === 0;
-        MotionPreference.set(reduced);
-        hilog.info(DOMAIN, TAG, 'MotionPreference.set(%{public}s) from scale=%{public}s', String(reduced), scale);
-      } catch (e) {
-        const err: BusinessError = e as BusinessError;
-        hilog.warn(DOMAIN, TAG, 'read ANIMATOR_DURATION_SCALE failed, keep default: %{public}s', err.message);
-      }
-    };
-    readAndApply();
-    // 监听变更：用户在系统设置里改"动画时长"时即时生效
-    try {
-      settings.registerKeyObserver(
-        ctx,
-        settings.display.ANIMATOR_DURATION_SCALE,
-        settings.domainName.DEVICE_SHARED,
-        (err: BusinessError): void => {
-          if (err) {
-            hilog.warn(DOMAIN, TAG, 'animator scale observer error: %{public}s', err.message);
-            return;
-          }
-          readAndApply();
-        }
-      );
-    } catch (e) {
-      const err: BusinessError = e as BusinessError;
-      hilog.warn(DOMAIN, TAG, 'registerKeyObserver unavailable: %{public}s', err.message);
-    }
+    // 建立持久化绑定：设置页写 AppStorage[AD_REDUCE_MOTION_KEY] 即自动落盘，重启后保留
+    PersistentStorage.persistProp<boolean>(AD_REDUCE_MOTION_KEY, false);
+    hilog.info(DOMAIN, TAG, 'reduceMotion(app preference)=%{public}s', String(MotionPreference.isReduced()));
   }
 
   /**

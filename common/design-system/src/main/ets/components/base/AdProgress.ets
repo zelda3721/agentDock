@@ -65,7 +65,7 @@ export struct AdProgress {
   onPauseToggle: () => void = () => {
   };
 
-  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = true;
+  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = false;
   /** 条形的补间目标（唯一允许补间的仪表元素） */
   @State private barPercent: number = 0;
   /** indeterminate 的循环相位 */
@@ -76,7 +76,7 @@ export struct AdProgress {
   aboutToAppear(): void {
     this.barPercent = this.clamped();
     if (this.isIndeterminate() && !this.reduceMotion) {
-      animateTo({
+      this.getUIContext().animateTo({
         duration: AdDuration.breath,
         curve: AdCurve.standard,
         iterations: -1,
@@ -222,7 +222,7 @@ export struct AdProgress {
    */
   onPercentChanged(): void {
     const target: number = this.clamped();
-    animateTo({
+    this.getUIContext().animateTo({
       duration: MotionPreference.motion(AdDuration.gaugeBar, this.reduceMotion),
       curve: AdCurve.decelerate
     }, () => {

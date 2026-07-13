@@ -4,7 +4,7 @@
   "module": {
     "name": "knowledge",
     "type": "shared",
-    "description": "$string:module_desc",
+    "description": "$string:knowledge_desc",
     "deviceTypes": [
       "phone",
       "tablet",

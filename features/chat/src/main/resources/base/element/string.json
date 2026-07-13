@@ -1,7 +1,7 @@
 {
   "string": [
     {
-      "name": "module_desc",
+      "name": "chat_desc",
       "value": "AgentDock 会话与消息流 UI（HSP）"
     }
   ]

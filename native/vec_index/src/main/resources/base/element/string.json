@@ -1,7 +1,7 @@
 {
   "string": [
     {
-      "name": "module_desc",
+      "name": "vec_index_desc",
       "value": "向量索引 NAPI 模块（hnswlib + float16 平面文件）"
     }
   ]

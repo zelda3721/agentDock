@@ -4,7 +4,7 @@
   "module": {
     "name": "agents",
     "type": "shared",
-    "description": "$string:module_desc",
+    "description": "$string:agents_desc",
     "deviceTypes": [
       "phone",
       "tablet",

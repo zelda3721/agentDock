@@ -45,7 +45,7 @@ elseif(EXISTS ${HNSWLIB_DIR}/hnswlib/hnswlib.h)
   include_directories(${HNSWLIB_DIR})
   set(VEC_INDEX_HAS_HNSWLIB ON)
 else()
-  message(WARNING
+  message(STATUS
     "[vec_index] 未找到 hnswlib 子模块（${HNSWLIB_DIR}）——按骨架模式构建：\n"
     "  不含索引实现，所有 NAPI 入口返回 NOT_IMPLEMENTED(2099)。\n"
     "  拉取方式见 native/vec_index/third_party/README.md（由 T0.9-11 执行）。")

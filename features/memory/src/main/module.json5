@@ -4,7 +4,7 @@
   "module": {
     "name": "memory",
     "type": "shared",
-    "description": "$string:module_desc",
+    "description": "$string:memory_desc",
     "deviceTypes": [
       "phone",
       "tablet",

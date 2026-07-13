@@ -12,6 +12,7 @@
  * 结果写入 AppStorage 的 'currentBreakpoint'，页面用 @StorageProp('currentBreakpoint') 订阅。
  */
 import mediaquery from '@ohos.mediaquery';
+import { UIContext } from '@ohos.arkui.UIContext';
 
 /** 断点枚举（字符串值直接存入 AppStorage，便于 @StorageProp 消费） */
 export enum Breakpoint {
@@ -64,18 +65,22 @@ export class BreakpointSystem {
   }
 
   /**
-   * 注册三档 mediaquery 监听。应在 UIAbility 的 onWindowStageCreate/页面 aboutToAppear 中调用一次。
-   * 注意：mediaquery.matchMediaSync 必须在有 UI 上下文的线程调用。
+   * 注册三档 mediaquery 监听。应在 UIAbility 的 onWindowStageCreate（loadContent 之后）调用一次。
+   *
+   * 必须由调用方传入 UIContext：全局 `mediaquery.matchMediaSync` 自 API 18 起废弃
+   * （useinstead: ohos.arkui.UIContext.MediaQuery#matchMediaSync），新接口只能从 UIContext 取。
+   * UIContext 由 windowStage.getMainWindowSync().getUIContext() 获得。
    */
-  register(): void {
+  register(uiContext: UIContext): void {
     if (this.started) {
       return;
     }
     // 先给一个保底值，避免首帧 AppStorage 为空导致布局闪烁
     AppStorage.setOrCreate<string>(BREAKPOINT_KEY, Breakpoint.SM);
 
+    const mq = uiContext.getMediaQuery();
     this.entries.forEach((entry: BreakpointEntry): void => {
-      const listener: mediaquery.MediaQueryListener = mediaquery.matchMediaSync(entry.condition);
+      const listener: mediaquery.MediaQueryListener = mq.matchMediaSync(entry.condition);
       // 立即取一次初值：某些设备首次不会触发 change 回调
       if (listener.matches) {
         this.apply(entry.breakpoint);

@@ -69,7 +69,7 @@ export struct AdToolCard {
   onAllowDomain: () => void = () => {
   };
 
-  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = true;
+  @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = false;
   @State private expanded: boolean = false;
 
   build() {
@@ -111,7 +111,7 @@ export struct AdToolCard {
           if (this.call.status === AdToolStatus.NEEDS_CONFIRM) {
             return;
           }
-          animateTo({
+          this.getUIContext().animateTo({
             duration: MotionPreference.motion(AdDuration.normal, this.reduceMotion),
             curve: AdCurve.decelerate
           }, () => {

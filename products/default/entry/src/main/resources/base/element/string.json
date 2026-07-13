@@ -1,11 +1,7 @@
 {
   "string": [
     {
-      "name": "app_name",
-      "value": "AgentDock"
-    },
-    {
-      "name": "module_desc",
+      "name": "entry_desc",
       "value": "AgentDock 入口模块：窗口策略、三端断点布局装配与 PC 快捷键注册"
     },
     {
