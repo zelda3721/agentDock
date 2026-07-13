@@ -123,7 +123,7 @@ ArkData relationalStore（加密 + WAL）· workScheduler / continuousTask · As
 | 项 | 要求 |
 |---|---|
 | IDE | **DevEco Studio 6.x** |
-| SDK | **HarmonyOS SDK API 20**（HarmonyOS 6.0+），stage 模型 |
+| SDK | 编译 **6.1.0(23)**，最低兼容 **6.0.0(20)**（HarmonyOS 6.0+），stage 模型 |
 | 原生工具链 | **OHOS NDK**（aarch64 交叉编译，`ohos.toolchain.cmake`），CMake ≥ 3.16 |
 | 语言 | ArkTS + C++17 |
 | 设备 | 真机（模拟器不覆盖 NAPI/.so 加载与真实性能） |

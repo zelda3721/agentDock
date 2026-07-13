@@ -9,8 +9,10 @@
     "versionName": "0.1.0",
     "icon": "$media:app_icon",
     "label": "$string:app_name",
+    // minAPIVersion 20 = HarmonyOS 6.0（设计文档 §0 的最低目标平台）；
+    // targetAPIVersion 23 = 编译与测试所用 SDK（6.1.0(23)），与 build-profile.json5 保持一致
     "minAPIVersion": 20,
-    "targetAPIVersion": 20,
+    "targetAPIVersion": 23,
     "apiReleaseType": "Release"
   }
 }
