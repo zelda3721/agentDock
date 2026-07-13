@@ -13,6 +13,7 @@ import window from '@ohos.window';
 import display from '@ohos.display';
 import deviceInfo from '@ohos.deviceInfo';
 import hilog from '@ohos.hilog';
+import { BusinessError } from '@ohos.base';
 import { MotionPreference, AD_REDUCE_MOTION_KEY } from 'design-system';
 import { BreakpointSystem } from '../common/BreakpointSystem';
 
@@ -46,9 +47,13 @@ export default class EntryAbility extends UIAbility {
   onWindowStageCreate(windowStage: window.WindowStage): void {
     hilog.info(DOMAIN, TAG, 'onWindowStageCreate');
 
-    windowStage.loadContent('pages/Index', (err: Error | null): void => {
-      if (err) {
-        hilog.error(DOMAIN, TAG, 'loadContent failed: %{public}s', JSON.stringify(err));
+    // 回调的 err 是 BusinessError：**成功时也会传一个 code === 0 的对象**，
+    // 因此必须判 err.code 而不是 if (err)——后者恒为真，会把成功当失败处理，
+    // 导致断点监听与 PC 窗口策略永不执行（真机日志实测：loadContent failed: {"code":0}）。
+    windowStage.loadContent('pages/Index', (err: BusinessError): void => {
+      if (err && err.code !== 0) {
+        hilog.error(DOMAIN, TAG, 'loadContent failed: code=%{public}d, msg=%{public}s',
+          err.code, err.message);
         return;
       }
       // 断点监听在 loadContent 之后注册：新的 mediaquery 接口只能从 UIContext 取
