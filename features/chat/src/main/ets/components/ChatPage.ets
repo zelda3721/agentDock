@@ -77,6 +77,16 @@ export struct ChatPage {
     host.onConversations = (list: ConversationVM[]): void => {
       this.conversations = list;
       this.listState = 'ready';
+      // md/lg 是主从布局：右栏必须有内容。列表非空却什么都不选，右栏会显示"还没有会话"——
+      // 那是**事实错误**（明明有会话），用户会以为数据丢了。故自动选中最近一条。
+      // sm 不自动选：它是单栏跳转，列表本身就是一级页，自动跳进详情等于抢走用户的导航权。
+      if (this.bp() !== 'sm' && this.selectedId === '' && list.length > 0) {
+        this.selectedId = list[0].id;
+        this.messagesLoading = true;
+        this.hasInspection = false;
+        this.controller.selectConversation(list[0].id);
+        // 注意：不走 selectConversation()——它在 sm 下会 pushPath。自动选中只该改状态，不该导航。
+      }
     };
     host.onStreaming = (streaming: boolean): void => {
       this.streaming = streaming;

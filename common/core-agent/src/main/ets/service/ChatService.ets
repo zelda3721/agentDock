@@ -423,6 +423,25 @@ export class ChatService {
   /** 活跃轮次：runId → ChatTurn（cancel(runId) 与删除会话时的连带取消要用） */
   private readonly turns: Map<string, ChatTurn> = new Map<string, ChatTurn>();
 
+  /**
+   * 就绪门闩（真机实测的竞态修复）。
+   *
+   * entry 的 initCoreStack() 是异步的（开加密库 + 跑迁移要 ~100ms），而页面 aboutToAppear
+   * 立刻就会读会话列表——先到的查询撞上 repo===null，UI 弹"会话列表没能读出来"，
+   * 用户以为数据没了，其实只是还没开门。
+   *
+   * 修法：UI 侧所有读写**先 await whenReady()**，而不是抢跑后靠错误态兜底。
+   * 这不是把错误藏起来——init 真的失败时门闩会 reject，错误照常暴露（"宁可诚实失败"）。
+   */
+  private readyResolve: (() => void) | null = null;
+  private readyReject: ((e: Object) => void) | null = null;
+  private readonly readyPromise: Promise<void> = new Promise<void>(
+    (resolve: () => void, reject: (e: Object) => void): void => {
+      this.readyResolve = resolve;
+      this.readyReject = reject;
+    });
+  private ready: boolean = false;
+
   static get(): ChatService {
     if (ChatService.instance === null) {
       ChatService.instance = new ChatService();
@@ -433,7 +452,27 @@ export class ChatService {
   /** entry 启动时装配一次：注入**已打开**的 RDB（开库与迁移是 core-data 的事，本层不碰） */
   async init(rdb: AppRdbStore): Promise<void> {
     this.repo = new ChatRepository(rdb);
+    this.ready = true;
+    if (this.readyResolve !== null) {
+      this.readyResolve();
+    }
     Logger.info(TAG, 'chat service initialized');
+  }
+
+  /** 装配失败时由 entry 调用：让等在门闩上的 UI 拿到真实错误，而不是永远转圈 */
+  initFailed(reason: Object): void {
+    if (this.readyReject !== null && !this.ready) {
+      this.readyReject(reason);
+    }
+  }
+
+  /** UI 侧任何读写前先 await 它（见 readyPromise 的注释：真机实测的启动竞态） */
+  whenReady(): Promise<void> {
+    return this.readyPromise;
+  }
+
+  isReady(): boolean {
+    return this.ready;
   }
 
   // --- 会话 -------------------------------------------------------------------

@@ -105,6 +105,10 @@ export class ChatController {
 
   async loadConversations(limit: number): Promise<void> {
     try {
+      // 先等数据层就绪（真机实测：页面 aboutToAppear 会抢在 entry 的异步开库之前跑，
+      // 结果弹"会话列表没能读出来"，用户以为数据丢了，其实只是还没开门）。
+      // init 真的失败时 whenReady() 会 reject，错误照常走下面的 catch 暴露出来。
+      await this.service.whenReady();
       const list: ConversationSummary[] = await this.service.listConversations(limit);
       this.host.onConversations(list.map((s: ConversationSummary): ConversationVM => ChatController.toConvVM(s)));
     } catch (err) {

@@ -85,9 +85,11 @@ export default class EntryAbility extends UIAbility {
       hilog.info(DOMAIN, TAG, 'core stack ready');
     } catch (e) {
       const err = e as BusinessError;
-      // 装配失败不崩应用：聊天页会显示明确错误与下一步（"宁可诚实失败"，§23.3）
+      // 装配失败不崩应用，但必须让等在就绪门闩上的 UI 拿到**真实错误**——
+      // 否则页面会永远转圈（比崩溃更糟：用户不知道发生了什么，§23.3"宁可诚实失败"）。
       hilog.error(DOMAIN, TAG, 'initCoreStack failed: code=%{public}d %{public}s', err.code, err.message);
       Logger.error(TAG, 'initCoreStack failed', [{ key: 'code', value: err.code }]);
+      ChatService.get().initFailed(err);
     }
   }
 
