@@ -13,7 +13,9 @@ import window from '@ohos.window';
 import display from '@ohos.display';
 import deviceInfo from '@ohos.deviceInfo';
 import hilog from '@ohos.hilog';
-// import config from '@ohos.accessibility.config'; // 模块在当前 SDK 不可用
+import settings from '@ohos.settings';
+import common from '@ohos.app.ability.common';
+import { BusinessError } from '@ohos.base';
 import { MotionPreference } from 'design-system';
 import { BreakpointSystem } from '../common/BreakpointSystem';
 
@@ -75,11 +77,47 @@ export default class EntryAbility extends UIAbility {
 
   /**
    * 动效减弱偏好接线（design-system Index.ets 头注释要求：entry 启动时必须调用 MotionPreference.set）。
-   * 无障碍配置读取失败时**不改动**默认值（保守按"已开启减弱"处理）。
+   *
+   * 数据源为系统设置的动画时长缩放 `ANIMATOR_DURATION_SCALE`（DEVICE_SHARED 域，读取免权限）：
+   * 值为 0 即用户在系统里关闭了动画 → 等价于"减弱动效"。
+   * 不用 `@ohos.accessibility.config`：那是系统接口，公开 SDK 未提供，三方应用无法调用。
+   *
+   * 读取失败时**不改动**默认值（保守按"已开启减弱"处理，见 MotionPreference 默认值）。
    */
   private initMotionPreference(): void {
-    // @ohos.accessibility.config 模块在当前 SDK 不可用，保持默认值（reduce-motion=true）
-    hilog.info(DOMAIN, TAG, 'MotionPreference using default: reduce-motion=true');
+    const ctx: common.UIAbilityContext = this.context;
+    const readAndApply = (): void => {
+      try {
+        // 缺省 '1' = 正常动画速度；'0' = 系统已关闭动画
+        const scale: string =
+          settings.getValueSync(ctx, settings.display.ANIMATOR_DURATION_SCALE, '1', settings.domainName.DEVICE_SHARED);
+        const reduced: boolean = Number.parseFloat(scale) === 0;
+        MotionPreference.set(reduced);
+        hilog.info(DOMAIN, TAG, 'MotionPreference.set(%{public}s) from scale=%{public}s', String(reduced), scale);
+      } catch (e) {
+        const err: BusinessError = e as BusinessError;
+        hilog.warn(DOMAIN, TAG, 'read ANIMATOR_DURATION_SCALE failed, keep default: %{public}s', err.message);
+      }
+    };
+    readAndApply();
+    // 监听变更：用户在系统设置里改"动画时长"时即时生效
+    try {
+      settings.registerKeyObserver(
+        ctx,
+        settings.display.ANIMATOR_DURATION_SCALE,
+        settings.domainName.DEVICE_SHARED,
+        (err: BusinessError): void => {
+          if (err) {
+            hilog.warn(DOMAIN, TAG, 'animator scale observer error: %{public}s', err.message);
+            return;
+          }
+          readAndApply();
+        }
+      );
+    } catch (e) {
+      const err: BusinessError = e as BusinessError;
+      hilog.warn(DOMAIN, TAG, 'registerKeyObserver unavailable: %{public}s', err.message);
+    }
   }
 
   /**

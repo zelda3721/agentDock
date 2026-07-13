@@ -16,6 +16,14 @@ import { listRepoFiles, readRepoFile, finish, yellow, bold } from './scan-utils.
 /** 需要 SPDX 头的扩展名 */
 const CHECKED_EXTS = ['.ets', '.ts', '.cpp', '.h', '.mjs', '.js', '.json5', '.yml'];
 
+/**
+ * 工具生成物豁免：由 hvigor/ohpm 自动生成并覆写，人工加的许可头下次生成就没了。
+ * 豁免的是**生成**这一事实，不是"懒得加"——新增豁免项必须是工具产物且能说明由谁生成。
+ *   BuildProfile.ets       hvigor 按 build-profile.json5 生成（已入 .gitignore，双保险）
+ *   oh-package-lock.json5  ohpm 依赖锁文件（入库以复现依赖，但由 ohpm 覆写）
+ */
+const GENERATED_BASENAMES = new Set(['BuildProfile.ets', 'oh-package-lock.json5']);
+
 /** SPDX 标识必须出现在文件的前 N 行内（否则视为「藏在文件中间」，不算许可头） */
 const HEADER_LINES = 10;
 
@@ -23,7 +31,11 @@ const SPDX_TAG = 'SPDX-License-Identifier: Apache-2.0';
 
 function main() {
   const { source, files } = listRepoFiles();
-  const targets = files.filter((f) => CHECKED_EXTS.some((ext) => f.endsWith(ext)));
+  const targets = files.filter(
+    (f) =>
+      CHECKED_EXTS.some((ext) => f.endsWith(ext)) &&
+      !GENERATED_BASENAMES.has(f.slice(f.lastIndexOf('/') + 1))
+  );
 
   const failures = [];
   for (const rel of targets) {
