@@ -499,26 +499,21 @@ export class LocalProvider implements InferenceProvider {
   }
 
   /**
-   * NAPI createSession 是**同步**调用（napi_entry.cpp 直接返回 handle），实测约 561ms。
-   * 包一层 Promise 只是为了给调用方统一的 async 形状；它并不能让加载不阻塞 ArkTS 线程。
-   * TODO(T0.9-06): 原生侧把 createSession 改成异步（napi_create_async_work），
-   *   否则首次加载会卡住 UI 线程约 0.5s。当前以"预热"（load()）规避：把它挪出首条消息的关键路径。
+   * NAPI createSession 是**异步**调用（T0.9-06：napi_async_work，模型加载跑在 libuv 线程池上），
+   * 实测约 561ms —— 这 0.5 秒不再压在 ArkTS 线程上，首次发消息不会掉帧。
+   * 仍建议调用 load() 预热：把加载挪出首条消息的关键路径，让用户等在"载入模型中"而不是等在输入框。
    */
-  private createSession(cfg: LlamaSessionConfig, purpose: string): Promise<number> {
+  private async createSession(cfg: LlamaSessionConfig, purpose: string): Promise<number> {
     const startedAt: number = Date.now();
-    try {
-      const handle: number = LlamaBridge.createSession(cfg);
-      const costMs: number = Date.now() - startedAt;
-      Logger.info(TAG, 'session created', [
-        { key: 'provider', value: this.id },
-        { key: 'purpose', value: purpose },
-        { key: 'cost_ms', value: costMs }
-      ]);
-      Metrics.record('model.load_ms', costMs, 'ms', [{ key: 'model_id', value: this.config.modelLabel }]);
-      return Promise.resolve(handle);
-    } catch (e) {
-      return Promise.reject(e as Object);
-    }
+    const handle: number = await LlamaBridge.createSession(cfg);
+    const costMs: number = Date.now() - startedAt;
+    Logger.info(TAG, 'session created', [
+      { key: 'provider', value: this.id },
+      { key: 'purpose', value: purpose },
+      { key: 'cost_ms', value: costMs }
+    ]);
+    Metrics.record('model.load_ms', costMs, 'ms', [{ key: 'model_id', value: this.config.modelLabel }]);
+    return handle;
   }
 
   private tokenizeSafely(handle: number, text: string): number {

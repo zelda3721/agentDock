@@ -17,9 +17,6 @@
     "features/knowledge/src/main/ets/components/KbDocumentList.ets",
     "features/agents/src/main/ets/components/AgentListPage.ets",
     "features/agents/src/main/ets/components/AgentEditor.ets",
-    "features/models/src/main/ets/components/OnboardingWizard.ets",
-    "features/models/src/main/ets/components/ModelListPage.ets",
-    "features/models/src/main/ets/components/ProviderConfigPage.ets",
     "features/settings/src/main/ets/components/SettingsPage.ets",
     "features/settings/src/main/ets/components/LicensePage.ets",
     "features/memory/src/main/ets/components/MemoryPage.ets"

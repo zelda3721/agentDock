@@ -2,186 +2,522 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * models 模块的 UI 侧视图模型（设计文档 §3.1 Provider 抽象、§8 档位表、§22.4 R5、§26.5 首启双通道）。
+ * models 模块的门面（UI 与数据层之间的唯一通道）。
  *
- * 强约束（红线 R5，设计文档 §21-R5/§22.4）：
- *   仓库与安装包一律**不内置模型权重**；模型运行时下载，且**下载前必须展示清单中的许可与出处**。
- *   清单来源为仓库根的 models/manifest.json（name/size/sha256/license/来源 URL/是否默认档）。
+ * 设计依据：§3.1 Provider 抽象、§3.2 档位表与内存预算、§3.3 远程 Provider 与网络策略、
+ *          §9.1 密钥只进 Asset Store、§22.4/R5 下载前展示许可与出处、§26.5 首启双通道 + 断点续传。
+ *
+ * 三条纪律：
+ *  1. **清单是权威源**：模型列表只来自 models/manifest.json（rawfile），代码里没有任何硬编码模型。
+ *  2. **密钥只写不读**：saveRemoteProvider 把 Key 交给 SecretStore 后即失去引用；
+ *     本类**没有任何方法能把明文 Key 返回给 UI**（§8.3 [R-88]）。
+ *  3. **不装配 core**：切换模型只做"写库 + 发事件"（MODEL_ACTIVE_CHANGED），
+ *     真正的 Provider 注册/注销由 entry 完成（features 不碰 ProviderRegistry）。
  */
 
-/** 断点标识（设计文档 §8）。 */
+import { common } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
+import {
+  AppRdbStore,
+  DownloadPausedError,
+  DownloadProgress,
+  DownloadRequest,
+  DownloadState,
+  FileRepo,
+  LocalModelInput,
+  LocalModelRow,
+  MODEL_DOWNLOAD_CHANGED,
+  ModelDownloadChanged,
+  ModelRepo,
+  ProviderRepo,
+  ProviderRow,
+  RdbConfigStore,
+  RemoteProviderInput
+} from 'core-data';
+import {
+  ConfigEntry,
+  ConfigValueType,
+  EventBus,
+  Logger,
+  SecretAlias,
+  SecretStore
+} from 'core-infra';
+import { ProviderHealth, RemoteProvider, RemoteProviderConfig as LlmRemoteConfig } from 'core-llm';
+import { DeviceBudget, isDownloadable, ModelCatalog, ModelManifestItem, Runnability } from './ModelManifest';
+
+const TAG: string = 'ModelFacade';
+
+/** kv_config：首启向导是否已完成（§26.5 激活漏斗）。 */
+const KEY_ONBOARDING_DONE: string = 'onboarding.done';
+
+/** 断点标识（entry 统一计算下发，features 不自行监听 mediaquery）。 */
 export type BreakpointKey = 'sm' | 'md' | 'lg';
 
 /**
- * 设备档位（设计文档 §8 能力差异：本地模型档位表按 deviceInfo 动态给出可安装列表）。
- *   nano     → 极小模型，V0.9 首启"秒级体验档"（<500MB，§26.5）
- *   standard → 手机/平板主力档
- *   max      → 2in1 / 大内存设备档
+ * 一个模型在 UI 上的完整状态 = 清单条目（权威）+ 本机下载状态 + 本机可运行性判定。
+ * 三者缺一不可：清单给"是什么/许可/出处"，库给"下到哪了"，判定给"本机能不能跑"。
  */
-export type ModelTier = 'nano' | 'standard' | 'max';
-
-/** 下载状态。 */
-export type DownloadState = 'not_downloaded' | 'queued' | 'downloading' | 'paused' | 'verifying' | 'ready' | 'failed';
-
-/**
- * 清单核验状态（对应 manifest.json 的 status，models/README.md §1）。
- *   pending-verification → 已登记许可与出处，但 sha256/体积未实测、许可未人工核对
- *   verified             → 许可与哈希均已核实，**只有此状态可提供下载入口**
- *   deprecated           → 已下架，不再提供下载
- */
-export type ModelVerificationStatus = 'verified' | 'pending-verification' | 'deprecated';
-
-/**
- * 模型清单条目（对应 models/manifest.json，§22.4）。
- * license 与 sourceUrl 为 R5 强制展示项，UI 不得省略。
- *
- * **可空字段不是疏忽，是 R5（红线 14）纪律的类型化表达**：
- * sha256 与 sizeBytes **必须由清单脚本对真实下载到的文件实测计算**，实测之前一律为 null
- * （当前清单内 6 条全部是 null + status='pending-verification'）。
- * 把它们声明成非空 string/number 会逼迫接线者填 '' 或编造值——那正是
- * tools/models/validate-manifest.mjs 与 models/README.md 极力防范的「假装校验过」。
- * 类型层面允许 null，UI 层面就必须显式呈现"待核验"，谁也绕不过去。
- */
-export interface ModelManifestItem {
-  modelId: string;
-  displayName: string;
-  tier: ModelTier;
-  /** 权重体积（字节）。**未实测前为 null**，UI 显示"待核验"，不得填 0 或估算值。 */
-  sizeBytes: number | null;
-  /**
-   * 完整性校验和（64 位十六进制）。**未实测前为 null**（§26.5 断点续传 + sha256）。
-   * 严禁编造：null 意味着"没有校验和"，而不是"校验通过"。
-   */
-  sha256: string | null;
-  /** R5：许可（如 Apache-2.0 / MIT / Qwen License 等），下载前展示。 */
-  license: string;
-  /** R5：许可全文 URL，与 license 一同展示（manifest.licenseUrl）。 */
-  licenseUrl: string;
-  /** R5：出处（权重来源 URL），下载前展示。 */
-  sourceUrl: string;
-  /**
-   * 核验状态。models/README.md §1 明文要求：
-   * **App 侧对 status !== 'verified' 的条目不提供下载入口**（只展示许可/出处 + 待核验标记）。
-   */
-  status: ModelVerificationStatus;
-  /** 许可人工核对完成日期（ISO-8601）；null = 尚未核对（§11.3 第 2 步）。 */
-  licenseVerifiedAt: string | null;
-  /** 是否默认档（首启推荐）。未核验的条目不得为 true（validate-manifest 门禁）。 */
-  isDefault: boolean;
-  /** 最低内存要求（字节），用于按 deviceInfo 过滤（§8）。 */
-  minMemoryBytes: number;
+export interface ModelEntry {
+  item: ModelManifestItem;
+  /** DownloadState 字符串值。 */
+  state: string;
+  downloadedBytes: number;
+  /** 瞬时速率（字节/秒），仅下载中有意义。 */
+  bytesPerSec: number;
+  /** 是否为当前选中的本地模型。 */
+  active: boolean;
+  runnable: boolean;
+  /** 常驻内存估算（GB，UI 显示带 "~"）。 */
+  residentGb: number;
+  /** 不可运行的原因（内存数字对比）。 */
+  reason: string;
+  /** 替代方案。 */
+  advice: string;
+  /** 失败原因（下载失败 / sha256 校验失败）。 */
+  error: string;
 }
 
-/**
- * 是否可提供下载入口（R5 单一判据，UI 与 facade 共用，避免两处口径漂移）。
- * status='verified' 且 sha256 非空——两者缺一不可：没有校验和就无法在下载后验真，
- * 而"不能验真的下载"等于放弃 R5 的完整性保证。
- */
-export function isDownloadable(item: ModelManifestItem): boolean {
-  return item.status === 'verified' && item.sha256 !== null && item.sha256.length > 0;
-}
-
-/** 下载进度。 */
-export interface DownloadProgress {
-  modelId: string;
-  state: DownloadState;
-  /** 已下载字节数（断点续传的续传起点）。 */
-  receivedBytes: number;
-  totalBytes: number;
-  /** 失败原因；state !== 'failed' 时为空串。sha256 校验失败必须显式报错，不得静默重试（§10）。 */
-  errorMessage: string;
-}
-
-/** 远程 Provider 配置（设计文档 §3.3 OpenAI 兼容 Provider）。 */
-export interface RemoteProviderConfig {
+/** 远程 Provider 的表单入参（**apiKey 只进不出**：读取时恒为空串）。 */
+export interface RemoteProviderForm {
+  /** 空串 = 新增。 */
   providerId: string;
   displayName: string;
-  /** OpenAI 兼容端点，如自建 Ollama / vLLM / Open WebUI（§26.1 P2）。 */
+  /** OpenAI 兼容端点，如 https://api.example.com/v1。 */
   baseUrl: string;
-  /** 模型名（端点侧的 model 参数）。 */
+  /** 端点侧的模型名。 */
   modelName: string;
+  /** 仅 Wi-Fi 使用远程（§3.3）。 */
+  wifiOnly: boolean;
   /**
-   * API Key **只经由此字段传入，绝不回显、绝不落 RDB/配置文件**——
-   * 存 Asset Store Kit（§9.1）。读取配置时此字段恒为空串。
+   * API Key：**只在保存的那一瞬间存在于内存**，随即交给 SecretStore（Asset Store Kit）。
+   * 读取既有 Provider 时此字段恒为空串——本产品不提供任何把明文 Key 读回 UI 的通道（[R-88]）。
    */
   apiKey: string;
 }
 
+/** 已保存的远程 Provider（列表展示用；同样不含 Key）。 */
+export interface RemoteProviderView {
+  providerId: string;
+  displayName: string;
+  baseUrl: string;
+  modelName: string;
+  wifiOnly: boolean;
+  /** 密钥是否已配置（只有"有/没有"，**没有末四位、没有明文**）。 */
+  hasKey: boolean;
+}
+
+/** 连通性测试结果（§4.1 路径 B 第 2 步的成功判据）。 */
+export interface ProviderTestResult {
+  ok: boolean;
+  latencyMs: number;
+  /** 失败原因（已脱敏，绝不含 Key，[R-91]）。 */
+  message: string;
+  /** 可执行的修复指引（文案即修复指引，§4.1 错误矩阵）。 */
+  hint: string;
+}
+
 /**
- * models 的 UI 侧门面。V0.9 由 T0.9-10 接 core-llm（Provider 注册）与 core-infra
- * （下载任务队列、断点续传、sha256 校验、Asset Store）。
- * 红线：禁止伪实现——未实现方法一律抛错。
+ * models 门面（单例）。
+ *
+ * 单例的理由：下载是长任务，用户切走页面时下载不能停（§26.5 大模型后台续传）。
+ * 页面只是订阅者，下载的持有者是 facade + 系统下载服务。
  */
 export class ModelFacade {
+  private static instance: ModelFacade | null = null;
+
+  private files: FileRepo | null = null;
+  private models: ModelRepo | null = null;
+  private providers: ProviderRepo | null = null;
+  private config: RdbConfigStore | null = null;
+  private manifest: ModelManifestItem[] = [];
+  private budget: DeviceBudget = { totalRamGb: 0, budgetGb: 0, deviceType: '' };
+  /** 进行中的下载（modelId）——防止同一模型被重复点出两个任务。 */
+  private inFlight: Set<string> = new Set<string>();
+  private ready: boolean = false;
+
+  static get(): ModelFacade {
+    if (ModelFacade.instance === null) {
+      ModelFacade.instance = new ModelFacade();
+    }
+    return ModelFacade.instance;
+  }
+
   /**
-   * 读取模型清单，并按当前设备 deviceInfo（内存/设备类型）过滤出可安装档位（§8）。
-   * 返回项必带 license 与 sourceUrl（R5）。
+   * 初始化（幂等）：读清单 → 登记进 models_local → 读设备预算。
+   * 页面 aboutToAppear 里调用；entry 也可在启动时预热。
    */
-  public listInstallableModels(): Promise<ModelManifestItem[]> {
-    // TODO(T0.9-10): 按设计文档 §8/§22.4 读取 models/manifest.json，用 deviceInfo 过滤档位表
-    //                （Nano/Standard/Max），保留许可与出处字段供 UI 展示（R5）。
-    //
-    // 映射：清单是 id/name/default/minRamGb/kind，本视图模型是 modelId/displayName/isDefault/
-    //       minMemoryBytes——逐字段映射，不要把清单对象直接透传给 UI。
-    //       只有 kind==='llm' 的条目进本列表（embedding/reranker 的 tier 在清单里是 null，
-    //       由 RAG 侧自行管理，不走模型档位表）。
-    //
-    // R5（红线 14，models/README.md §1）：**status !== 'verified' 的条目不返回下载入口**——
-    //   它们仍要返回并展示（许可 / 出处 / "待核验"标记 + sizeBytes=null → 显示"体积待核验"），
-    //   但 UI 一律不得出现下载按钮（判据统一走 isDownloadable()，不要在 UI 里另写一套）。
-    //   当前清单 6 条全部是 pending-verification，所以本方法接线后的正确行为是
-    //   「列表可见、无一可下载」——这不是 bug，是尚未人工核验的如实呈现。
-    //   严禁为了"让列表能下载"而在映射层给 sha256/sizeBytes 填 '' / 0 / 编造值。
-    throw new Error('Not implemented: T0.9-10');
+  async init(context: common.Context): Promise<void> {
+    if (this.ready) {
+      return;
+    }
+    const rdb: AppRdbStore = AppRdbStore.get();
+    this.files = new FileRepo(context);
+    this.models = new ModelRepo(rdb);
+    this.providers = new ProviderRepo(rdb);
+    this.config = new RdbConfigStore(rdb);
+    this.manifest = await ModelCatalog.load(context);
+    this.budget = ModelCatalog.deviceBudget();
+
+    // 清单登记进库：先登记再下载，UI 才能在"未下载"态就显示许可/出处/sha256（R5）。
+    for (const item of this.manifest) {
+      await this.repo().upsert(ModelFacade.toRow(item));
+    }
+    this.ready = true;
+    Logger.info(TAG, 'facade ready', [
+      { key: 'models', value: this.manifest.length },
+      { key: 'device', value: this.budget.deviceType },
+      { key: 'ram_gb', value: Math.round(this.budget.totalRamGb) }
+    ]);
   }
 
-  /** 开始/继续下载（断点续传，§26.5）。 */
-  public startDownload(modelId: string): Promise<void> {
-    // TODO(T0.9-10): 按设计文档 §26.5 走 core-infra 持久化 TaskQueue：HTTP Range 断点续传、
-    //                后台续传、完成后 sha256 校验（不通过则删文件并报错，禁止静默通过）。
-    //
-    // R5 前置门（必须是本方法的第一件事，先于建任务）：
-    //   1. status !== 'verified' → 直接拒绝，报"该模型尚未完成许可与哈希核验"；
-    //   2. sha256 === null      → **一律拒绝下载，不得跳过校验**。没有校验和就没有验真手段，
-    //                             "先下下来以后再补校验"等于永久放弃完整性保证——不接受。
-    //   3. 首次下载前必须已向用户展示 license + sourceUrl 并获确认（R5，见 ModelListPage）。
-    //   校验和缺失时的正确动作是回到清单流程补实测（models/README.md §2），而不是在此放行。
-    throw new Error('Not implemented: T0.9-10');
+  /** 本机内存与预算（UI 顶部那行"本机 16GB · 模型预算 8GB"）。 */
+  deviceBudget(): DeviceBudget {
+    return this.budget;
   }
 
-  public pauseDownload(modelId: string): Promise<void> {
-    // TODO(T0.9-10): 暂停并持久化已下载字节游标（续传起点）
-    throw new Error('Not implemented: T0.9-10');
+  /**
+   * 档位表：清单 ∪ 下载状态 ∪ 可运行性判定。
+   *
+   * **不过滤、不隐藏**：内存不足的档位照样返回（runnable=false + reason + advice），
+   * 由 UI 明确标注"本机不可运行"并允许"仍要下载"（§4.6：内存不足行不置灰隐藏）。
+   */
+  async listModels(): Promise<ModelEntry[]> {
+    const rows: LocalModelRow[] = await this.repo().list();
+    const activeId: string = await this.repo().getActiveModelId();
+    const byId: Map<string, LocalModelRow> = new Map<string, LocalModelRow>();
+    for (const row of rows) {
+      byId.set(row.id, row);
+    }
+
+    const entries: ModelEntry[] = [];
+    for (const item of this.manifest) {
+      const row: LocalModelRow | undefined = byId.get(item.id);
+      const run: Runnability = ModelCatalog.runnability(item, this.budget, this.manifest);
+      entries.push({
+        item,
+        state: row !== undefined ? row.downloadState : DownloadState.NONE as string,
+        downloadedBytes: row !== undefined ? row.downloadedBytes : 0,
+        bytesPerSec: 0,
+        active: activeId === item.id,
+        runnable: run.runnable,
+        residentGb: run.residentGb,
+        reason: run.reason,
+        advice: run.advice,
+        error: row !== undefined && row.error !== null ? row.error : ''
+      });
+    }
+    // 小的排前面：首启要一眼看到"秒级体验档"。
+    entries.sort((a: ModelEntry, b: ModelEntry): number => a.item.sizeBytes - b.item.sizeBytes);
+    return entries;
   }
 
-  public deleteModel(modelId: string): Promise<void> {
-    // TODO(T0.9-10): 删除权重文件并注销 core-llm 中的本地 Provider（§3.1）
-    throw new Error('Not implemented: T0.9-10');
+  /** 首启"秒级体验档"候选（quickStart=true 且可下载，§26.5 路径 A）。 */
+  async quickStartCandidates(): Promise<ModelEntry[]> {
+    const all: ModelEntry[] = await this.listModels();
+    return all.filter((e: ModelEntry): boolean => e.item.quickStart && isDownloadable(e.item));
   }
 
-  /** 已配置的远程 Provider 列表（不含 Key）。 */
-  public listRemoteProviders(): Promise<RemoteProviderConfig[]> {
-    // TODO(T0.9-10): 按设计文档 §3.3 读取配置；apiKey 字段恒返回空串（Key 只在 Asset Store，§9.1）
-    throw new Error('Not implemented: T0.9-10');
+  /**
+   * 开始/继续下载（断点续传 + 多源回退 + sha256 校验，§26.5）。
+   *
+   * R5 前置门（**先于建任务**）：status !== 'verified' 或 sha256 缺失 → 直接拒绝。
+   * 没有校验和就没有验真手段，"先下下来以后再补校验"等于永久放弃完整性保证。
+   *
+   * 本方法**不 await 传输完成**——它只负责把任务挂起来并立刻返回，
+   * 用户可以立刻去聊天（§26.5：大模型后台续传，不阻塞开始对话）。进度经 EventBus 广播。
+   */
+  async startDownload(modelId: string): Promise<void> {
+    const item: ModelManifestItem | undefined = this.find(modelId);
+    if (item === undefined) {
+      throw new Error(`startDownload: ${modelId} is not in the manifest`);
+    }
+    if (!isDownloadable(item)) {
+      throw new Error(`startDownload refused: ${modelId} is not verified (status=${item.status})`);
+    }
+    if (this.inFlight.has(modelId)) {
+      Logger.info(TAG, 'download already in flight', [{ key: 'model_id', value: modelId }]);
+      return;
+    }
+    this.inFlight.add(modelId);
+
+    const repo: FileRepo = this.fileRepo();
+    const req: DownloadRequest = {
+      modelId: item.id,
+      urls: item.downloadUrls,
+      targetPath: repo.modelPath(item.id),
+      expectedSha256: item.sha256,
+      expectedSize: item.sizeBytes,
+      // 后台续传：App 退到后台/被杀也接着下（§26.5）。
+      background: true
+    };
+
+    await this.repo().updateProgress(modelId, DownloadState.QUEUED, 0);
+    this.publishDownload(modelId, DownloadState.QUEUED as string, 0, item.sizeBytes, 0, '');
+
+    // 刻意不 await：传输是长任务，UI 不等它。
+    repo.download(req, (p: DownloadProgress): void => {
+      this.onProgress(modelId, p);
+    }).then(async (final: DownloadProgress): Promise<void> => {
+      this.inFlight.delete(modelId);
+      if (final.state === DownloadState.READY) {
+        await this.repo().markReady(modelId, final.targetPath, final.downloadedBytes);
+        this.publishDownload(modelId, DownloadState.READY as string, final.downloadedBytes,
+          final.totalBytes, 0, '');
+        // 首个就绪的本地模型自动选中：[R-53] 默认值必须是好的——
+        // 用户下完模型就该能问第一句，而不是再去找一个"启用"开关。
+        // 已经有选中的模型时**不抢**（§4.1：完成时只提示 [切换]，绝不自动替换正在用的大脑）。
+        const active: LocalModelRow | null = await this.repo().getActiveModel();
+        if (active === null) {
+          await this.repo().setActiveModel(modelId);
+        }
+      } else if (final.state === DownloadState.PAUSED) {
+        await this.repo().updateProgress(modelId, DownloadState.PAUSED, final.downloadedBytes);
+        this.publishDownload(modelId, DownloadState.PAUSED as string, final.downloadedBytes,
+          final.totalBytes, 0, '');
+      }
+    }).catch(async (e: Object): Promise<void> => {
+      this.inFlight.delete(modelId);
+      if (e instanceof DownloadPausedError) {
+        return;
+      }
+      const message: string = (e as Error).message;
+      await this.repo().markFailed(modelId, message);
+      this.publishDownload(modelId, DownloadState.FAILED as string, 0, item.sizeBytes, 0, message);
+      Logger.error(TAG, 'download failed', [{ key: 'model_id', value: modelId }]);
+    });
   }
 
-  /** 保存远程 Provider（Key 写入 Asset Store，§9.1）。 */
-  public saveRemoteProvider(config: RemoteProviderConfig): Promise<string> {
-    // TODO(T0.9-10): 按设计文档 §3.3/§9.1 保存端点与模型名到 RDB，apiKey 单独写 Asset Store Kit，
-    //                绝不落 RDB/配置文件；备份导出默认剔除密钥（§9.1）。
-    throw new Error('Not implemented: T0.9-10');
+  /** 暂停（保留断点）。继续 = 再调 startDownload()。 */
+  async pauseDownload(modelId: string): Promise<void> {
+    await this.fileRepo().pauseDownload(modelId);
+    this.inFlight.delete(modelId);
   }
 
-  /** 连通性测试（首启向导"三分钟接入"的成功判据，§26.5）。 */
-  public testRemoteProvider(config: RemoteProviderConfig): Promise<boolean> {
-    // TODO(T0.9-10): 按设计文档 §3.3 发一次最小 chat 请求（RCP），校验 SSE 可用；
-    //                失败返回结构化错误（网络/鉴权/端点不兼容三类可区分）。
-    throw new Error('Not implemented: T0.9-10');
+  /**
+   * 删除模型：停任务 → 删权重与 .part → 清库 → 若删的是当前模型则清指针并发事件
+   * （entry 收到空载荷的 MODEL_ACTIVE_CHANGED 后必须注销本地 Provider）。
+   */
+  async deleteModel(modelId: string): Promise<void> {
+    const repo: FileRepo = this.fileRepo();
+    await repo.cancelDownload(modelId);
+    await repo.remove(repo.modelPath(modelId));
+    this.inFlight.delete(modelId);
+    await this.repo().clearActiveIfMatches(modelId);
+    // 记录不删：清单里仍有这个模型，它只是回到"未下载"态（删了记录下次 init 又会登记回来）。
+    await this.repo().updateProgress(modelId, DownloadState.NONE, 0);
+    this.publishDownload(modelId, DownloadState.NONE as string, 0, 0, 0, '');
+    Logger.info(TAG, 'model deleted', [{ key: 'model_id', value: modelId }]);
   }
 
-  /** 首启向导是否已完成（激活漏斗埋点，§26.5）。 */
-  public isOnboardingDone(): Promise<boolean> {
-    // TODO(T0.9-10): 按设计文档 §26.5 读 core-infra kv_config；激活定义 = 任一模型可用 + 首次成功问答
-    throw new Error('Not implemented: T0.9-10');
+  /**
+   * 切换当前模型：写库 + 发 MODEL_ACTIVE_CHANGED。
+   * **Provider 的注册/注销由 entry 做**（features 不装配 core，见文件头纪律 3）。
+   */
+  async selectModel(modelId: string): Promise<void> {
+    await this.repo().setActiveModel(modelId);
+  }
+
+  /** 当前选中且可用的模型（entry 启动时也用它决定注册哪个 LocalProvider）。 */
+  async getActiveModel(): Promise<LocalModelRow | null> {
+    return await this.repo().getActiveModel();
+  }
+
+  // --- 远程 Provider（§3.3 / §9.1） -------------------------------------------
+
+  /** 已配置的远程 Provider（**不含 Key**：hasKey 只是"有没有"）。 */
+  async listRemoteProviders(): Promise<RemoteProviderView[]> {
+    const rows: ProviderRow[] = await this.providerRepo().listRemote();
+    const views: RemoteProviderView[] = [];
+    for (const row of rows) {
+      const alias: string = row.secretAlias ?? SecretAlias.forProvider(row.id);
+      const hasKey: boolean = await SecretStore.get().has(alias);
+      views.push({
+        providerId: row.id,
+        displayName: row.name,
+        baseUrl: row.baseUrl ?? '',
+        modelName: row.modelId ?? '',
+        wifiOnly: row.networkPolicy === 'wifi_only',
+        hasKey
+      });
+    }
+    return views;
+  }
+
+  /**
+   * 保存远程 Provider。
+   *
+   * 顺序是**先写密钥再写库**：写库成功而密钥没写进去，用户会得到一个"看起来配好了但一用就 401"的
+   * Provider——那比保存失败更难排查。反过来（密钥在、库没写）只是多一条孤儿密钥，下次覆盖即可。
+   *
+   * apiKey 为空串 = "不修改"（编辑既有 Provider 时的默认行为，§9.1：Key 不回显）。
+   * 新增 Provider 时必须给 Key——RemoteProvider 取不到 Key 会直接报 SECRET_MISSING，
+   * 与其让用户在"测试连接"时才撞上，不如在这里说清楚。
+   */
+  async saveRemoteProvider(form: RemoteProviderForm): Promise<string> {
+    const isNew: boolean = form.providerId.length === 0;
+    const id: string = isNew ? `remote:${util.generateRandomUUID(true)}` : form.providerId;
+    const alias: string = SecretAlias.forProvider(id);
+
+    if (form.apiKey.length > 0) {
+      // label 只放展示名——**绝不放 Key 或其片段**（SecretStore 的硬性约定）。
+      await SecretStore.get().put(alias, form.apiKey, form.displayName);
+    } else if (isNew) {
+      throw new Error('saveRemoteProvider: API key is required for a new remote provider');
+    }
+
+    const input: RemoteProviderInput = {
+      id,
+      name: form.displayName.length > 0 ? form.displayName : form.baseUrl,
+      baseUrl: form.baseUrl,
+      modelId: form.modelName,
+      secretAlias: alias,
+      networkPolicy: form.wifiOnly ? 'wifi_only' : 'any'
+    };
+    await this.providerRepo().upsertRemote(input);
+    return id;
+  }
+
+  /** 删除远程 Provider：**库与密钥必须成对删**（留下孤儿密钥 = 用户以为删干净了，其实没有）。 */
+  async removeRemoteProvider(providerId: string): Promise<void> {
+    await this.providerRepo().remove(providerId);
+    await SecretStore.get().remove(SecretAlias.forProvider(providerId));
+    Logger.info(TAG, 'remote provider removed', [{ key: 'provider_id', value: providerId }]);
+  }
+
+  /**
+   * 连通性测试（GET {baseUrl}/models，走 core-llm 的 RemoteProvider.healthCheck）。
+   * 必须先 saveRemoteProvider（Key 要在 SecretStore 里）——UI 的"测试连接"按钮因此是"保存并测试"。
+   * 结果只报成功/失败与原因，**绝不回显 Key**（[R-91]）。
+   */
+  async testRemoteProvider(providerId: string): Promise<ProviderTestResult> {
+    const row: ProviderRow | null = await this.providerRepo().get(providerId);
+    if (row === null) {
+      return { ok: false, latencyMs: -1, message: '尚未保存该 Provider', hint: '先保存，再测试连接。' };
+    }
+    const config: LlmRemoteConfig = {
+      id: row.id,
+      baseUrl: row.baseUrl ?? '',
+      modelId: row.modelId ?? '',
+      secretAlias: row.secretAlias ?? SecretAlias.forProvider(row.id),
+      networkPolicy: row.networkPolicy === 'wifi_only' ? 'wifi_only' : 'any'
+    };
+    const provider: RemoteProvider = new RemoteProvider(config);
+    const health: ProviderHealth = await provider.healthCheck();
+    return {
+      ok: health.ok,
+      latencyMs: health.latencyMs,
+      message: health.message,
+      hint: health.ok ? '' : ModelFacade.hintFor(health.message, config.baseUrl)
+    };
+  }
+
+  // --- 首启向导（§26.5 激活漏斗） ---------------------------------------------
+
+  async isOnboardingDone(): Promise<boolean> {
+    const entry: ConfigEntry | null = await this.configStore().read(KEY_ONBOARDING_DONE);
+    return entry !== null && entry.value === 'true';
+  }
+
+  /** 向导完成（下完极小模型 或 远程 Provider 测通 或 用户主动跳过）。 */
+  async markOnboardingDone(): Promise<void> {
+    await this.configStore().write({
+      key: KEY_ONBOARDING_DONE,
+      value: 'true',
+      valueType: ConfigValueType.BOOLEAN,
+      updatedAt: Date.now()
+    });
+    // TODO(T0.9-23): 激活漏斗埋点（"任一模型可用 + 首次成功问答"的第一半在此打点，
+    //                第二半在会话页首答成功时打点）——埋点口径随 T0.9-23 落地。
+  }
+
+  // --- 内部 -------------------------------------------------------------------
+
+  private onProgress(modelId: string, p: DownloadProgress): void {
+    // 终态（ready/failed）**不在这里广播**：FileRepo 的终态回调发生在写库之前，
+    // 订阅方收到 ready 后会立刻回查库，读到的却还是 downloading —— 一次没有必要的抖动。
+    // 终态统一由 startDownload 在**写完库之后**广播，保证"事件到达时库已是终态"。
+    if (p.state === DownloadState.READY || p.state === DownloadState.FAILED) {
+      return;
+    }
+    // 中间进度只广播不落库（每秒几十次写库会把 WAL 撑爆）；
+    // 断点游标在暂停/失败/完成这三个**终态**上才落库，那才是重启后要恢复的东西。
+    this.publishDownload(modelId, p.state as string, p.downloadedBytes, p.totalBytes,
+      p.bytesPerSec, p.error ?? '');
+  }
+
+  private publishDownload(modelId: string, state: string, done: number, total: number,
+    rate: number, error: string): void {
+    EventBus.get().publish(MODEL_DOWNLOAD_CHANGED, {
+      modelId, state, downloadedBytes: done, totalBytes: total, bytesPerSec: rate, error
+    } as ModelDownloadChanged);
+  }
+
+  private find(modelId: string): ModelManifestItem | undefined {
+    return this.manifest.find((m: ModelManifestItem): boolean => m.id === modelId);
+  }
+
+  /** 清单条目 → models_local 行（逐字段映射，不透传对象）。 */
+  private static toRow(item: ModelManifestItem): LocalModelInput {
+    return {
+      id: item.id,
+      name: item.name,
+      // family：清单没有这个字段，不编——留空比编一个"qwen"更诚实（列的默认值就是空串）。
+      family: '',
+      purpose: 'chat',
+      quant: item.quant,
+      tier: item.tier,
+      ctxLen: item.contextLength,
+      size: item.sizeBytes,
+      sha256: item.sha256,
+      sourceUrl: item.sourceUrl,
+      license: item.license
+    };
+  }
+
+  /**
+   * 失败原因 → 可执行修复指引（§4.1 错误矩阵）。
+   * 用子串匹配是权宜之计：ProviderHealth 只给了脱敏后的 message，没带错误码。
+   * TODO(T0.9-27): core-llm 的 ProviderHealth 补 code 字段后，改按 InferenceErrorCode 分派。
+   */
+  private static hintFor(message: string, baseUrl: string): string {
+    const host: string = baseUrl.replace('https://', '').replace('http://', '').split('/')[0];
+    if (message.includes('401') || message.includes('403')) {
+      return '密钥被拒绝。这个端点不认这把密钥，换一把或确认它属于该端点。';
+    }
+    if (message.includes('404')) {
+      return `端点通了，但没有 /models 接口。确认地址是否少了 /v1，或手动填模型名继续。`;
+    }
+    if (message.includes('timeout') || message.includes('超时')) {
+      return '服务可能在冷启动，或需要代理。稍后重试。';
+    }
+    return `连不上 ${host}。检查网址是否带 /v1，以及本机能否访问该域名。`;
+  }
+
+  private fileRepo(): FileRepo {
+    if (this.files === null) {
+      throw new Error('ModelFacade.init() has not been called');
+    }
+    return this.files;
+  }
+
+  private repo(): ModelRepo {
+    if (this.models === null) {
+      throw new Error('ModelFacade.init() has not been called');
+    }
+    return this.models;
+  }
+
+  private providerRepo(): ProviderRepo {
+    if (this.providers === null) {
+      throw new Error('ModelFacade.init() has not been called');
+    }
+    return this.providers;
+  }
+
+  private configStore(): RdbConfigStore {
+    if (this.config === null) {
+      throw new Error('ModelFacade.init() has not been called');
+    }
+    return this.config;
   }
 }

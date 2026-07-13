@@ -89,9 +89,19 @@ token 经 threadsafe function 阻塞投递回 ArkTS；若 UI 每个 token 都 se
 
 ## 6. 未做 / 待办
 
-- **FFRT 未用**：当前 NDK sysroot 不提供 `<ffrt/ffrt.h>`，worker 用 `std::thread` + 条件变量实现单条专用线程
-  （语义等价：单飞行、不占 ArkTS 线程），但**没有 QoS 绑大核**。42 tok/s 是在无绑核情况下取得的，
-  绑大核后应更高。TODO(T0.9-06)。
-- **KV 前缀复用（§23.4）未做**：每次 Generate 都从零预填。多轮对话下这是浪费，TODO(T0.9-06)。
+- ~~**FFRT 未用**：当前 NDK sysroot 不提供 `<ffrt/ffrt.h>`~~
+  **【T0.9-06 订正：此断言是错的，勿再据此判断】** NDK **提供** FFRT 与 QoS：
+  `sysroot/usr/include/ffrt/`、`sysroot/usr/include/qos/qos.h`，库 `libffrt.z.so` / `libqos.so`。
+  T0.9-06 已落地 `OH_QoS_SetThreadQoS(QOS_USER_INTERACTIVE)`（推理线程绑大核）；
+  仍**不**改用 `ffrt::queue`——推理是"长任务独占线程"，FFRT 的窃取式调度无收益，
+  且 QoS 是按线程设置的，而 ggml 的计算线程由**调用 llama_decode 的那条线程** pthread_create 派生
+  （ggml-cpu.c 每次 decode 现造现销一个 disposable threadpool），换成 ffrt worker 反而无法保证
+  "设了 QoS 的线程 == 派生计算线程的线程"。判断依据详见 `native/llama_bridge/src/main/cpp/worker.cpp` 文件头。
+- ~~**KV 前缀复用（§23.4）未做**~~ **【T0.9-06 已落地】** 会话内维护 KV 的 token 镜像，
+  与本轮 prompt 求最长公共前缀后用 `llama_memory_seq_rm(mem, 0, n, -1)` 只回滚发散尾部。
+  主机端同码验证（Qwen2.5-0.5B Q4_K_M，4 轮对话）：首 token **98/57/64/60 ms**，
+  对照组（无复用）**98/215/321/450 ms** —— 第 4 轮 7.5×。
 - **鸿蒙笔记本（2in1）未测**：Standard(4B)/Max(7-8B) 档位的实测数字待补——档位表的最终数值以真机为准。
 - **量化档位对比未做**：Q4_K_M 之外的档位（Q5/Q8）与更大模型的 tok/s 曲线待测。
+- **QoS 绑大核的真机收益未测**：代码已落地，但设备处于 PIN 锁屏态，开发者模式下 `aa start`
+  被系统拒绝（10106102，无法自动解锁），拿不到 QoS 前后的 tok/s 对比。待设备解锁后补测。

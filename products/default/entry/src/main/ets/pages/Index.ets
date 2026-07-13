@@ -22,6 +22,7 @@
  */
 import { AdColor, AdSpace, AdStroke, AdType } from 'design-system';
 import { ChatPage } from 'chat';
+import { ModelListPage } from 'models';
 import { Breakpoint, BREAKPOINT_KEY } from '../common/BreakpointSystem';
 
 /** 一级导航项 */
@@ -34,6 +35,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'chat', label: $r('app.string.tab_chat') },
   { key: 'agents', label: $r('app.string.tab_agents') },
   { key: 'knowledge', label: $r('app.string.tab_knowledge') },
+  { key: 'models', label: $r('app.string.tab_models') },
   { key: 'memory', label: $r('app.string.tab_memory') },
   { key: 'settings', label: $r('app.string.tab_settings') }
 ];
@@ -88,6 +90,8 @@ struct Index {
           // 聊天由 chat HSP 承载（它自带 sm 的 Navigation 列表→详情）；其余 Tab 仍是占位
           if (item.key === 'chat') {
             ChatPage({ breakpoint: this.breakpoint })
+          } else if (item.key === 'models') {
+            ModelListPage()
           } else {
             this.PlaceholderPane(item.label, 'sm 单栏 · 列表→详情 Navigation 跳转')
           }
@@ -130,6 +134,8 @@ struct Index {
       Column() {
         if (this.navIndex === 0) {
           ChatPage({ breakpoint: this.breakpoint })
+        } else if (NAV_ITEMS[this.navIndex].key === 'models') {
+          ModelListPage()
         } else {
           this.PlaceholderPane(NAV_ITEMS[this.navIndex].label, '待接入对应 feature HSP')
         }
@@ -161,6 +167,8 @@ struct Index {
       Column() {
         if (this.navIndex === 0) {
           ChatPage({ breakpoint: this.breakpoint })
+        } else if (NAV_ITEMS[this.navIndex].key === 'models') {
+          ModelListPage()
         } else {
           this.PlaceholderPane(NAV_ITEMS[this.navIndex].label, '待接入对应 feature HSP')
         }

@@ -16,8 +16,11 @@ import hilog from '@ohos.hilog';
 import { BusinessError } from '@ohos.base';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { MotionPreference, AD_REDUCE_MOTION_KEY } from 'design-system';
-import { AppRdbStore, FileRepo } from 'core-data';
-import { Logger } from 'core-infra';
+import {
+  AppRdbStore, FileRepo, ModelRepo, LocalModelRow,
+  MODEL_ACTIVE_CHANGED, ActiveModelChanged, localProviderIdOf
+} from 'core-data';
+import { EventBus, Logger } from 'core-infra';
 import { LocalProvider, ProviderRegistry } from 'core-llm';
 import { ChatService } from 'core-agent';
 import { BreakpointSystem } from '../common/BreakpointSystem';
@@ -63,22 +66,17 @@ export default class EntryAbility extends UIAbility {
       // 2) 沙箱目录布局（files/models、files/kb/... §7）
       await new FileRepo(ctx).ensureLayout();
 
-      // 3) 本地 Provider：V0.9 先认 S1 冒烟台下载的那个模型。
-      //    TODO(T0.9-10)：改由 models 页管理（档位表 + 下载 + sha256 校验 + 切换）。
-      const modelPath: string = `${ctx.filesDir}/models/smoke.gguf`;
-      if (fs.accessSync(modelPath)) {
-        const local: LocalProvider = new LocalProvider({
-          id: 'local:qwen2.5-0.5b',
-          modelPath: modelPath,
-          modelLabel: 'Qwen2.5-0.5B',
-          contextSize: 2048
-        });
-        ProviderRegistry.get().register(local);
-        ProviderRegistry.get().setDefault(local.id);
-        hilog.info(DOMAIN, TAG, 'local provider registered: %{public}s', local.id);
-      } else {
-        hilog.warn(DOMAIN, TAG, 'no local model at files/models/smoke.gguf —— 聊天页将提示未配置模型');
-      }
+      // 3) 本地 Provider：模型由 models 页管理（档位表 + 下载 + sha256 校验 + 切换，T0.9-10）。
+      //    这里只负责"把当前选中的模型注册成 Provider"——**不猜路径、不写死文件名**。
+      const modelRepo: ModelRepo = new ModelRepo(rdb);
+      await this.registerActiveLocalProvider(modelRepo);
+
+      // 3b) 订阅模型切换：用户在 models 页换模型/删模型时，Provider 必须跟着换。
+      //     事件由 ModelRepo 在**写库的同一个方法里**发出——写库与通知绑死，
+      //     调用方不可能只做一半（"切了模型却没人换 Provider"是最难查的一类 bug）。
+      EventBus.get().subscribe(MODEL_ACTIVE_CHANGED, (ev: ActiveModelChanged): void => {
+        this.onActiveModelChanged(ev);
+      });
 
       // 4) 聊天服务
       await ChatService.get().init(rdb);
@@ -96,6 +94,57 @@ export default class EntryAbility extends UIAbility {
   onDestroy(): void {
     hilog.info(DOMAIN, TAG, 'onDestroy');
     BreakpointSystem.getInstance().unregister();
+  }
+
+  /**
+   * 把「当前选中的本地模型」注册成 LocalProvider。
+   * 没有可用模型时**不注册**（而不是注册一个指向不存在文件的 Provider）——
+   * 后者会让聊天页在发送时才炸，错误信息还指向模型加载失败，把用户带偏。
+   * 无模型是正常状态（首启未下载），聊天页据此提示去 models 页选一个。
+   */
+  private async registerActiveLocalProvider(repo: ModelRepo): Promise<void> {
+    const active: LocalModelRow | null = await repo.getActiveModel();
+    // filePath 为 null 表示"登记了但文件不在"（下载中/校验失败）——同样按无模型处理。
+    // 注册一个指向不存在文件的 Provider 只会把错误推迟到用户按下发送时才炸，
+    // 而且错误信息指向"模型加载失败"，把人带偏。
+    if (active === null || active.filePath === null || active.filePath === '') {
+      hilog.info(DOMAIN, TAG, 'no usable local model —— 首启或尚未下载完成，聊天页会提示去模型页');
+      return;
+    }
+    const provider: LocalProvider = new LocalProvider({
+      id: localProviderIdOf(active.id),
+      modelPath: active.filePath,
+      modelLabel: active.name,
+      contextSize: active.ctxLen
+    });
+    ProviderRegistry.get().register(provider);
+    ProviderRegistry.get().setDefault(provider.id);
+    hilog.info(DOMAIN, TAG, 'local provider registered: %{public}s (%{public}s)',
+      provider.id, active.name);
+  }
+
+  /** 模型切换：先注销旧的（释放 llama 会话与 KV cache），再注册新的。顺序不可颠倒——两份模型同时驻留会撞内存预算。 */
+  private onActiveModelChanged(ev: ActiveModelChanged): void {
+    const registry: ProviderRegistry = ProviderRegistry.get();
+    // 注销所有本地 Provider（V0.9 同时只允许一个本地模型驻留，§3.2-3 内存预算）
+    for (const p of registry.list()) {
+      if (p.kind === 'local') {
+        registry.unregister(p.id);
+      }
+    }
+    if (ev.filePath === '') {
+      hilog.info(DOMAIN, TAG, 'active model cleared —— 本地 Provider 已注销');
+      return;
+    }
+    const provider: LocalProvider = new LocalProvider({
+      id: ev.providerId,
+      modelPath: ev.filePath,
+      modelLabel: ev.displayName,
+      contextSize: ev.contextLength
+    });
+    registry.register(provider);
+    registry.setDefault(provider.id);
+    hilog.info(DOMAIN, TAG, 'active model switched to %{public}s', ev.displayName);
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {

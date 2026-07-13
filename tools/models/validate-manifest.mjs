@@ -37,6 +37,19 @@ const ALLOWLIST_PATH = 'tools/license/allowlist.json';
 const REQUIRED_FIELDS = ['id', 'name', 'license', 'sourceUrl', 'sha256', 'status'];
 const SIZE_FIELDS = ['sizeBytes', 'size'];
 
+/**
+ * schema v2 起新增的下载字段。
+ *
+ * 为什么必须校验：没有 downloadUrls 的条目在 UI 上只能"展示"不能"下载"，是死条目；
+ * 而有 downloadUrls 却没有 sha256 的条目更危险——**下得下来但校验不了**，
+ * 等于把"权重必须校验"（§22.4 / R5）写在文档里而不执行。故二者必须成对出现。
+ *
+ * 真机实测（S1）：设备直连 huggingface.co 不通，hf-mirror/modelscope 可达。
+ * 因此 downloadUrls 是**有序列表**（首选镜像在前），而不是单个 URL——
+ * 单 URL 意味着国内设备直接下不动，这不是"以后优化"，是现在就不可用。
+ */
+const DOWNLOAD_FIELDS = ['fileName', 'downloadUrls'];
+
 /** 允许的 status 取值 */
 const VALID_STATUS = ['verified', 'pending-verification', 'deprecated'];
 
@@ -155,6 +168,39 @@ function main() {
       failures.push(
         `${label}：默认档（isDefault）不得为未核验状态——须先核验 sha256 与许可才可进默认档（§11.3）`
       );
+    }
+
+    // 6. 下载字段（schema v2）：可下载的条目必须有文件名与**有序**的下载源列表，
+    //    且下载源与 sha256 必须成对——能下但校验不了，比不能下更危险。
+    if (model.status === 'verified') {
+      for (const f of DOWNLOAD_FIELDS) {
+        if (!Object.prototype.hasOwnProperty.call(model, f) || model[f] === null) {
+          failures.push(
+            `${label}：status=verified 的条目必须有 ${f}——没有它 UI 只能展示不能下载，是死条目`
+          );
+        }
+      }
+      const urls = model.downloadUrls;
+      if (Array.isArray(urls)) {
+        if (urls.length === 0) {
+          failures.push(`${label}：downloadUrls 不得为空数组`);
+        }
+        for (const u of urls) {
+          if (typeof u !== 'string' || !u.startsWith('https://')) {
+            failures.push(`${label}：downloadUrls 中的 "${u}" 必须是 https（禁止明文 http 下载权重）`);
+          }
+        }
+        // 真机实测：设备直连 huggingface.co 不通。只挂 HF 单源 = 国内设备下不动。
+        const hasMirror = urls.some((u) => !u.includes('huggingface.co'));
+        if (!hasMirror) {
+          failures.push(
+            `${label}：downloadUrls 只有 huggingface.co 源——真机实测该域名在设备侧不可达，` +
+              `必须提供镜像源（如 hf-mirror.com / modelscope.cn）作为首选`
+          );
+        }
+      } else if (urls !== undefined && urls !== null) {
+        failures.push(`${label}：downloadUrls 必须是数组（有序：首选源在前，失败后按序回退）`);
+      }
     }
 
     // 体积：sizeBytes（首选）或 size（别名）之一必须存在；

@@ -4,8 +4,10 @@
 // libllama_bridge.so 的薄封装：不含业务逻辑，只做类型收敛。
 // 上层（core-llm 的 LocalProvider）只依赖本文件，不直接 import .so。
 //
-// 现状（V0.9 骨架）：原生层所有入口抛 BusinessError{code:1099 NOT_IMPLEMENTED}，
-// 实现见 TODO(T0.9-06)。
+// 原生层已是真实现（T0.9-01 真机验证 / T0.9-06 生产化）：
+//   · createSession 异步（napi_async_work），不阻塞 ArkTS 线程；
+//   · generate 内含 KV 前缀复用（§23.4），多轮下只预填新增 token；
+//   · 推理线程 QoS=USER_INTERACTIVE（绑大核，§3.2-2）。
 
 import llamaNative from 'libllama_bridge.so';
 import { LlamaGenerateParams, LlamaSessionConfig, LlamaStreamEvent } from './LlamaTypes';
@@ -20,8 +22,11 @@ import { LlamaGenerateParams, LlamaSessionConfig, LlamaStreamEvent } from './Lla
  * · generate 立即返回，token 经 onEvent 回调抛回 ArkTS 线程（napi_threadsafe_function）。
  */
 export class LlamaBridge {
-  /** 加载模型 + 分配 KV cache。超内存预算抛 MEMORY_BUDGET_EXCEEDED。 */
-  static createSession(config: LlamaSessionConfig): number {
+  /**
+   * 加载模型 + 分配 KV cache。**异步**：原生侧走 napi_async_work，加载（实测 561ms）不占 ArkTS 线程。
+   * 超内存预算 reject MEMORY_BUDGET_EXCEEDED；modelPath 非法则同步抛 INVALID_ARGUMENT。
+   */
+  static createSession(config: LlamaSessionConfig): Promise<number> {
     return llamaNative.createSession(config);
   }
 

@@ -87,13 +87,15 @@ add_library(llama_bridge SHARED
   stream_cb.cpp
 )
 
-# libace_napi.z.so：NAPI 运行时；libhilog_ndk.z.so：系统日志
-target_link_libraries(llama_bridge PUBLIC libace_napi.z.so libhilog_ndk.z.so)
+# libace_napi.z.so：NAPI 运行时；libhilog_ndk.z.so：系统日志；
+# libqos.so：OH_QoS_SetThreadQoS——把推理线程切到 QOS_USER_INTERACTIVE（绑大核，§3.2-2）。
+#   头文件 sysroot/usr/include/qos/qos.h，since API 12。ggml 的计算线程由推理线程 pthread_create
+#   派生并继承调度属性，故只需给推理线程设 QoS（判断依据详见 worker.cpp 文件头）。
+#   libffrt.z.so **有意不链接**：推理是"长任务独占线程"，FFRT 的窃取式调度对它没有收益，
+#   而 QoS 是独立 C API，不必经 FFRT 即可绑大核。
+target_link_libraries(llama_bridge PUBLIC libace_napi.z.so libhilog_ndk.z.so libqos.so)
 
 if(LLAMA_BRIDGE_HAS_LLAMA)
   target_link_libraries(llama_bridge PRIVATE llama ggml)
   target_compile_definitions(llama_bridge PRIVATE LLAMA_BRIDGE_HAS_LLAMA=1)
 endif()
-
-# TODO(T0.9-06): FFRT 线程池落地时追加 target_link_libraries(llama_bridge PRIVATE libffrt.z.so)
-#   （骨架期不链接：worker.cpp 尚未 #include <ffrt/ffrt.h>，见 §3.2-2）

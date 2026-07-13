@@ -28,6 +28,13 @@ import { AdColor, AdSpace, AdType, AdGlyph, AdGlyphKind } from 'design-system';
 const SMOKE_MODEL_URL: string =
   'https://hf-mirror.com/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf';
 
+/** 一轮生成的结果（用例 5 用：多轮 KV 前缀复用） */
+class TurnResult {
+  firstTokenMs: number = -1;
+  tokens: number = 0;
+  text: string = '';
+}
+
 /** 冒烟用例的一行结果 */
 @Observed
 class SmokeCase {
@@ -47,7 +54,8 @@ struct DevSmoke {
     new SmokeCase('1. 模型加载（createSession）'),
     new SmokeCase('2. 流式生成（generate）'),
     new SmokeCase('3. 中断（abort）'),
-    new SmokeCase('4. 向量化（embed）')
+    new SmokeCase('4. 向量化（embed）'),
+    new SmokeCase('5. 多轮 KV 前缀复用（T0.9-06）')
   ];
   @State output: string = '';
   @State running: boolean = false;
@@ -211,6 +219,7 @@ struct DevSmoke {
       await this.caseGenerate();
       await this.caseAbort();
       await this.caseEmbed();
+      await this.casePrefixReuse();
     } finally {
       if (this.handle >= 0) {
         try {
@@ -237,7 +246,9 @@ struct DevSmoke {
         embeddingOnly: false,
         deviceTier: 0
       };
-      this.handle = LlamaBridge.createSession(cfg);
+      // T0.9-06 起 createSession 是异步的（napi_async_work）：加载跑在 libuv 线程池上，
+      // 这里 await 出来的耗时是**墙钟**耗时，但期间 ArkTS 线程是空闲的（不再卡 UI）。
+      this.handle = await LlamaBridge.createSession(cfg);
       const ms = Date.now() - t0;
       this.setCase(0, 'pass', `handle=${this.handle} · 加载 ${ms}ms`);
     } catch (e) {
@@ -335,7 +346,7 @@ struct DevSmoke {
         embeddingOnly: true,
         deviceTier: 0
       };
-      embHandle = LlamaBridge.createSession(cfg);
+      embHandle = await LlamaBridge.createSession(cfg);
       const vecs: Float32Array[] = await LlamaBridge.embed(embHandle, ['鸿蒙智能体平台', 'AgentDock']);
       const dim: number = vecs.length > 0 ? vecs[0].length : 0;
       this.setCase(3, dim > 0 ? 'pass' : 'fail',
@@ -348,5 +359,76 @@ struct DevSmoke {
         LlamaBridge.releaseSession(embHandle);
       }
     }
+  }
+
+  /**
+   * 用例 5：多轮 KV 前缀复用（T0.9-06 / §23.4）。
+   *
+   * 跑 4 轮真实对话（每轮 prompt = 上一轮 prompt + 上一轮回复 + 本轮提问，即 R2 的"易变内容挂尾部"）。
+   * 判据：**第 2/3/4 轮的首 token 时延不随历史增长而恶化**——若没有前缀复用，每轮都要把
+   * 越来越长的历史全量重新预填，首 token 时延必然线性上涨。
+   * 原生侧的 `PERF prefix-reuse: cached=… reused=… prefill=… first_token=…` 会给出逐轮的复用命中数。
+   */
+  private async casePrefixReuse(): Promise<void> {
+    this.setCase(4, 'running', '多轮对话中…');
+    const questions: string[] = [
+      '用两句话介绍鸿蒙操作系统。',
+      '它和安卓最大的区别是什么？',
+      '普通用户能感知到这个区别吗？',
+      '把上面的内容总结成一句话。'
+    ];
+    let convo: string = '<|im_start|>system\n你是一个简洁、准确的中文助手。<|im_end|>\n';
+    const firsts: number[] = [];
+    try {
+      for (let i: number = 0; i < questions.length; i++) {
+        convo += `<|im_start|>user\n${questions[i]}<|im_end|>\n<|im_start|>assistant\n`;
+        const r: TurnResult = await this.oneTurn(convo);
+        if (r.tokens === 0) {
+          this.setCase(4, 'fail', `第 ${i + 1} 轮无输出`);
+          return;
+        }
+        firsts.push(r.firstTokenMs);
+        // 回复必须原样接回上下文：下一轮的前缀 = 本轮的 prompt + 本轮回复，前缀才可能命中
+        convo += `${r.text}<|im_end|>\n`;
+      }
+      // 后续轮次的首 token 时延不应超过首轮太多（前缀命中 → 只预填新增的几十个 token）
+      let worstLater: number = 0;
+      for (let i: number = 1; i < firsts.length; i++) {
+        worstLater = Math.max(worstLater, firsts[i]);
+      }
+      const ok: boolean = worstLater <= firsts[0] * 1.5;
+      this.setCase(4, ok ? 'pass' : 'fail',
+        `首 token 逐轮: ${firsts.join(' / ')} ms · 后续最差 ${worstLater}ms vs 首轮 ${firsts[0]}ms`);
+    } catch (e) {
+      this.setCase(4, 'fail', `${(e as BusinessError).message}`);
+    }
+  }
+
+  /** 跑一轮生成，返回首 token 时延与完整回复（不写 @State：逐 token setState 会反压解码，见用例 2 注释） */
+  private oneTurn(prompt: string): Promise<TurnResult> {
+    return new Promise<TurnResult>((resolve: (r: TurnResult) => void): void => {
+      const params: LlamaGenerateParams = {
+        promptParts: [prompt],
+        temperature: 0.0,   // 贪心：多轮之间输出可复现，便于比对
+        maxTokens: 48,
+        stop: ['<|im_end|>']
+      };
+      const t0: number = Date.now();
+      const r: TurnResult = new TurnResult();
+      LlamaBridge.generate(this.handle, params, (ev: LlamaStreamEvent): void => {
+        if (ev.type === 'token') {
+          if (r.firstTokenMs < 0) {
+            r.firstTokenMs = Date.now() - t0;
+          }
+          r.tokens++;
+          r.text += ev.token ?? '';
+        } else if (ev.type === 'done') {
+          resolve(r);
+        } else {
+          hilog.warn(0x1001, 'DevSmoke', 'SMOKE turn error code=%{public}d', ev.code ?? -1);
+          resolve(r);
+        }
+      });
+    });
   }
 }

@@ -144,9 +144,65 @@ napi_value ThrowCode(napi_env env, ErrorCode code, const std::string& what) {
   return ThrowError(env, code, what);
 }
 
+// 在 ArkTS 线程构造 BusinessError{code,message}（供 Promise 的 reject 用）。
+napi_value MakeError(napi_env env, ErrorCode code, const std::string& what) {
+  napi_value codeVal = nullptr;
+  napi_value msgVal = nullptr;
+  napi_value err = nullptr;
+  const std::string codeStr = std::to_string(static_cast<int32_t>(code));
+  const std::string msg = std::string("[llama_bridge][") + ErrorName(code) + "] " + what;
+  napi_create_string_utf8(env, codeStr.c_str(), NAPI_AUTO_LENGTH, &codeVal);
+  napi_create_string_utf8(env, msg.c_str(), NAPI_AUTO_LENGTH, &msgVal);
+  napi_create_error(env, codeVal, msgVal, &err);
+  return err;
+}
+
 // ── 导出函数（与 cpp/types/libllama_bridge/index.d.ts 一一对应，改动须同步）─────────
 
-// createSession(config: SessionConfig): number  —— 返回会话句柄
+// ── createSession 的异步化（T0.9-06）─────────────────────────────────────────
+// 加载模型 = 打开 GGUF + mmap + 建 KV cache/计算缓冲，真机实测 561ms（S1）。
+// 原先是同步 NAPI 调用，这 561ms **整段压在 ArkTS 线程上**——首次发消息必然掉帧。
+// 改为 napi_create_async_work：Execute 在 libuv 线程池跑，Complete 回 ArkTS 线程兑现 Promise。
+// 注意不能塞进 Worker 的推理串行队列：那条队列是"单飞行推理"的通道，
+// 加载与生成没有互斥关系（甚至可能要在生成期间预加载下一个模型），排在一起只会互相阻塞。
+struct CreateSessionTask {
+  napi_deferred deferred = nullptr;
+  napi_async_work work = nullptr;
+  SessionConfig config;
+  SessionHandle handle = agentdock::llama::kInvalidSession;
+  ErrorCode code = ErrorCode::OK;
+};
+
+// libuv 线程池线程：**绝不可触碰 napi_env**（除 napi_async_work 自身的机制）。
+void CreateSessionExecute(napi_env /*env*/, void* data) {
+  auto* task = static_cast<CreateSessionTask*>(data);
+  task->code = Engine::Instance().CreateSession(task->config, &task->handle);
+}
+
+// 回到 ArkTS 线程：兑现 Promise，回收 async work。
+void CreateSessionComplete(napi_env env, napi_status status, void* data) {
+  auto* task = static_cast<CreateSessionTask*>(data);
+  if (task == nullptr) {
+    return;
+  }
+  try {
+    if (status == napi_ok && task->code == ErrorCode::OK) {
+      napi_value result = nullptr;
+      napi_create_int64(env, task->handle, &result);
+      napi_resolve_deferred(env, task->deferred, result);
+    } else {
+      const ErrorCode code = task->code != ErrorCode::OK ? task->code : ErrorCode::INTERNAL;
+      napi_reject_deferred(env, task->deferred,
+                           MakeError(env, code, "createSession 失败：" + task->config.modelPath));
+    }
+  } catch (...) {
+    // 异常绝不穿透 NAPI（§3.2-5）
+  }
+  napi_delete_async_work(env, task->work);
+  delete task;
+}
+
+// createSession(config: SessionConfig): Promise<number>  —— 返回会话句柄
 napi_value CreateSession(napi_env env, napi_callback_info info) {
   AD_NAPI_GUARD_BEGIN
     size_t argc = 1;
@@ -189,15 +245,31 @@ napi_value CreateSession(napi_env env, napi_callback_info info) {
     }
     config.gpuLayers = 0;  // 平台无可用 GPU 后端（§3.2-1），恒为 0，不接受外部覆盖
 
-    SessionHandle handle = agentdock::llama::kInvalidSession;
-    const ErrorCode rc = Engine::Instance().CreateSession(config, &handle);
-    if (rc != ErrorCode::OK) {
-      return ThrowCode(env, rc, "createSession 失败：" + config.modelPath);
+    // 参数校验失败仍**同步抛**（编程错误，调用方拿不到 Promise 也无妨）；
+    // 加载本身的失败（文件缺失/超预算/OOM）走 Promise 的 reject，与 ArkTS 侧 async/await 一致。
+    napi_deferred deferred = nullptr;
+    napi_value promise = nullptr;
+    if (napi_create_promise(env, &deferred, &promise) != napi_ok) {
+      return ThrowError(env, ErrorCode::INTERNAL, "createSession: 创建 Promise 失败");
     }
 
-    napi_value result = nullptr;
-    napi_create_int64(env, handle, &result);
-    return result;
+    auto* task = new CreateSessionTask();
+    task->deferred = deferred;
+    task->config = std::move(config);
+
+    napi_value name = nullptr;
+    napi_create_string_utf8(env, "llama_bridge.createSession", NAPI_AUTO_LENGTH, &name);
+    if (napi_create_async_work(env, nullptr, name, CreateSessionExecute, CreateSessionComplete,
+                               task, &task->work) != napi_ok) {
+      delete task;
+      return ThrowError(env, ErrorCode::INTERNAL, "createSession: 创建异步任务失败");
+    }
+    if (napi_queue_async_work(env, task->work) != napi_ok) {
+      napi_delete_async_work(env, task->work);
+      delete task;
+      return ThrowError(env, ErrorCode::INTERNAL, "createSession: 异步任务入队失败");
+    }
+    return promise;
   AD_NAPI_GUARD_END(env)
 }
 
@@ -333,16 +405,7 @@ void EmbedResolve(napi_env env, napi_value /*jsCallback*/, void* /*context*/, vo
       }
       napi_resolve_deferred(env, task->deferred, arr);
     } else {
-      napi_value codeVal = nullptr;
-      napi_value msgVal = nullptr;
-      napi_value err = nullptr;
-      const std::string codeStr = std::to_string(static_cast<int32_t>(task->code));
-      const std::string msg =
-          std::string("[llama_bridge][") + ErrorName(task->code) + "] embed 失败";
-      napi_create_string_utf8(env, codeStr.c_str(), NAPI_AUTO_LENGTH, &codeVal);
-      napi_create_string_utf8(env, msg.c_str(), NAPI_AUTO_LENGTH, &msgVal);
-      napi_create_error(env, codeVal, msgVal, &err);
-      napi_reject_deferred(env, task->deferred, err);
+      napi_reject_deferred(env, task->deferred, MakeError(env, task->code, "embed 失败"));
     }
   } catch (...) {
     // 异常绝不穿透 NAPI（§3.2-5）。Promise 已经/无法兑现，只能吞掉。

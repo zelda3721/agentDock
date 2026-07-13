@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 
 #include "worker.h"
@@ -168,6 +169,12 @@ struct Engine::Session {
 
   // 单飞行请求（§3.2-4）：同一会话同时只允许一个 Generate/Embed 在跑，第二个直接 BUSY。
   std::atomic<bool> busy{false};
+
+  // ── KV 前缀复用的镜像（§23.4）────────────────────────────────────────────────
+  // 当前 KV cache 里**实际装着**的 token 序列（= 上一轮的 prompt + 已解码的生成 token）。
+  // 不变式：kvTokens.size() == KV 中 seq 0 的 token 数，且 kvTokens[i] 就是位置 i 的 token。
+  // 只被 worker 线程（Generate）写，Abort/Release 不碰它——故无需加锁。
+  std::vector<llama_token> kvTokens;
 
   uint64_t modelBytes = 0;  // GGUF 文件大小，用于预算表核对
 
@@ -333,6 +340,10 @@ ErrorCode Engine::Generate(SessionHandle handle, const GenerateParams& params,
 
   s->abortFlag.store(false, std::memory_order_relaxed);
 
+  // 首 token 时延的计时起点：包含分词 + 前缀比对 + 预填。这正是用户"点了发送后盯着空白等"的时间，
+  // 也是 KV 前缀复用要压下去的那个数（多轮下不复用则随历史长度线性增长）。
+  const auto genT0 = std::chrono::steady_clock::now();
+
   // ArkTS 侧 ContextBuilder 已按 R2 顺序装配好分段（易变内容在尾部），这里直接顺序拼接，
   // 原生层不再对 prompt 做任何重排——重排会破坏 §23.4 的 KV 前缀复用前提。
   std::string prompt;
@@ -360,10 +371,49 @@ ErrorCode Engine::Generate(SessionHandle handle, const GenerateParams& params,
     return ErrorCode::CONTEXT_OVERFLOW;  // prompt 本身就塞不下 ctx
   }
 
-  // V1 不做 KV 前缀复用：每次生成从干净的 KV 起步。
-  // TODO(§23.4): 命中前缀时用 llama_memory_seq_rm 只回滚尾部，省掉重复预填——
-  //   前提是 ArkTS 侧保证 prompt 前缀稳定（R2 已要求易变内容挂尾部）。
-  llama_memory_clear(llama_get_memory(s->ctx), true);
+  // ── KV 前缀复用（§23.4）──────────────────────────────────────────────────────
+  // 多轮对话里，第 N 轮的 prompt = 第 N-1 轮的 prompt + 上轮回复 + 本轮提问，前缀天然稳定
+  // （R2 已强制易变内容挂尾部）。此前每轮都 llama_memory_clear 从零全量预填，首 token 时延
+  // 随历史长度线性恶化。现在：与 KV 里已有的 token 序列求最长公共前缀 reuse，
+  // 用 llama_memory_seq_rm 只回滚 [reuse, ∞) 的发散尾部，只对新增 token 做 decode。
+  llama_memory_t mem = llama_get_memory(s->ctx);
+  const size_t cachedBefore = s->kvTokens.size();
+
+  size_t reuse = 0;
+  // 上限 tokens.size()-1：**至少要留一个 token 去 decode**，否则本轮没有任何一次 llama_decode，
+  // 拿不到 logits，llama_sampler_sample 会读到上一轮的陈旧 logits（或直接非法）。
+  // 新 prompt 恰好是旧序列前缀时（例如上轮生成被中断后原样重发）就会撞上这个边界。
+  const size_t maxReuse = tokens.size() - 1;
+  while (reuse < cachedBefore && reuse < maxReuse && s->kvTokens[reuse] == tokens[reuse]) {
+    ++reuse;
+  }
+
+  if (reuse == 0) {
+    llama_memory_clear(mem, true);  // 前缀完全不同：退化为全量预填
+    s->kvTokens.clear();
+  } else if (!llama_memory_seq_rm(mem, /*seq_id=*/0, static_cast<llama_pos>(reuse), /*p1=*/-1)) {
+    // 返回 false = 该 cache 类型不支持部分删除（recurrent/SWA 等）。退化为全量，语义仍正确。
+    llama_memory_clear(mem, true);
+    s->kvTokens.clear();
+    reuse = 0;
+  } else {
+    s->kvTokens.resize(reuse);
+  }
+
+  // KV 与镜像的一致性守卫：llama_decode 失败（返回非 0）后，那一批 token 是否落进 KV 无法确知，
+  // 镜像就不再可信——此时必须整体清空，宁可下一轮全量重填，也不能拿错位的前缀去命中。
+  bool kvValid = true;
+  struct KvGuard {
+    llama_context* ctx;
+    std::vector<llama_token>* kv;
+    const bool* valid;
+    ~KvGuard() {
+      if (!*valid) {
+        llama_memory_clear(llama_get_memory(ctx), true);
+        kv->clear();
+      }
+    }
+  } kvGuard{s->ctx, &s->kvTokens, &kvValid};
 
   // 采样链（§3.2）：top_k → top_p → temp → dist。temperature ≤ 0 时退化为贪心（可复现输出）。
   llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
@@ -384,33 +434,40 @@ ErrorCode Engine::Generate(SessionHandle handle, const GenerateParams& params,
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
   }
 
-  // ── 预填（prefill）：按 n_batch 分块 decode ────────────────────────────────
+  // ── 预填（prefill）：只对新增 token（[reuse, end)）按 n_batch 分块 decode ────
+  // llama_batch_get_one 的 pos 为 null，llama 会按 memory 里 seq 0 的 pos_max+1 自动续位
+  // （src/llama-batch.cpp）——seq_rm 之后正好是 reuse，故这里不必手工设置位置。
   const uint32_t nBatch = llama_n_batch(s->ctx);
-  int32_t nPast = 0;
+  int32_t nPast = static_cast<int32_t>(reuse);
+  const size_t prefillTokens = tokens.size() - reuse;
   // 解码净耗时统计（见循环末尾的 PERF 日志）
   int64_t decodeNs = 0;
   int64_t decodeCount = 0;
-  for (size_t i = 0; i < tokens.size(); i += nBatch) {
+  for (size_t i = reuse; i < tokens.size(); i += nBatch) {
     if (s->abortFlag.load(std::memory_order_relaxed)) {
-      return ErrorCode::ABORTED;
+      return ErrorCode::ABORTED;  // 尚未 decode 本块，KV 与镜像仍一致：缓存可留
     }
     const int32_t chunk = static_cast<int32_t>(std::min<size_t>(nBatch, tokens.size() - i));
     llama_batch batch = llama_batch_get_one(tokens.data() + i, chunk);
     const int32_t rc = llama_decode(s->ctx, batch);
-    if (rc == 1) {
-      return ErrorCode::CONTEXT_OVERFLOW;  // 找不到 KV slot：ctx 用尽
-    }
-    if (rc == 2) {
-      return ErrorCode::ABORTED;  // abort_callback 生效（长 prompt 预填被打断）
-    }
     if (rc != 0) {
+      kvValid = false;  // KvGuard 会清空 KV 与镜像
+      if (rc == 1) {
+        return ErrorCode::CONTEXT_OVERFLOW;  // 找不到 KV slot：ctx 用尽
+      }
+      if (rc == 2) {
+        return ErrorCode::ABORTED;  // abort_callback 生效（长 prompt 预填被打断）
+      }
       return ErrorCode::INTERNAL;
     }
+    s->kvTokens.insert(s->kvTokens.end(), tokens.begin() + static_cast<ptrdiff_t>(i),
+                       tokens.begin() + static_cast<ptrdiff_t>(i) + chunk);
     nPast += chunk;
   }
 
   // ── 采样循环 ──────────────────────────────────────────────────────────────
   std::string pending;  // 尚未回吐的尾巴（stop 串可能横跨多个 token，见 StopSuffixHold）
+  bool firstTokenLogged = false;
   for (int32_t produced = 0; produced < maxTokens; ++produced) {
     if (s->abortFlag.load(std::memory_order_relaxed)) {
       return ErrorCode::ABORTED;
@@ -420,8 +477,23 @@ ErrorCode Engine::Generate(SessionHandle handle, const GenerateParams& params,
     }
 
     llama_token token = llama_sampler_sample(smpl, s->ctx, -1);  // 内部已 accept
+
+    if (!firstTokenLogged) {
+      firstTokenLogged = true;
+      // KV 前缀复用的收益就体现在这一行：多轮下 reused 应随历史增长，prefill 与 first_token 应基本持平。
+      // （hilog 对带精度的浮点格式会静默丢日志，先 snprintf 再打——见 spike §5.3）
+      const int64_t firstMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - genT0).count();
+      char line[160];
+      std::snprintf(line, sizeof(line),
+                    "PERF prefix-reuse: cached=%d, reused=%d, prefill=%d tok, first_token=%dms",
+                    static_cast<int>(cachedBefore), static_cast<int>(reuse),
+                    static_cast<int>(prefillTokens), static_cast<int>(firstMs));
+      OH_LOG_Print(LOG_APP, LOG_INFO, kLogDomain, kLogTag, "%{public}s", line);
+    }
+
     if (llama_vocab_is_eog(s->vocab, token)) {
-      break;
+      break;  // EOG 不喂回 KV，镜像与 KV 依然一致
     }
 
     pending += TokenToPiece(s->vocab, token);
@@ -458,15 +530,19 @@ ErrorCode Engine::Generate(SessionHandle handle, const GenerateParams& params,
     decodeNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - decodeT0).count();
     decodeCount += 1;
-    if (rc == 1) {
-      return ErrorCode::CONTEXT_OVERFLOW;
-    }
-    if (rc == 2) {
-      return ErrorCode::ABORTED;
-    }
     if (rc != 0) {
+      kvValid = false;
+      if (rc == 1) {
+        return ErrorCode::CONTEXT_OVERFLOW;
+      }
+      if (rc == 2) {
+        return ErrorCode::ABORTED;
+      }
       return ErrorCode::INTERNAL;
     }
+    // 生成出来的 token 也进了 KV——必须记进镜像：下一轮的 prompt 会**包含上轮的回复**，
+    // 前缀能一路命中到「上轮回复末尾」，这才是多轮复用的主要收益来源。
+    s->kvTokens.push_back(token);
     nPast += 1;
   }
 

@@ -61,8 +61,29 @@ export {
   DownloadState,
   DownloadRequest,
   DownloadProgress,
-  DownloadProgressListener
+  DownloadProgressListener,
+  DownloadPausedError,
+  Sha256MismatchError
 } from './src/main/ets/fs/FileRepo';
+
+// 模型登记（models_local）与远程 Provider 配置（providers）。
+// entry 用 ModelRepo.getActiveModel() 决定注册哪个 LocalProvider，并订阅 MODEL_ACTIVE_CHANGED 换 Provider。
+export {
+  ModelRepo,
+  LocalModelRow,
+  LocalModelInput,
+  KEY_ACTIVE_LOCAL_MODEL,
+  localProviderIdOf
+} from './src/main/ets/model/ModelRepo';
+
+export { ProviderRepo, ProviderRow, RemoteProviderInput } from './src/main/ets/model/ProviderRepo';
+
+export {
+  MODEL_ACTIVE_CHANGED,
+  MODEL_DOWNLOAD_CHANGED,
+  ActiveModelChanged,
+  ModelDownloadChanged
+} from './src/main/ets/model/ModelEvents';
 
 export {
   BackupService,

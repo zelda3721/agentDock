@@ -46,8 +46,12 @@ export interface StreamEvent {
   message?: string;
 }
 
-/** 加载模型并分配 KV cache。超内存预算抛 1004 MEMORY_BUDGET_EXCEEDED。 */
-export const createSession: (config: SessionConfig) => number;
+/**
+ * 加载模型并分配 KV cache。**异步**（napi_async_work）：加载实测 561ms，同步做会卡死 ArkTS 线程。
+ * 失败以 reject 抛出 BusinessError（如 1004 MEMORY_BUDGET_EXCEEDED / 1002 MODEL_LOAD_FAILED）；
+ * 参数非法（modelPath 缺失等）仍**同步抛** 1001 INVALID_ARGUMENT。
+ */
+export const createSession: (config: SessionConfig) => Promise<number>;
 
 /** 流式生成：立即返回，token 经 onEvent 回调逐个抛回；生成失败/中断经 error 事件传递。 */
 export const generate: (handle: number, params: GenerateParams, onEvent: (event: StreamEvent) => void) => void;
