@@ -15,6 +15,12 @@
  * 表结构见 core-data/src/main/ets/db/Schema.ets: SQL_CREATE_METRICS。
  */
 
+import { Logger } from '../log/Logger';
+
+const TAG: string = 'Metrics';
+/** 指标保留期（天）：超期清理，避免 metrics 表无限膨胀（§10）。 */
+const DEFAULT_RETENTION_DAYS: number = 30;
+
 /** 指标名（集中声明，避免字符串散落；新增指标必须同时在此登记）。 */
 export class MetricNames {
   // --- V0.9（自 W4 起记录，§10） ---
@@ -160,17 +166,57 @@ export class Metrics {
 
   /**
    * 落盘缓冲区（在空闲时机/退后台时调用）。
-   * TODO(T0.9-04): 按设计文档 §10 实现批量写 metrics 表（走 MetricsSink），成功后清空缓冲。
+   *
+   * 纪律：**绝不抛异常给调用方**。指标写失败是可以接受的损失，而调用点往往在推理主链路的
+   * finally 里——让它因为一次 RDB 竞争而崩掉是本末倒置（§10：指标是观测手段，不是业务）。
+   * 未注入 sink（core-data 还没装配）时同样安全：缓冲照常滚动淘汰，不阻塞。
    */
   static async flush(): Promise<void> {
-    throw new Error('Not implemented: T0.9-04');
+    if (Metrics.sink === null || Metrics.buffer.length === 0) {
+      return;
+    }
+    // 先摘走再写：写盘期间新来的指标进新缓冲，失败时不影响新数据（旧的那批就丢了，可接受）。
+    const batch: MetricRecord[] = Metrics.buffer;
+    Metrics.buffer = [];
+    try {
+      await Metrics.sink.writeBatch(batch);
+    } catch (e) {
+      const err: Error = e as Error;
+      Logger.warn(TAG, 'metrics flush failed, batch dropped', [
+        { key: 'count', value: batch.length },
+        { key: 'error', value: err.message }
+      ]);
+    }
+  }
+
+  /** 查询（模型管理页可视化，§10）。未注入 sink 时返回空表，不抛。 */
+  static async query(name: string, fromTs: number, toTs: number, limit: number): Promise<MetricRecord[]> {
+    if (Metrics.sink === null) {
+      return [];
+    }
+    return await Metrics.sink.query(name, fromTs, toTs, limit);
   }
 
   /**
-   * 查询（模型管理页可视化）。
-   * TODO(T0.9-04): 委托 MetricsSink.query。
+   * 保留期清理：默认保留 30 天（§10 metrics 表不能无限膨胀）。
+   * 由 entry 在启动或整理任务里定期调用，返回删除行数。
    */
-  static async query(name: string, fromTs: number, toTs: number, limit: number): Promise<MetricRecord[]> {
-    throw new Error('Not implemented: T0.9-04');
+  static async purge(retentionDays: number = DEFAULT_RETENTION_DAYS): Promise<number> {
+    if (Metrics.sink === null) {
+      return 0;
+    }
+    const cutoff: number = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+    try {
+      const removed: number = await Metrics.sink.purgeBefore(cutoff);
+      Logger.info(TAG, 'metrics purged', [
+        { key: 'removed', value: removed },
+        { key: 'retention_days', value: retentionDays }
+      ]);
+      return removed;
+    } catch (e) {
+      const err: Error = e as Error;
+      Logger.warn(TAG, 'metrics purge failed', [{ key: 'error', value: err.message }]);
+      return 0;
+    }
   }
 }

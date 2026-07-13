@@ -1,6 +1,7 @@
 {
   "src": [
     "pages/Index",
-    "pages/DevSmoke"
+    "pages/DevSmoke",
+    "pages/DevData"
   ]
 }

@@ -68,13 +68,15 @@ export class ConfigKeys {
 const SECRET_KEY_FRAGMENTS: string[] = ['apikey', 'api_key', 'token', 'secret', 'password', 'credential'];
 
 /**
- * kv_config 门面：带内存缓存的读写。
+ * kv_config 门面：带内存缓存的读写（写穿：先落盘成功再更新缓存，避免"UI 显示已保存但重启丢失"）。
  *
- * TODO(T0.9-04): 按设计文档 §7 实现基于 RDB 的读写（走 ConfigStore 适配器）、启动预热与写穿缓存。
+ * 缓存是**全量**的：配置项是个位数到几十条的量级，load() 一次性预热后，读路径不再触库
+ * ——ContextBuilder/Router 每轮对话都要读参数（§27.4），读路径不能有 IO。
  */
 export class KvConfig {
   private readonly store: ConfigStore;
   private readonly cache: Map<string, ConfigEntry> = new Map<string, ConfigEntry>();
+  private loaded: boolean = false;
 
   constructor(store: ConfigStore) {
     this.store = store;
@@ -82,48 +84,101 @@ export class KvConfig {
 
   /** 启动预热：一次性载入全部配置进缓存。 */
   async load(): Promise<void> {
-    throw new Error('Not implemented: T0.9-04');
+    const entries: ConfigEntry[] = await this.store.readAll('');
+    this.cache.clear();
+    for (const entry of entries) {
+      this.cache.set(entry.key, entry);
+    }
+    this.loaded = true;
   }
 
   async getString(key: string, fallback: string): Promise<string> {
-    throw new Error('Not implemented: T0.9-04');
+    const entry: ConfigEntry | null = await this.read(key);
+    if (entry === null || entry.valueType !== ConfigValueType.STRING) {
+      return fallback;
+    }
+    return entry.value;
   }
 
   async getNumber(key: string, fallback: number): Promise<number> {
-    throw new Error('Not implemented: T0.9-04');
+    const entry: ConfigEntry | null = await this.read(key);
+    if (entry === null || entry.valueType !== ConfigValueType.NUMBER) {
+      return fallback;
+    }
+    const parsed: number = Number.parseFloat(entry.value);
+    // 库里存的是脏数据（人工改过/迁移出错）时退回默认值，而不是把 NaN 传给调用方。
+    return Number.isNaN(parsed) ? fallback : parsed;
   }
 
   async getBoolean(key: string, fallback: boolean): Promise<boolean> {
-    throw new Error('Not implemented: T0.9-04');
+    const entry: ConfigEntry | null = await this.read(key);
+    if (entry === null || entry.valueType !== ConfigValueType.BOOLEAN) {
+      return fallback;
+    }
+    return entry.value === 'true';
   }
 
   /** JSON 值以字符串返回，由调用方按自身接口解析（ArkTS 严格类型，禁止 any）。 */
   async getJson(key: string): Promise<string | null> {
-    throw new Error('Not implemented: T0.9-04');
+    const entry: ConfigEntry | null = await this.read(key);
+    if (entry === null || entry.valueType !== ConfigValueType.JSON) {
+      return null;
+    }
+    return entry.value;
+  }
+
+  /** key 是否存在（任意类型）。 */
+  async has(key: string): Promise<boolean> {
+    return (await this.read(key)) !== null;
   }
 
   async setString(key: string, value: string): Promise<void> {
     KvConfig.assertNotSecretKey(key);
-    throw new Error('Not implemented: T0.9-04');
+    await this.write(key, value, ConfigValueType.STRING);
   }
 
   async setNumber(key: string, value: number): Promise<void> {
     KvConfig.assertNotSecretKey(key);
-    throw new Error('Not implemented: T0.9-04');
+    await this.write(key, value.toString(), ConfigValueType.NUMBER);
   }
 
   async setBoolean(key: string, value: boolean): Promise<void> {
     KvConfig.assertNotSecretKey(key);
-    throw new Error('Not implemented: T0.9-04');
+    await this.write(key, value ? 'true' : 'false', ConfigValueType.BOOLEAN);
   }
 
   async setJson(key: string, json: string): Promise<void> {
     KvConfig.assertNotSecretKey(key);
-    throw new Error('Not implemented: T0.9-04');
+    await this.write(key, json, ConfigValueType.JSON);
   }
 
   async remove(key: string): Promise<void> {
-    throw new Error('Not implemented: T0.9-04');
+    await this.store.remove(key);
+    this.cache.delete(key);
+  }
+
+  /** 读：命中缓存直接返回；未 load() 过则回源一次（懒加载，便于单测与早期启动路径）。 */
+  private async read(key: string): Promise<ConfigEntry | null> {
+    const cached: ConfigEntry | undefined = this.cache.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+    if (this.loaded) {
+      // 全量预热过：缓存未命中即"不存在"，不必回源（省掉每次读默认值都打一次库）。
+      return null;
+    }
+    const entry: ConfigEntry | null = await this.store.read(key);
+    if (entry !== null) {
+      this.cache.set(key, entry);
+    }
+    return entry;
+  }
+
+  /** 写穿：先落盘再更新缓存，落盘失败则缓存保持旧值并把异常抛给调用方。 */
+  private async write(key: string, value: string, valueType: ConfigValueType): Promise<void> {
+    const entry: ConfigEntry = { key, value, valueType, updatedAt: Date.now() };
+    await this.store.write(entry);
+    this.cache.set(key, entry);
   }
 
   /**

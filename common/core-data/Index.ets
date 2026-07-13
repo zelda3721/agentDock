@@ -46,7 +46,15 @@ export {
   SafeModeReason
 } from './src/main/ets/db/Migrations';
 
-export { AppRdbStore, DB_STORE_CONFIG, PRAGMA_STATEMENTS } from './src/main/ets/db/RdbStore';
+export { AppRdbStore, DB_STORE_CONFIG, PRAGMA_STATEMENTS, RowMapper, SqlArg } from './src/main/ets/db/RdbStore';
+
+// core-infra 端口的 RDB 适配器（装配点在 entry：Metrics.setSink / new TaskQueue(new RdbTaskStore(rdb), ...)）
+export {
+  RdbTaskStore,
+  RdbMetricsSink,
+  RdbConfigStore,
+  METRICS_RETENTION_DAYS
+} from './src/main/ets/db/RdbPorts';
 
 export {
   FileRepo,

@@ -37,7 +37,16 @@ export {
   TOPIC_TASK_PROGRESS_CHANGED
 } from './src/main/ets/task/TaskQueue';
 
+export {
+  NoopBackgroundScheduler,
+  SystemBackgroundScheduler,
+  BackgroundSchedulerConfig
+} from './src/main/ets/task/BackgroundSchedulers';
+
 export { KvConfig, ConfigKeys, ConfigEntry, ConfigStore, ConfigValueType } from './src/main/ets/config/KvConfig';
+
+// preferences 版 ConfigStore：承载"打开 RDB 之前就要读到"的引导期配置（db.safe_mode 等，§7）。
+export { PreferencesConfigStore } from './src/main/ets/config/PreferencesConfigStore';
 
 export {
   SecretStore,

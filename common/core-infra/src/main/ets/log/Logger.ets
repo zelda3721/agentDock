@@ -60,14 +60,21 @@ interface RedactRule {
 /**
  * 脱敏器。规则按顺序全部执行（不是命中即停），因为一行日志里可能同时含多类敏感信息。
  *
- * 覆盖的敏感形态：
+ * 覆盖的敏感形态（顺序即优先级，先掩码"强信号"再处理"弱信号"，避免弱规则把强规则的锚点打散）：
  *  R1 Bearer/Basic 授权头                → 整段掩码
- *  R2 常见 API Key 前缀（sk-/rk-/pk-/hf_/ak-/gsk_ 等）→ 保留前缀，主体掩码
+ *  R2 常见 API Key 前缀（sk-/sk-ant-/rk-/pk-/ak-/gsk_/hf_/xai- 等）→ 保留前缀，主体掩码
  *  R3 key=value / "key": "value" 形态的密钥类字段（apiKey/token/secret/password/cookie…）→ 值掩码
- *  R4 长数字串（≥8 位：手机号/证件号/卡号/订单号）→ 保留首尾各 2 位
- *  R5 长不透明串（≥32 位 base64/urlsafe 字符，且非纯十六进制）→ 掩码
- *     纯十六进制串（sha256/md5/uuid 去横线）刻意放行：模型/文档校验和是排障刚需且不含 PII
- *  R6 邮箱                              → 保留首字母与域名
+ *  R4 用户主目录路径中的用户名（/Users/<name>、/home/<name>、C:\Users\<name>）→ 用户名掩码
+ *     鸿蒙沙箱路径（/data/storage/el2/...）不含用户名，原样保留，排障需要
+ *  R5 手机号/长数字串（≥8 位：手机号/证件号/卡号）→ 保留首尾各 2 位。
+ *     刻意不匹配紧邻 - 或 _ 的数字段：那是复合标识符（UUID 分段、task-1234-…）的一部分，
+ *     不是独立 PII，掩了反而让 taskId/docId 在日志里无法关联。
+ *  R6 长不透明串（≥32 位 base64/urlsafe 字符，且非 hex/UUID 形态）→ 掩码
+ *     纯十六进制串与 UUID（sha256/md5/模型校验和/行 id）刻意放行：排障刚需且不含 PII
+ *  R7 邮箱                              → 保留首字母与域名
+ *
+ * 注意：脱敏是"最后一道网"，不是把用户内容塞进日志的许可证——正文必须先经 Logger.content()
+ * 折叠成 <content len=.. h=..>（红线 20 / §9.5）。
  */
 export class Redactor {
   private static readonly MASK: string = '***';
@@ -80,7 +87,7 @@ export class Redactor {
     },
     {
       name: 'api-key-prefix',
-      pattern: /\b(sk|rk|pk|ak|sk-ant|gsk|hf|xai)[-_][A-Za-z0-9\-_]{6,}/gi,
+      pattern: /\b(sk-ant|sk|rk|pk|ak|gsk|hf|xai)[-_][A-Za-z0-9\-_]{6,}/gi,
       replace: (_m: string, prefix: string): string => `${prefix}-${Redactor.MASK}`
     },
     {
@@ -90,9 +97,14 @@ export class Redactor {
       replace: (_m: string, head: string, quote: string): string => `${head}${quote}${Redactor.MASK}${quote}`
     },
     {
+      name: 'home-path-username',
+      pattern: /((?:\/Users|\/home|[A-Za-z]:\\Users)[\/\\])([^\/\\\s:'"]+)/g,
+      replace: (_m: string, head: string): string => `${head}${Redactor.MASK}`
+    },
+    {
       name: 'long-digits',
-      pattern: /\b\d{8,}\b/g,
-      replace: (m: string): string => Redactor.maskKeepEdges(m, 2, 2)
+      pattern: /(^|[^\w\-])(\d{8,})(?![\w\-])/g,
+      replace: (_m: string, lead: string, digits: string): string => `${lead}${Redactor.maskKeepEdges(digits, 2, 2)}`
     },
     {
       name: 'opaque-token',
@@ -141,9 +153,12 @@ export class Redactor {
     return `${value.substring(0, head)}${Redactor.MASK}${value.substring(value.length - tail)}`;
   }
 
-  /** 纯十六进制串判定（sha256/md5/uuid 无横线形态）——校验和放行，便于排障。 */
+  /**
+   * 十六进制/UUID 形态判定——校验和与行 id 放行，便于排障。
+   * 含：sha256/md5（纯 hex）、UUID（带横线的 hex）。二者都不携带 PII，且是排障主线索。
+   */
   private static isHexLike(value: string): boolean {
-    return /^[0-9a-fA-F]+$/.test(value);
+    return /^[0-9a-fA-F]+$/.test(value) || /^[0-9a-fA-F]{8}-[0-9a-fA-F-]{20,}$/.test(value);
   }
 
   /** FNV-1a 32 位哈希，返回 8 位十六进制。 */
@@ -214,6 +229,8 @@ export class RingBuffer<T> {
 const LOG_DOMAIN: number = 0xAD00;
 /** 环形缓冲默认容量（条）。 */
 const DEFAULT_BUFFER_CAPACITY: number = 512;
+/** 级别名（下标即 LogLevel 值），用于诊断包导出的可读文本。 */
+const LEVEL_NAMES: string[] = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL'];
 
 export class Logger {
   private static minLevel: LogLevel = LogLevel.INFO;
@@ -229,10 +246,26 @@ export class Logger {
   }
 
   /**
+   * 重设环形缓冲容量（条）。诊断场景可临时调大；重设会丢弃已有记录（容量变化后旧的下标语义失效）。
+   * 缓冲常驻内存，容量 × 单条约 200B——512 条约 100KB，是 §9.5"debug 只进环形缓冲"的成本上限。
+   */
+  static setBufferCapacity(capacity: number): void {
+    Logger.buffer = new RingBuffer<LogRecord>(capacity);
+  }
+
+  /**
    * 把用户内容折叠为安全标记。任何要"顺手打一下正文看看"的地方必须走这里。
    * 用法：Logger.info('chat', 'send message', [{ key: 'body', value: Logger.content(text) }])
    */
   static content(text: string): string {
+    return Redactor.contentDigest(text);
+  }
+
+  /**
+   * 用户内容折叠（红线 20 的对外名称，与 Logger.content 同义）：
+   * 只保留长度与 FNV-1a 指纹前 8 位，不可还原。
+   */
+  static redactContent(text: string): string {
     return Redactor.contentDigest(text);
   }
 
@@ -259,6 +292,20 @@ export class Logger {
   /** 环形缓冲快照（已脱敏），供诊断包导出使用（V1.0 T1.0-13）。 */
   static snapshot(): LogRecord[] {
     return Logger.buffer.snapshot();
+  }
+
+  /**
+   * 导出环形缓冲为可直接落文件的文本（§10 诊断包）。
+   * 记录入缓冲时即已脱敏，此处不再有明文可漏；再过一遍 redact 是为了防止
+   * 未来有人把未脱敏记录直接 push 进 buffer（纵深防御，成本可忽略）。
+   */
+  static dumpBuffer(): string {
+    const lines: string[] = [];
+    for (const record of Logger.buffer.snapshot()) {
+      const line: string = `${record.ts} ${LEVEL_NAMES[record.level]} [${record.tag}] ${Logger.format(record)}`;
+      lines.push(Redactor.redact(line));
+    }
+    return lines.join('\n');
   }
 
   static clearBuffer(): void {

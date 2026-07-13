@@ -45,10 +45,42 @@ export interface Subscription {
   unsubscribe(): void;
 }
 
-interface HandlerEntry {
-  id: number;
-  once: boolean;
-  fn: EventHandler<EventPayload>;
+class HandlerEntry {
+  readonly id: number;
+  readonly once: boolean;
+  readonly fn: EventHandler<EventPayload>;
+
+  constructor(id: number, once: boolean, fn: EventHandler<EventPayload>) {
+    this.id = id;
+    this.once = once;
+    this.fn = fn;
+  }
+}
+
+/**
+ * 订阅句柄实现。用类而不是对象字面量：ArkTS 禁止"带方法的对象字面量"
+ * （arkts-no-untyped-obj-literals），接口方法必须由类实现。
+ */
+class SubscriptionImpl implements Subscription {
+  private readonly bus: EventBus;
+  private readonly topicName: string;
+  private readonly id: number;
+  private cancelled: boolean = false;
+
+  constructor(bus: EventBus, topicName: string, id: number) {
+    this.bus = bus;
+    this.topicName = topicName;
+    this.id = id;
+  }
+
+  /** 幂等：重复 unsubscribe 无副作用（避免误删同名主题上后来者的订阅）。 */
+  unsubscribe(): void {
+    if (this.cancelled) {
+      return;
+    }
+    this.cancelled = true;
+    this.bus.removeHandlerById(this.topicName, this.id);
+  }
 }
 
 const TAG: string = 'EventBus';
@@ -119,12 +151,13 @@ export class EventBus {
       entries = [];
       this.handlers.set(name, entries);
     }
-    entries.push({ id, once, fn } as HandlerEntry);
-    return {
-      unsubscribe: (): void => {
-        this.removeHandler(name, id);
-      }
-    } as Subscription;
+    entries.push(new HandlerEntry(id, once, fn));
+    return new SubscriptionImpl(this, name, id);
+  }
+
+  /** 供 SubscriptionImpl 回调（ArkTS 无 friend 语义，故为 internal 约定：仅本文件使用）。 */
+  removeHandlerById(name: string, id: number): void {
+    this.removeHandler(name, id);
   }
 
   private removeHandler(name: string, id: number): void {

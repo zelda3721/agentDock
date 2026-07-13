@@ -263,6 +263,13 @@ struct Index {
         .fontFeature(AdType.TABULAR)
         .fontColor(AdColor.inkTertiary)
       // TODO(T0.9-22)：S1 冒烟台入口——冒烟四用例进 CI 后，本入口与 pages/DevSmoke 一并删除
+      Button('验证台（core-data / core-infra）')
+        .fontSize(AdType.bodyS.size)
+        .backgroundColor(AdColor.surfaceSelected)
+        .fontColor(AdColor.ink)
+        .onClick((): void => {
+          this.getUIContext().getRouter().pushUrl({ url: 'pages/DevData' });
+        })
       Button('S1 冒烟台（llama.cpp）')
         .fontSize(AdType.bodyS.size)
         .backgroundColor(AdColor.localBg)
