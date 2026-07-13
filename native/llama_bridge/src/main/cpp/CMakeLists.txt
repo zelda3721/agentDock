@@ -60,6 +60,18 @@ if(EXISTS ${LLAMA_CPP_DIR}/CMakeLists.txt)
 
   add_subdirectory(${LLAMA_CPP_DIR} ${CMAKE_CURRENT_BINARY_DIR}/llama.cpp EXCLUDE_FROM_ALL)
   set(LLAMA_BRIDGE_HAS_LLAMA ON)
+
+  # ── 推理内核恒开优化（与 App 的 buildMode 解耦）───────────────────────────
+  # hvigor 的 debug 构建把 CMAKE_BUILD_TYPE 设为 Debug，ggml 的 200 个源文件随之走 -O0——
+  # 真机实测：Qwen2.5-0.5B Q4_K_M 在 -O0 下只有 2.4 tok/s，量化点积内核不向量化，慢一个数量级。
+  # 后果是整个开发期都无法评估推理性能（S1 的 Go/No-Go 判据直接失真）。
+  # 故对上游推理目标**强制追加 -O3**（clang 取最后一个 -O 生效，覆盖前面的 -O0）：
+  # 调试 App 逻辑不需要调试 ggml 内核；需要时注释掉本段即可。
+  foreach(t ggml ggml-base ggml-cpu llama)
+    if(TARGET ${t})
+      target_compile_options(${t} PRIVATE -O3)
+    endif()
+  endforeach()
 else()
   message(STATUS
     "[llama_bridge] 未找到 llama.cpp 子模块（${LLAMA_CPP_DIR}）——按骨架模式构建：\n"

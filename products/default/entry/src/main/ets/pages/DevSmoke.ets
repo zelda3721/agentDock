@@ -16,6 +16,7 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError, request } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
+import hilog from '@ohos.hilog';
 import { LlamaBridge, LlamaSessionConfig, LlamaGenerateParams, LlamaStreamEvent } from 'llama-bridge';
 import { AdColor, AdSpace, AdType, AdGlyph, AdGlyphKind } from 'design-system';
 
@@ -168,7 +169,8 @@ struct DevSmoke {
         .width('100%')
         .padding(AdSpace.s2)
         .backgroundColor(AdColor.surface)
-      }, (c: SmokeCase): string => c.name)
+        // key 必须含变化的字段：只用 name 时 ForEach 认为条目没变，状态与指标永远刷不出来
+      }, (c: SmokeCase): string => `${c.name}|${c.status}|${c.detail}`)
 
       Scroll() {
         Text(this.output)
@@ -193,6 +195,12 @@ struct DevSmoke {
     c.status = status;
     c.detail = detail;
     this.cases[i] = c;
+    // 指标同时落 hilog：S1 的结论要能从日志取（不依赖截图），也便于 T0.9-22 进 CI
+    if (status === 'pass' || status === 'fail') {
+      hilog.info(0x1001, 'DevSmoke', 'SMOKE %{public}s | %{public}s | %{public}s',
+        c.name, status, detail);
+      this.output += `\n[${status}] ${c.name} — ${detail}`;
+    }
   }
 
   private async runAll(): Promise<void> {
@@ -253,14 +261,20 @@ struct DevSmoke {
       const t0 = Date.now();
       let firstTokenMs = -1;
       let tokens = 0;
+      // 【实测教训】不要在 token 回调里直接写 @State：每个 token 都触发整页重渲染，
+      // 而 token 经 threadsafe function 回 ArkTS 是**阻塞投递**——UI 渲染会反压住原生解码循环。
+      // 首轮实测端到端被压到 2.4 tok/s。此处只在本地累加，done 时一次性提交。
+      // 产品侧（T0.9-15 chat 流式渲染）必须同样做**批量提交**（按帧或按句攒批），不得逐 token setState。
+      let buf = '';
       LlamaBridge.generate(this.handle, params, (ev: LlamaStreamEvent): void => {
         if (ev.type === 'token') {
           if (firstTokenMs < 0) {
             firstTokenMs = Date.now() - t0;
           }
           tokens++;
-          this.output += ev.token ?? '';
+          buf += ev.token ?? '';
         } else if (ev.type === 'done') {
+          this.output = buf;
           const total = Date.now() - t0;
           const genMs = total - (firstTokenMs < 0 ? 0 : firstTokenMs);
           const tps = genMs > 0 ? (tokens / (genMs / 1000)) : 0;
@@ -301,18 +315,38 @@ struct DevSmoke {
     });
   }
 
-  /** 用例 4：向量化。同一模型复用（§3.2-4：embedding 可与生成复用同一模型） */
+  /**
+   * 用例 4：向量化。
+   *
+   * **必须单开一个 embeddingOnly 会话**：embedding 要求 context 的 embeddings=true 且带 pooling，
+   * 生成会话（embeddings=false）拿不到句向量——首轮实测就是复用生成会话导致 INVALID_ARGUMENT。
+   * §3.2-4 说的"复用同一模型"指复用**模型权重**（同一 GGUF），不是复用同一个 context。
+   */
   private async caseEmbed(): Promise<void> {
     this.setCase(3, 'running', 'embedding…');
     const t0 = Date.now();
+    let embHandle: number = -1;
     try {
-      const vecs: Float32Array[] = await LlamaBridge.embed(this.handle, ['鸿蒙智能体平台', 'AgentDock']);
+      const cfg: LlamaSessionConfig = {
+        modelPath: this.modelPath,
+        contextSize: 512,
+        threadCount: 4,
+        useMmap: true,
+        embeddingOnly: true,
+        deviceTier: 0
+      };
+      embHandle = LlamaBridge.createSession(cfg);
+      const vecs: Float32Array[] = await LlamaBridge.embed(embHandle, ['鸿蒙智能体平台', 'AgentDock']);
       const dim: number = vecs.length > 0 ? vecs[0].length : 0;
       this.setCase(3, dim > 0 ? 'pass' : 'fail',
         `${vecs.length} 条 · dim=${dim} · ${Date.now() - t0}ms`);
     } catch (e) {
       const err = e as BusinessError;
       this.setCase(3, 'fail', `code=${err.code} ${err.message}`);
+    } finally {
+      if (embHandle >= 0) {
+        LlamaBridge.releaseSession(embHandle);
+      }
     }
   }
 }

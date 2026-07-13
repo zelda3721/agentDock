@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 
@@ -39,6 +40,13 @@ constexpr const char* kLogTag = "llama_bridge";
 // llama.cpp 的日志默认打到 stderr——鸿蒙上等于丢弃。转发到 hilog，模型加载失败时才有据可查。
 void LlamaLogToHilog(ggml_log_level level, const char* text, void* /*user_data*/) {
   if (text == nullptr) {
+    return;
+  }
+  // llama 加载一个模型会打上千行 INFO/DEBUG（元数据、逐张量 repack…），会触发 hilog 的进程级流控，
+  // 把我们自己的日志一起挤掉（实测 PERF 行因此丢失）。故默认只转发 WARN 及以上；
+  // 需要看 llama 细节时把 kForwardLlamaInfo 改为 true。
+  constexpr bool kForwardLlamaInfo = false;
+  if (!kForwardLlamaInfo && level != GGML_LOG_LEVEL_ERROR && level != GGML_LOG_LEVEL_WARN) {
     return;
   }
   LogLevel oh = LOG_INFO;
@@ -379,6 +387,9 @@ ErrorCode Engine::Generate(SessionHandle handle, const GenerateParams& params,
   // ── 预填（prefill）：按 n_batch 分块 decode ────────────────────────────────
   const uint32_t nBatch = llama_n_batch(s->ctx);
   int32_t nPast = 0;
+  // 解码净耗时统计（见循环末尾的 PERF 日志）
+  int64_t decodeNs = 0;
+  int64_t decodeCount = 0;
   for (size_t i = 0; i < tokens.size(); i += nBatch) {
     if (s->abortFlag.load(std::memory_order_relaxed)) {
       return ErrorCode::ABORTED;
@@ -442,7 +453,11 @@ ErrorCode Engine::Generate(SessionHandle handle, const GenerateParams& params,
     }
 
     llama_batch next = llama_batch_get_one(&token, 1);
+    const auto decodeT0 = std::chrono::steady_clock::now();
     const int32_t rc = llama_decode(s->ctx, next);
+    decodeNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - decodeT0).count();
+    decodeCount += 1;
     if (rc == 1) {
       return ErrorCode::CONTEXT_OVERFLOW;
     }
@@ -458,6 +473,18 @@ ErrorCode Engine::Generate(SessionHandle handle, const GenerateParams& params,
   if (!pending.empty()) {
     onToken(pending, false);  // 扣留的尾巴不是 stop 串，正常结束时补吐
   }
+
+  // 原生解码净耗时（不含跨线程回调与 UI 渲染）——用于分辨「内核慢」还是「回调路径慢」。
+  // 端到端 tok/s 由 ArkTS 侧测；两者相差悬殊即说明瓶颈在 NAPI/UI 侧，不在 ggml。
+  if (decodeCount > 0) {
+    // hilog 对带精度的浮点格式（%{public}.1f）会静默丢弃整条日志——先 snprintf 成字符串再打。
+    const double ms = static_cast<double>(decodeNs) / 1e6 / static_cast<double>(decodeCount);
+    char line[128];
+    std::snprintf(line, sizeof(line), "PERF decode-only: %d tok, %.1f ms/tok, %.1f tok/s",
+                  static_cast<int>(decodeCount), ms, 1000.0 / ms);
+    OH_LOG_Print(LOG_APP, LOG_INFO, kLogDomain, kLogTag, "%{public}s", line);
+  }
+
   onToken(std::string(), true);  // 终止事件：done
   return ErrorCode::OK;
 }
