@@ -262,7 +262,7 @@ export struct AdProvenanceRail {
     Row({ space: AdSpace.s1 }) {
       AdGlyph({
         kind: AdGlyphKind.TRIANGLE,
-        size: 10,
+        glyphSize: 10,
         color: this.litColor(RailSegment.FENCE, AdColor.remoteFg)
       })
       if (this.data.fenced.length > 0) {
@@ -315,7 +315,7 @@ export struct AdProvenanceRail {
   chevron() {
     AdGlyph({
       kind: this.expanded ? AdGlyphKind.CHEVRON_UP : AdGlyphKind.CHEVRON_DOWN,
-      size: 12,
+      glyphSize: 12,
       color: AdColor.inkTertiary
     })
       .margin({ left: AdSpace.s1 })
@@ -379,7 +379,7 @@ export struct AdProvenanceRail {
       // ocr / vlm 产物：**强制**"由 AI 识别，可能有误" + 可跳原图核对
       if (item.needsVerification()) {
         Row({ space: AdSpace.s1 }) {
-          AdGlyph({ kind: AdGlyphKind.TRIANGLE, size: 10, color: AdColor.warningFg })
+          AdGlyph({ kind: AdGlyphKind.TRIANGLE, glyphSize: 10, color: AdColor.warningFg })
           Text('由 AI 识别，可能有误').railPanelText(AdColor.warningFg)
         }
         .alignItems(VerticalAlign.Center)
@@ -400,7 +400,7 @@ export struct AdProvenanceRail {
   memoryRow(item: AdMemoryRef) {
     Row({ space: AdSpace.s2 }) {
       // 实心圆点 = 本地来源（形状冗余）
-      AdGlyph({ kind: AdGlyphKind.DOT_FILLED, size: 8, color: AdColor.localFg })
+      AdGlyph({ kind: AdGlyphKind.DOT_FILLED, glyphSize: 8, color: AdColor.localFg })
       Text(item.text)
         .railPanelText(AdColor.ink)
         .layoutWeight(1)
@@ -424,7 +424,7 @@ export struct AdProvenanceRail {
     Column({ space: AdSpace.hairline }) {
       Row({ space: AdSpace.s2 }) {
         // 空心圆环 = 未出端的被拦截项（形状冗余）
-        AdGlyph({ kind: AdGlyphKind.DOT_HOLLOW, size: 8, color: AdColor.remoteFg })
+        AdGlyph({ kind: AdGlyphKind.DOT_HOLLOW, glyphSize: 8, color: AdColor.remoteFg })
         Text(item.label).railPanelText(AdColor.remoteFg).layoutWeight(1)
       }
       .width('100%')

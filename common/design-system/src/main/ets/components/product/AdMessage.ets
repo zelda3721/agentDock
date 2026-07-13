@@ -202,7 +202,7 @@ export struct AdMessage {
         } else if (this.status === AdMessageStatus.ABORTED) {
           Column({ space: AdSpace.s2 }) {
             Row({ space: AdSpace.s1 }) {
-              AdGlyph({ kind: AdGlyphKind.BLOCKED, size: 12, color: AdColor.inkTertiary })
+              AdGlyph({ kind: AdGlyphKind.BLOCKED, glyphSize: 12, color: AdColor.inkTertiary })
               Text('已中断（用户取消）·').msgNotice(AdColor.inkTertiary)
               Text(`已生成 ${this.generatedTokens} tok`).msgTimestamp()
             }
@@ -231,7 +231,7 @@ export struct AdMessage {
         } else if (this.status === AdMessageStatus.ERROR) {
           Column({ space: AdSpace.s2 }) {
             Row({ space: AdSpace.s1 }) {
-              AdGlyph({ kind: AdGlyphKind.TRIANGLE, size: 12, color: AdColor.dangerFg })
+              AdGlyph({ kind: AdGlyphKind.TRIANGLE, glyphSize: 12, color: AdColor.dangerFg })
               Text(`生成失败：${this.errorText}`).msgNotice(AdColor.dangerFg).layoutWeight(1)
             }
             .alignItems(VerticalAlign.Center)
@@ -260,7 +260,7 @@ export struct AdMessage {
           .alignItems(HorizontalAlign.Start)
         } else if (this.status === AdMessageStatus.BUDGET_EXHAUSTED) {
           Row({ space: AdSpace.s1 }) {
-            AdGlyph({ kind: AdGlyphKind.TRIANGLE, size: 12, color: AdColor.warningFg })
+            AdGlyph({ kind: AdGlyphKind.TRIANGLE, glyphSize: 12, color: AdColor.warningFg })
             // 宁可诚实失败，不做静默掐头截尾
             Text('上下文预算耗尽 —— 以上是当前最优答案').msgNotice(AdColor.warningFg)
           }

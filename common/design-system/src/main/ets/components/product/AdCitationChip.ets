@@ -67,7 +67,7 @@ export struct AdCitationChip {
     .padding({ left: AdSpace.s1, right: AdSpace.s1 })
     .backgroundColor(this.hovered ? AdColor.statePressed : this.bg())
     .borderRadius(AdRadius.xs)
-    .border({ width: AdStroke.control, color: this.borderColor(), style: BorderStyle.Solid })
+    .border({ width: AdStroke.control, color: this.resolveBorderColor(), style: BorderStyle.Solid })
     .outline({
       width: this.focused ? AdStroke.emphasis : 0,
       color: AdColor.focus,
@@ -135,7 +135,7 @@ export struct AdCitationChip {
     return AdColor.brandBg;
   }
 
-  private borderColor(): Resource {
+  private resolveBorderColor(): Resource {
     return AdColor.brandBorder;
   }
 

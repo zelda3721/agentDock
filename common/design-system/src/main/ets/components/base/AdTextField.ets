@@ -92,7 +92,7 @@ export struct AdTextField {
           .caretColor(AdColor.brandFg)
           .backgroundColor(AdColor.surface)
           .borderRadius(AdRadius.sm)
-          .border({ width: this.borderWidth(), color: this.borderColor(), style: BorderStyle.Solid })
+          .border({ width: this.resolveBorderWidth(), color: this.resolveBorderColor(), style: BorderStyle.Solid })
           .padding(this.innerPadding())
           .onFocus(() => {
             this.focused = true;
@@ -116,7 +116,7 @@ export struct AdTextField {
           .caretColor(AdColor.brandFg)
           .backgroundColor(AdColor.surface)
           .borderRadius(AdRadius.sm)
-          .border({ width: this.borderWidth(), color: this.borderColor(), style: BorderStyle.Solid })
+          .border({ width: this.resolveBorderWidth(), color: this.resolveBorderColor(), style: BorderStyle.Solid })
           .padding(this.innerPadding())
           .onFocus(() => {
             this.focused = true;
@@ -133,7 +133,7 @@ export struct AdTextField {
         if (this.errorText.length > 0) {
           // 错误：色 + △ 形状 + 文字，三重冗余（[R-33]）
           Row({ space: AdSpace.s1 }) {
-            AdGlyph({ kind: AdGlyphKind.TRIANGLE, size: 12, color: AdColor.dangerFg })
+            AdGlyph({ kind: AdGlyphKind.TRIANGLE, glyphSize: 12, color: AdColor.dangerFg })
             Text(this.errorText).adFieldHelper(AdColor.dangerFg)
           }
           .alignItems(VerticalAlign.Center)
@@ -178,7 +178,7 @@ export struct AdTextField {
     return this.maxChars > 0 && this.text.length >= this.maxChars * 0.9;
   }
 
-  private borderWidth(): number {
+  private resolveBorderWidth(): number {
     if (this.hasError() || this.focused) {
       return AdStroke.emphasis;
     }
@@ -186,7 +186,7 @@ export struct AdTextField {
   }
 
   /** [R-01] 静默态必须是 borderStrong（≥3:1），不得用装饰性 border */
-  private borderColor(): Resource {
+  private resolveBorderColor(): Resource {
     if (this.hasError()) {
       return AdColor.dangerFg;
     }

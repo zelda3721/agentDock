@@ -84,11 +84,11 @@ export struct AdToolCard {
       Column({ space: AdSpace.s2 }) {
         // 头行
         Row({ space: AdSpace.s2 }) {
-          AdGlyph({ kind: AdGlyphKind.GEAR, size: 12, color: AdColor.inkTertiary })
+          AdGlyph({ kind: AdGlyphKind.GEAR, glyphSize: 12, color: AdColor.inkTertiary })
           Text(this.call.name).toolName(AdColor.ink).layoutWeight(1)
 
           if (this.call.status === AdToolStatus.FAILED) {
-            AdGlyph({ kind: AdGlyphKind.TRIANGLE, size: 12, color: AdColor.dangerFg })
+            AdGlyph({ kind: AdGlyphKind.TRIANGLE, glyphSize: 12, color: AdColor.dangerFg })
             Text(`超时 · ${this.call.latencyMs}ms`).toolStat(AdColor.dangerFg)
           } else if (this.call.status !== AdToolStatus.NEEDS_CONFIRM) {
             Text(`${this.call.latencyMs}ms · ${this.call.tokensIn + this.call.tokensOut} tok`)
@@ -98,7 +98,7 @@ export struct AdToolCard {
           if (this.call.status !== AdToolStatus.NEEDS_CONFIRM) {
             AdGlyph({
               kind: this.expanded ? AdGlyphKind.CHEVRON_UP : AdGlyphKind.CHEVRON_DOWN,
-              size: 12,
+              glyphSize: 12,
               color: AdColor.inkTertiary
             })
           }
@@ -154,7 +154,7 @@ export struct AdToolCard {
       if (this.call.requestLeavesDevice) {
         Row({ space: AdSpace.s1 }) {
           // 空心云弧 + 琥珀 + 文字：出端提醒的三重冗余
-          AdGlyph({ kind: AdGlyphKind.REMOTE_CLOUD, size: 12, color: AdColor.remoteFg })
+          AdGlyph({ kind: AdGlyphKind.REMOTE_CLOUD, glyphSize: 12, color: AdColor.remoteFg })
           Text('出端提醒：请求内容将离开本设备').toolProse(AdColor.remoteFg)
         }
         .alignItems(VerticalAlign.Center)

@@ -109,7 +109,7 @@ export struct AdModelTierCard {
       Row() {
         Text(this.tier.tier).tierEyebrow().layoutWeight(1)
         Row({ space: AdSpace.s1 }) {
-          AdGlyph({ kind: this.runGlyph(), size: 12, color: this.runColor() })
+          AdGlyph({ kind: this.runGlyph(), glyphSize: 12, color: this.runColor() })
           Text(this.runLabel()).tierProse(this.runColor())
         }
         .alignItems(VerticalAlign.Center)
@@ -132,7 +132,7 @@ export struct AdModelTierCard {
           Text('出处').tierLabel().width(72)
           Row({ space: AdSpace.s1 }) {
             Text(this.tier.source).tierValue(AdColor.localFg)
-            AdGlyph({ kind: AdGlyphKind.ARROW_RIGHT, size: 10, color: AdColor.localFg })
+            AdGlyph({ kind: AdGlyphKind.ARROW_RIGHT, glyphSize: 10, color: AdColor.localFg })
           }
           .layoutWeight(1)
           .alignItems(VerticalAlign.Center)
@@ -162,7 +162,7 @@ export struct AdModelTierCard {
       if (this.tier.runnability === AdRunnability.NOT_RUNNABLE) {
         Column({ space: AdSpace.s2 }) {
           Row({ space: AdSpace.s1 }) {
-            AdGlyph({ kind: AdGlyphKind.BLOCKED, size: 12, color: AdColor.dangerFg })
+            AdGlyph({ kind: AdGlyphKind.BLOCKED, glyphSize: 12, color: AdColor.dangerFg })
             Text(`内存占用 ~${this.tier.memoryGb.toFixed(1)} GB > 本机预算 ${this.tier.budgetGb.toFixed(1)} GB`)
               .tierProse(AdColor.dangerFg)
           }
@@ -253,13 +253,13 @@ export struct AdModelTierCard {
   hashState() {
     if (this.tier.hashState === AdHashState.PASSED) {
       Row({ space: AdSpace.s1 }) {
-        AdGlyph({ kind: AdGlyphKind.CHECK, size: 10, color: AdColor.successFg })
+        AdGlyph({ kind: AdGlyphKind.CHECK, glyphSize: 10, color: AdColor.successFg })
         Text('校验通过').tierHash(AdColor.successFg)
       }
       .alignItems(VerticalAlign.Center)
     } else if (this.tier.hashState === AdHashState.FAILED) {
       Row({ space: AdSpace.s1 }) {
-        AdGlyph({ kind: AdGlyphKind.CROSS, size: 10, color: AdColor.dangerFg })
+        AdGlyph({ kind: AdGlyphKind.CROSS, glyphSize: 10, color: AdColor.dangerFg })
         Text('校验失败').tierHash(AdColor.dangerFg)
         AdButton({
           label: '重新下载',

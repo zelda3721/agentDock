@@ -89,7 +89,7 @@ export struct AdPrivacyFenceNotice {
     Column({ space: AdSpace.s2 }) {
       // 头行：空心云弧 + 琥珀 + 文字（三重冗余）。**不是 ✗，不是红色**——没有出错，只是没出端
       Row({ space: AdSpace.s2 }) {
-        AdGlyph({ kind: AdGlyphKind.REMOTE_CLOUD, size: 14, color: AdColor.remoteFg })
+        AdGlyph({ kind: AdGlyphKind.REMOTE_CLOUD, glyphSize: 14, color: AdColor.remoteFg })
 
         if (this.mode === AdFenceNoticeMode.PRECHECK) {
           Row({ space: AdSpace.s1 }) {
@@ -106,7 +106,7 @@ export struct AdPrivacyFenceNotice {
 
         AdGlyph({
           kind: this.expanded ? AdGlyphKind.CHEVRON_UP : AdGlyphKind.CHEVRON_DOWN,
-          size: 12,
+          glyphSize: 12,
           color: AdColor.remoteFg
         })
       }
@@ -136,7 +136,7 @@ export struct AdPrivacyFenceNotice {
             Column({ space: AdSpace.hairline }) {
               Row({ space: AdSpace.s2 }) {
                 // 空心圆环：未出端（形状冗余）
-                AdGlyph({ kind: AdGlyphKind.DOT_HOLLOW, size: 10, color: AdColor.remoteFg })
+                AdGlyph({ kind: AdGlyphKind.DOT_HOLLOW, glyphSize: 10, color: AdColor.remoteFg })
                 Text(item.label).fenceProse(AdColor.remoteFg).layoutWeight(1)
               }
               .width('100%')

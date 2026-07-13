@@ -127,7 +127,7 @@ export struct AdListItem {
       Column()
         .width('100%')
         .height('100%')
-        .backgroundColor(this.overlay())
+        .backgroundColor(this.resolveOverlay())
         .hitTestBehavior(HitTestMode.None)
     }
     .width('100%')
@@ -168,7 +168,7 @@ export struct AdListItem {
       : `${this.title}，${this.subtitle}，${this.timestamp}`)
   }
 
-  private overlay(): ResourceColor {
+  private resolveOverlay(): ResourceColor {
     if (this.pressed) {
       return AdColor.statePressed;
     }

@@ -13,6 +13,6 @@
     // targetAPIVersion 23 = 编译与测试所用 SDK（6.1.0(23)），与 build-profile.json5 保持一致
     "minAPIVersion": 20,
     "targetAPIVersion": 23,
-    "apiReleaseType": "Release"
+    "apiReleaseType": "Release1"
   }
 }

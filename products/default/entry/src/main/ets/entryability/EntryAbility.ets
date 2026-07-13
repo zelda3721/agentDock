@@ -13,7 +13,7 @@ import window from '@ohos.window';
 import display from '@ohos.display';
 import deviceInfo from '@ohos.deviceInfo';
 import hilog from '@ohos.hilog';
-import config from '@ohos.accessibility.config';
+// import config from '@ohos.accessibility.config'; // 模块在当前 SDK 不可用
 import { MotionPreference } from 'design-system';
 import { BreakpointSystem } from '../common/BreakpointSystem';
 
@@ -78,21 +78,8 @@ export default class EntryAbility extends UIAbility {
    * 无障碍配置读取失败时**不改动**默认值（保守按"已开启减弱"处理）。
    */
   private initMotionPreference(): void {
-    try {
-      const animationOff: config.Config<boolean> = config.animationOff;
-      animationOff.get().then((reduced: boolean): void => {
-        MotionPreference.set(reduced);
-        hilog.info(DOMAIN, TAG, 'MotionPreference.set(%{public}s)', String(reduced));
-      }).catch((e: Error): void => {
-        hilog.warn(DOMAIN, TAG, 'read animationOff failed, keep reduce-motion=true: %{public}s', e.message);
-      });
-      // 监听变更：用户在系统设置里改"减少动画"时即时生效
-      animationOff.on('change', (reduced: boolean): void => {
-        MotionPreference.set(reduced);
-      });
-    } catch (e) {
-      hilog.warn(DOMAIN, TAG, 'accessibility config unavailable, keep reduce-motion=true');
-    }
+    // @ohos.accessibility.config 模块在当前 SDK 不可用，保持默认值（reduce-motion=true）
+    hilog.info(DOMAIN, TAG, 'MotionPreference using default: reduce-motion=true');
   }
 
   /**

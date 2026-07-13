@@ -90,7 +90,7 @@ export struct AdEmptyState {
     Column({ space: AdSpace.s4 }) {
       AdGlyph({
         kind: this.glyphKind(),
-        size: 64,
+        glyphSize: 64,
         color: this.variant === AdEmptyStateVariant.ERROR ? AdColor.dangerFg : AdColor.inkTertiary,
         strokeWidth: 2
       })

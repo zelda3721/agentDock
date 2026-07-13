@@ -123,15 +123,15 @@ export struct AdCard {
         Column()
           .width('100%')
           .height('100%')
-          .backgroundColor(this.overlay())
+          .backgroundColor(this.resolveOverlay())
           .borderRadius(AdRadius.md)
           .hitTestBehavior(HitTestMode.None)
       }
     }
     .width('100%')
-    .backgroundColor(this.background())
+    .backgroundColor(this.resolveBackground())
     .borderRadius(AdRadius.md)
-    .border({ width: AdStroke.hairline, color: this.borderColor(), style: BorderStyle.Solid })
+    .border({ width: AdStroke.hairline, color: this.resolveBorderColor(), style: BorderStyle.Solid })
     .shadow(AdElevation.shadow(this.variant === AdCardVariant.SUNKEN ? AdElevationLevel.E0 : AdElevationLevel.E1))
     .outline({
       width: this.focused ? AdStroke.emphasis : 0,
@@ -174,7 +174,7 @@ export struct AdCard {
     .accessibilityText(this.a11yText.length > 0 ? this.a11yText : `${this.eyebrow} ${this.title} ${this.desc}`)
   }
 
-  private overlay(): ResourceColor {
+  private resolveOverlay(): ResourceColor {
     if (this.pressed) {
       return AdColor.statePressed;
     }
@@ -184,12 +184,12 @@ export struct AdCard {
     return Color.Transparent;
   }
 
-  private background(): Resource {
+  private resolveBackground(): Resource {
     return this.variant === AdCardVariant.SUNKEN ? AdColor.surfaceSunken : AdColor.surface;
   }
 
   /** [R-01] 可点卡片的边框必须是 borderStrong（≥3:1），装饰性卡片才用 border */
-  private borderColor(): Resource {
+  private resolveBorderColor(): Resource {
     return this.variant === AdCardVariant.INTERACTIVE ? AdColor.borderStrong : AdColor.border;
   }
 }

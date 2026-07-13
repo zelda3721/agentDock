@@ -180,7 +180,7 @@ export struct AdProgress {
 
         if (this.paused) {
           Row({ space: AdSpace.s1 }) {
-            AdGlyph({ kind: AdGlyphKind.DOT_HALF, size: 10, color: AdColor.inkTertiary })
+            AdGlyph({ kind: AdGlyphKind.DOT_HALF, glyphSize: 10, color: AdColor.inkTertiary })
             Text('已暂停 · 可续传').adProgressStat(AdColor.inkTertiary)
           }
           .alignItems(VerticalAlign.Center)

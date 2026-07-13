@@ -134,14 +134,14 @@ export struct AdCtxGauge {
         Row({ space: AdSpace.s1 }) {
           if (this.compressing) {
             // 压缩：info 轴（压缩是事件，不是错误）
-            AdGlyph({ kind: AdGlyphKind.DOT_HALF, size: 10, color: AdColor.infoFg })
+            AdGlyph({ kind: AdGlyphKind.DOT_HALF, glyphSize: 10, color: AdColor.infoFg })
             Text('整理思路中…')
               .gaugeNote(AdColor.infoFg)
               .opacity(this.breathe)
           } else if (this.level() >= 2) {
-            AdGlyph({ kind: AdGlyphKind.TRIANGLE, size: 10, color: AdColor.dangerFg })
+            AdGlyph({ kind: AdGlyphKind.TRIANGLE, glyphSize: 10, color: AdColor.dangerFg })
           } else if (this.level() === 1) {
-            AdGlyph({ kind: AdGlyphKind.TRIANGLE, size: 10, color: AdColor.warningFg })
+            AdGlyph({ kind: AdGlyphKind.TRIANGLE, glyphSize: 10, color: AdColor.warningFg })
           }
 
           // 百分比文本：**0ms 跳变**（绑 this.percent，不绑 barPercent）

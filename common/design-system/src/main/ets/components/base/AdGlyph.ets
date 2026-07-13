@@ -53,7 +53,7 @@ export enum AdGlyphKind {
 export struct AdGlyph {
   @Prop kind: AdGlyphKind = AdGlyphKind.LOCAL_DOCK;
   /** 视觉尺寸（vp）。命中区由调用方用 padding 撑到 AdTouch 下限（[R-06]） */
-  @Prop size: number = 12;
+  @Prop glyphSize: number = 12;
   /** 颜色一律取自令牌（Resource），禁止 hex 字面量 */
   @Prop color: Resource = AdColor.inkTertiary;
   /** 描边宽度（空心图元用） */
@@ -64,8 +64,8 @@ export struct AdGlyph {
       if (this.kind === AdGlyphKind.LOCAL_DOCK) {
         // 实心坞形：机身（上方实块）+ 底座（下方实条）——整体实填充
         Path()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .commands(this.dockCommands())
           .fill(this.color)
           .stroke(Color.Transparent)
@@ -73,8 +73,8 @@ export struct AdGlyph {
       } else if (this.kind === AdGlyphKind.REMOTE_CLOUD) {
         // 空心云弧：只有描边，内部镂空
         Path()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .commands(this.cloudCommands())
           .fill(Color.Transparent)
           .stroke(this.color)
@@ -84,40 +84,40 @@ export struct AdGlyph {
           .antiAlias(true)
       } else if (this.kind === AdGlyphKind.DOT_FILLED) {
         Circle()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .fill(this.color)
       } else if (this.kind === AdGlyphKind.DOT_HOLLOW) {
         Circle()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .fill(Color.Transparent)
           .stroke(this.color)
           .strokeWidth(this.strokeWidth)
       } else if (this.kind === AdGlyphKind.DOT_HALF) {
         Circle()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .fill(Color.Transparent)
           .stroke(this.color)
           .strokeWidth(this.strokeWidth)
         Path()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .commands(this.halfDiscCommands())
           .fill(this.color)
           .stroke(Color.Transparent)
           .antiAlias(true)
       } else if (this.kind === AdGlyphKind.CIRCLE_CROSS) {
         Circle()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .fill(Color.Transparent)
           .stroke(this.color)
           .strokeWidth(this.strokeWidth)
         Path()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .commands(this.crossCommands(0.3))
           .fill(Color.Transparent)
           .stroke(this.color)
@@ -125,8 +125,8 @@ export struct AdGlyph {
           .strokeLineCap(LineCapStyle.Round)
       } else if (this.kind === AdGlyphKind.TRIANGLE) {
         Path()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .commands(this.triangleCommands())
           .fill(Color.Transparent)
           .stroke(this.color)
@@ -135,8 +135,8 @@ export struct AdGlyph {
           .antiAlias(true)
         // 感叹竖线：让 △ 在极小尺寸下仍读得出"注意"
         Path()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .commands(this.bangCommands())
           .fill(Color.Transparent)
           .stroke(this.color)
@@ -144,8 +144,8 @@ export struct AdGlyph {
           .strokeLineCap(LineCapStyle.Round)
       } else if (this.kind === AdGlyphKind.CROSS) {
         Path()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .commands(this.crossCommands(0.22))
           .fill(Color.Transparent)
           .stroke(this.color)
@@ -154,8 +154,8 @@ export struct AdGlyph {
           .antiAlias(true)
       } else if (this.kind === AdGlyphKind.CHECK) {
         Path()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .commands(this.checkCommands())
           .fill(Color.Transparent)
           .stroke(this.color)
@@ -165,14 +165,14 @@ export struct AdGlyph {
           .antiAlias(true)
       } else if (this.kind === AdGlyphKind.BLOCKED) {
         Circle()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .fill(Color.Transparent)
           .stroke(this.color)
           .strokeWidth(this.strokeWidth)
         Path()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .commands(this.slashCommands())
           .fill(Color.Transparent)
           .stroke(this.color)
@@ -180,8 +180,8 @@ export struct AdGlyph {
           .strokeLineCap(LineCapStyle.Round)
       } else if (this.kind === AdGlyphKind.ARROW_RIGHT) {
         Path()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .commands(this.arrowCommands())
           .fill(Color.Transparent)
           .stroke(this.color)
@@ -191,8 +191,8 @@ export struct AdGlyph {
           .antiAlias(true)
       } else if (this.kind === AdGlyphKind.CHEVRON_DOWN || this.kind === AdGlyphKind.CHEVRON_UP) {
         Path()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .commands(this.chevronCommands(this.kind === AdGlyphKind.CHEVRON_UP))
           .fill(Color.Transparent)
           .stroke(this.color)
@@ -203,8 +203,8 @@ export struct AdGlyph {
       } else {
         // GEAR：工具调用。八齿轮廓的简化实心环 + 中心镂空
         Path()
-          .width(this.size)
-          .height(this.size)
+          .width(this.glyphSize)
+          .height(this.glyphSize)
           .commands(this.gearCommands())
           .fill(Color.Transparent)
           .stroke(this.color)
@@ -212,22 +212,22 @@ export struct AdGlyph {
           .strokeLineJoin(LineJoinStyle.Round)
           .antiAlias(true)
         Circle()
-          .width(this.size * 0.3)
-          .height(this.size * 0.3)
+          .width(this.glyphSize * 0.3)
+          .height(this.glyphSize * 0.3)
           .fill(Color.Transparent)
           .stroke(this.color)
           .strokeWidth(this.strokeWidth)
       }
     }
-    .width(this.size)
-    .height(this.size)
+    .width(this.glyphSize)
+    .height(this.glyphSize)
     // 图元是形状冗余，语义由同一视觉单元内的文字标签承担（[R-32]），故图元本身不朗读
     .accessibilityLevel('no')
   }
 
   /** 实心坞形：上部机身 + 下部底座，两个实心子路径 */
   private dockCommands(): string {
-    const s: number = this.size;
+    const s: number = this.glyphSize;
     const bodyTop: number = s * 0.10;
     const bodyBottom: number = s * 0.64;
     const bodyLeft: number = s * 0.20;
@@ -244,7 +244,7 @@ export struct AdGlyph {
 
   /** 空心云弧：一段上凸圆弧 + 底部平线，内部镂空 */
   private cloudCommands(): string {
-    const s: number = this.size;
+    const s: number = this.glyphSize;
     const y: number = s * 0.74;
     const left: number = s * 0.10;
     const right: number = s * 0.90;
@@ -253,47 +253,47 @@ export struct AdGlyph {
   }
 
   private halfDiscCommands(): string {
-    const s: number = this.size;
+    const s: number = this.glyphSize;
     const c: number = s / 2;
     const r: number = s / 2 - this.strokeWidth / 2;
     return `M${c} ${c - r} A${r} ${r} 0 0 1 ${c} ${c + r} Z`;
   }
 
   private crossCommands(inset: number): string {
-    const s: number = this.size;
+    const s: number = this.glyphSize;
     const a: number = s * inset;
     const b: number = s * (1 - inset);
     return `M${a} ${a} L${b} ${b} M${b} ${a} L${a} ${b}`;
   }
 
   private triangleCommands(): string {
-    const s: number = this.size;
+    const s: number = this.glyphSize;
     return `M${s / 2} ${s * 0.08} L${s * 0.95} ${s * 0.88} L${s * 0.05} ${s * 0.88} Z`;
   }
 
   private bangCommands(): string {
-    const s: number = this.size;
+    const s: number = this.glyphSize;
     return `M${s / 2} ${s * 0.40} L${s / 2} ${s * 0.62} M${s / 2} ${s * 0.75} L${s / 2} ${s * 0.76}`;
   }
 
   private checkCommands(): string {
-    const s: number = this.size;
+    const s: number = this.glyphSize;
     return `M${s * 0.18} ${s * 0.52} L${s * 0.42} ${s * 0.76} L${s * 0.84} ${s * 0.24}`;
   }
 
   private slashCommands(): string {
-    const s: number = this.size;
+    const s: number = this.glyphSize;
     return `M${s * 0.22} ${s * 0.78} L${s * 0.78} ${s * 0.22}`;
   }
 
   private arrowCommands(): string {
-    const s: number = this.size;
+    const s: number = this.glyphSize;
     return `M${s * 0.10} ${s / 2} L${s * 0.86} ${s / 2} ` +
       `M${s * 0.60} ${s * 0.26} L${s * 0.88} ${s / 2} L${s * 0.60} ${s * 0.74}`;
   }
 
   private chevronCommands(up: boolean): string {
-    const s: number = this.size;
+    const s: number = this.glyphSize;
     if (up) {
       return `M${s * 0.20} ${s * 0.64} L${s / 2} ${s * 0.34} L${s * 0.80} ${s * 0.64}`;
     }
@@ -302,7 +302,7 @@ export struct AdGlyph {
 
   /** 齿轮：外圈方齿环（简化为八边形）+ 中心圆（另绘） */
   private gearCommands(): string {
-    const s: number = this.size;
+    const s: number = this.glyphSize;
     const o: number = s * 0.5;
     const r: number = s * 0.42;
     const k: number = r * 0.4142; // tan(22.5°) * r，构造正八边形

@@ -111,7 +111,7 @@ export struct AdBrainIndicator {
                 .brainModel(this.fg(), AdType.instrumentSOf(this.bp).size)
             }
 
-            AdGlyph({ kind: AdGlyphKind.CHEVRON_DOWN, size: 10, color: this.fg() })
+            AdGlyph({ kind: AdGlyphKind.CHEVRON_DOWN, glyphSize: 10, color: this.fg() })
           }
           .alignItems(VerticalAlign.Bottom)
           .height('100%')
@@ -141,7 +141,7 @@ export struct AdBrainIndicator {
       .constraintSize({ minHeight: AdTouch.pointer })
       .backgroundColor(this.bg())
       .borderRadius(AdRadius.xs)
-      .border({ width: AdStroke.control, color: this.borderColor(), style: BorderStyle.Solid })
+      .border({ width: AdStroke.control, color: this.resolveBorderColor(), style: BorderStyle.Solid })
       .outline({
         width: this.focused ? AdStroke.emphasis : 0,
         color: AdColor.focus,
@@ -170,7 +170,7 @@ export struct AdBrainIndicator {
       // 接管态：快脑仍在监听——这句必须写出来，不能只靠颜色
       if (this.brain === AdBrainKind.TAKEOVER && this.fastBrainName.length > 0) {
         Row({ space: AdSpace.s1 }) {
-          AdGlyph({ kind: AdGlyphKind.LOCAL_DOCK, size: 10, color: AdColor.localFg })
+          AdGlyph({ kind: AdGlyphKind.LOCAL_DOCK, glyphSize: 10, color: AdColor.localFg })
           Text('快脑：本地').brainWord(AdColor.localFg)
           Text(`· ${this.fastBrainName}（仍在监听）`)
             .brainModel(AdColor.localFg, AdType.instrumentSOf(this.bp).size)
@@ -187,16 +187,16 @@ export struct AdBrainIndicator {
   glyphs() {
     if (this.brain === AdBrainKind.TAKEOVER) {
       Row({ space: AdSpace.hairline }) {
-        AdGlyph({ kind: AdGlyphKind.LOCAL_DOCK, size: this.glyphSize(), color: AdColor.localFg })
-        AdGlyph({ kind: AdGlyphKind.ARROW_RIGHT, size: this.glyphSize(), color: AdColor.remoteFg })
+        AdGlyph({ kind: AdGlyphKind.LOCAL_DOCK, glyphSize: this.glyphSize(), color: AdColor.localFg })
+        AdGlyph({ kind: AdGlyphKind.ARROW_RIGHT, glyphSize: this.glyphSize(), color: AdColor.remoteFg })
           .opacity(this.takeoverProgress)
-        AdGlyph({ kind: AdGlyphKind.REMOTE_CLOUD, size: this.glyphSize(), color: AdColor.remoteFg })
+        AdGlyph({ kind: AdGlyphKind.REMOTE_CLOUD, glyphSize: this.glyphSize(), color: AdColor.remoteFg })
       }
       .alignItems(VerticalAlign.Center)
     } else if (this.brain === AdBrainKind.REMOTE) {
-      AdGlyph({ kind: AdGlyphKind.REMOTE_CLOUD, size: this.glyphSize(), color: AdColor.remoteFg })
+      AdGlyph({ kind: AdGlyphKind.REMOTE_CLOUD, glyphSize: this.glyphSize(), color: AdColor.remoteFg })
     } else {
-      AdGlyph({ kind: AdGlyphKind.LOCAL_DOCK, size: this.glyphSize(), color: AdColor.localFg })
+      AdGlyph({ kind: AdGlyphKind.LOCAL_DOCK, glyphSize: this.glyphSize(), color: AdColor.localFg })
     }
   }
 
@@ -232,7 +232,7 @@ export struct AdBrainIndicator {
     return this.isLocal() ? AdColor.localBg : AdColor.remoteBg;
   }
 
-  private borderColor(): Resource {
+  private resolveBorderColor(): Resource {
     return this.isLocal() ? AdColor.localBorder : AdColor.remoteBorder;
   }
 

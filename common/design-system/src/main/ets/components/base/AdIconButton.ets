@@ -53,14 +53,14 @@ export struct AdIconButton {
       Stack() {
         AdGlyph({
           kind: this.glyph,
-          size: this.visualSize * 0.6,
+          glyphSize: this.visualSize * 0.6,
           color: this.foreground(),
           strokeWidth: 1.5
         })
         Column()
           .width('100%')
           .height('100%')
-          .backgroundColor(this.overlay())
+          .backgroundColor(this.getOverlay())
           .borderRadius(this.radius())
           .hitTestBehavior(HitTestMode.None)
       }
@@ -73,7 +73,7 @@ export struct AdIconButton {
     .width(this.hitSize())
     .height(this.hitSize())
     .borderRadius(this.radius())
-    .backgroundColor(this.background())
+    .backgroundColor(this.getBackground())
     .outline({
       width: this.focused && this.btnEnabled ? AdStroke.emphasis : 0,
       color: AdColor.focus,
@@ -130,7 +130,7 @@ export struct AdIconButton {
     return this.circular ? AdRadius.full : AdRadius.sm;
   }
 
-  private overlay(): ResourceColor {
+  private getOverlay(): ResourceColor {
     if (!this.btnEnabled) {
       return Color.Transparent;
     }
@@ -143,7 +143,7 @@ export struct AdIconButton {
     return Color.Transparent;
   }
 
-  private background(): ResourceColor {
+  private getBackground(): ResourceColor {
     if (this.variant === AdIconButtonVariant.TONAL) {
       return AdColor.surfaceSunken;
     }

@@ -73,7 +73,7 @@ export struct AdButton {
           if (this.renderGlyph()) {
             AdGlyph({
               kind: this.effectiveGlyph(),
-              size: this.iconSize(),
+              glyphSize: this.iconSize(),
               color: this.foreground(),
               strokeWidth: 1.4
             })
@@ -95,7 +95,7 @@ export struct AdButton {
         Column()
           .width('100%')
           .height('100%')
-          .backgroundColor(this.overlay())
+          .backgroundColor(this.getOverlay())
           .borderRadius(AdRadius.sm)
           .hitTestBehavior(HitTestMode.None)
       }
@@ -104,14 +104,14 @@ export struct AdButton {
     .type(ButtonType.Normal)
     .stateEffect(false)
     .borderRadius(AdRadius.sm)
-    .height(this.height())
+    .height(this.getHeight())
     // fullWidth 用 minWidth 100% 表达（避免给非通栏按钮写死宽度，内容宽由 Button 自适应）
-    .constraintSize({ minWidth: this.fullWidth ? '100%' : this.height() })
-    .padding({ left: this.padding(), right: this.padding() })
-    .backgroundColor(this.background())
+    .constraintSize({ minWidth: this.fullWidth ? '100%' : this.getHeight() })
+    .padding({ left: this.getPadding(), right: this.getPadding() })
+    .backgroundColor(this.getBackground())
     .border({
-      width: this.borderWidth(),
-      color: this.btnEnabled ? this.borderColor() : AdColor.border,
+      width: this.getBorderWidth(),
+      color: this.btnEnabled ? this.getBorderColor() : AdColor.border,
       style: BorderStyle.Solid
     })
     // 焦点环：2vp 外扩（PC Tab 导航必需）
@@ -181,7 +181,7 @@ export struct AdButton {
     return this.variant === AdButtonVariant.DANGER ? AdGlyphKind.TRIANGLE : this.glyph;
   }
 
-  private overlay(): ResourceColor {
+  private getOverlay(): ResourceColor {
     if (!this.btnEnabled) {
       return Color.Transparent;
     }
@@ -194,7 +194,7 @@ export struct AdButton {
     return Color.Transparent;
   }
 
-  private background(): ResourceColor {
+  private getBackground(): ResourceColor {
     if (!this.btnEnabled) {
       return this.variant === AdButtonVariant.PRIMARY || this.variant === AdButtonVariant.DANGER
         ? AdColor.surfaceSunken : Color.Transparent;
@@ -229,15 +229,15 @@ export struct AdButton {
   }
 
   /** [R-01] 可操作控件的边框一律 borderStrong，禁止 border（1.30:1） */
-  private borderColor(): Resource {
+  private getBorderColor(): Resource {
     return this.variant === AdButtonVariant.SECONDARY ? AdColor.borderStrong : AdColor.border;
   }
 
-  private borderWidth(): number {
+  private getBorderWidth(): number {
     return this.variant === AdButtonVariant.SECONDARY ? AdStroke.control : 0;
   }
 
-  private height(): number {
+  private getHeight(): number {
     switch (this.btnSize) {
       case AdButtonSize.SM:
         return 32;
@@ -248,7 +248,7 @@ export struct AdButton {
     }
   }
 
-  private padding(): number {
+  private getPadding(): number {
     switch (this.btnSize) {
       case AdButtonSize.SM:
         return AdSpace.s3;

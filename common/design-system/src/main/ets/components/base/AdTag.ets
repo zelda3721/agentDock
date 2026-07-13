@@ -135,7 +135,7 @@ export struct AdTag {
     Stack({ alignContent: Alignment.Start }) {
       Row({ space: AdSpace.s1 }) {
         // 形状冗余：实心坞形 vs 空心云弧（灰度 / 单色模式下唯一的区分手段）
-        AdGlyph({ kind: this.glyphKind(), size: 10, color: this.fg(), strokeWidth: 1.3 })
+        AdGlyph({ kind: this.glyphKind(), glyphSize: 10, color: this.fg(), strokeWidth: 1.3 })
 
         // 文字冗余：语义词恒在（即使色彩完全失效，信息 100% 无损）
         if (this.semanticWord().length > 0) {
@@ -163,7 +163,7 @@ export struct AdTag {
     }
     .height(this.chipHeight())
     .backgroundColor(this.bg())
-    .border({ width: AdStroke.control, color: this.borderColor(), style: BorderStyle.Solid })
+    .border({ width: AdStroke.control, color: this.resolveBorderColor(), style: BorderStyle.Solid })
     .borderRadius(AdRadius.xs)
   }
 
@@ -258,7 +258,7 @@ export struct AdTag {
     }
   }
 
-  private borderColor(): Resource {
+  private resolveBorderColor(): Resource {
     switch (this.kind) {
       case AdTagKind.LOCAL:
         return AdColor.localBorder;
