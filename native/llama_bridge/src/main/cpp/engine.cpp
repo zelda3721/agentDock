@@ -1,23 +1,188 @@
 // Copyright (c) 2026 AgentDock Contributors
 // SPDX-License-Identifier: Apache-2.0
 //
-// V0.9 骨架：只做生命周期占位与错误码返回，不实现任何推理算法。
-// 子模块 third_party/llama.cpp 未拉取时本文件同样可编译（无 llama.h 依赖）。
+// llama.cpp 会话管理与推理实现（设计文档 §3.2）。
+// 线程纪律：本文件的代码运行在 worker 后台线程（Generate/Embed）或 ArkTS 线程
+//          （CreateSession/ReleaseSession/Abort/Tokenize），**绝不触碰 napi_env**——
+//          token 一律经 TokenCallback 交给 stream_cb 的 threadsafe function 抛回 ArkTS（§3.2-2）。
+//
+// 编译守卫：子模块 third_party/llama.cpp 未拉取时（CMake 不定义 LLAMA_BRIDGE_HAS_LLAMA），
+//          本文件退化为骨架实现，全部返回 NOT_IMPLEMENTED，保证工程仍可构建。
 
 #include "engine.h"
+
+#include <sys/stat.h>
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <cstdio>
+
+#include "worker.h"
+
+#if defined(LLAMA_BRIDGE_HAS_LLAMA)
+#include <hilog/log.h>
+
+#include "llama.h"
+#endif
 
 namespace agentdock {
 namespace llama {
 
-// 内部会话结构占位。
-// TODO(T0.9-06): 按设计文档 §3.2 填入 llama.cpp 句柄：
-//   llama_model* model;              // llama_model_load_from_file（mmap，§3.2-3）
-//   llama_context* ctx;              // llama_init_from_model，KV cache 随 ctx 分配
-//   std::atomic<bool> abortFlag;     // 由 Abort() 置位，喂给 llama 的 abort_callback
-//   uint64_t residentBytes;          // 常驻内存计量，用于预算表核对
+#if defined(LLAMA_BRIDGE_HAS_LLAMA)
+
+namespace {
+
+constexpr unsigned int kLogDomain = 0xD00A;  // hilog domain，llama.cpp 内部日志统一转发到这里
+constexpr const char* kLogTag = "llama_bridge";
+
+// llama.cpp 的日志默认打到 stderr——鸿蒙上等于丢弃。转发到 hilog，模型加载失败时才有据可查。
+void LlamaLogToHilog(ggml_log_level level, const char* text, void* /*user_data*/) {
+  if (text == nullptr) {
+    return;
+  }
+  LogLevel oh = LOG_INFO;
+  if (level == GGML_LOG_LEVEL_ERROR) {
+    oh = LOG_ERROR;
+  } else if (level == GGML_LOG_LEVEL_WARN) {
+    oh = LOG_WARN;
+  } else if (level == GGML_LOG_LEVEL_DEBUG) {
+    oh = LOG_DEBUG;
+  }
+  OH_LOG_Print(LOG_APP, oh, kLogDomain, kLogTag, "%{public}s", text);
+}
+
+// llama_backend_init 进程内只做一次（重复调用会重复注册 ggml 后端）。
+std::once_flag g_backendOnce;
+
+void EnsureBackendInit() {
+  std::call_once(g_backendOnce, [] {
+    llama_log_set(LlamaLogToHilog, nullptr);
+    llama_backend_init();
+  });
+}
+
+// GGUF 文件大小（字节）。取不到（文件不存在/无权限）返回 0。
+uint64_t GgufFileSize(const std::string& path) {
+  struct stat st {};
+  if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+    return 0;
+  }
+  return static_cast<uint64_t>(st.st_size);
+}
+
+// token id → 文本片段。llama_token_to_piece 不写 '\0'，返回负值表示缓冲区不够（其绝对值为所需长度）。
+std::string TokenToPiece(const llama_vocab* vocab, llama_token token) {
+  char buf[256];
+  int32_t n = llama_token_to_piece(vocab, token, buf, static_cast<int32_t>(sizeof(buf)), 0, false);
+  if (n >= 0) {
+    return std::string(buf, static_cast<size_t>(n));
+  }
+  std::string big(static_cast<size_t>(-n), '\0');
+  n = llama_token_to_piece(vocab, token, big.data(), static_cast<int32_t>(big.size()), 0, false);
+  if (n < 0) {
+    return std::string();
+  }
+  big.resize(static_cast<size_t>(n));
+  return big;
+}
+
+// 文本 → token id 列表。llama_tokenize 第一次调用传 nullptr 探长度（返回 -需要的长度）。
+ErrorCode TokenizeText(const llama_vocab* vocab, const std::string& text, bool addSpecial,
+                       std::vector<llama_token>* out) {
+  const int32_t needed = -llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()),
+                                         nullptr, 0, addSpecial, /*parse_special=*/true);
+  if (needed < 0) {
+    return ErrorCode::INTERNAL;  // INT32_MIN 溢出等异常路径
+  }
+  out->resize(static_cast<size_t>(needed));
+  if (needed == 0) {
+    return ErrorCode::OK;
+  }
+  const int32_t n = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()),
+                                   out->data(), static_cast<int32_t>(out->size()), addSpecial,
+                                   /*parse_special=*/true);
+  if (n < 0) {
+    return ErrorCode::INTERNAL;
+  }
+  out->resize(static_cast<size_t>(n));
+  return ErrorCode::OK;
+}
+
+// 流式 stop 串处理：返回 text 尾部与某个 stop 串**前缀**重叠的最长长度。
+// 这段尾巴必须"扣留"不回吐——否则 stop 串会被一个 token 一个 token 地漏给 UI，
+// 等下一个 token 拼出完整 stop 串时已经晚了（§3.2 流式契约：吐出去的字不能撤回）。
+size_t StopSuffixHold(const std::string& text, const std::vector<std::string>& stops) {
+  size_t hold = 0;
+  for (const std::string& s : stops) {
+    if (s.empty()) {
+      continue;
+    }
+    const size_t maxLen = std::min(s.size() - 1, text.size());
+    for (size_t n = maxLen; n > 0; --n) {
+      if (text.compare(text.size() - n, n, s, 0, n) == 0) {
+        hold = std::max(hold, n);
+        break;
+      }
+    }
+  }
+  return hold;
+}
+
+// L2 归一化（§4.1：产出 float32 单位向量，落盘时 vec_index 再转 float16）。
+void L2Normalize(std::vector<float>* v) {
+  double sum = 0.0;
+  for (float x : *v) {
+    sum += static_cast<double>(x) * static_cast<double>(x);
+  }
+  const double norm = std::sqrt(sum);
+  if (norm <= 0.0) {
+    return;  // 全零向量：保持原样，避免除零产生 NaN
+  }
+  const float inv = static_cast<float>(1.0 / norm);
+  for (float& x : *v) {
+    x *= inv;
+  }
+}
+
+}  // namespace
+
+// 内部会话结构（§3.2）。
 struct Engine::Session {
   SessionConfig config;
+  llama_model* model = nullptr;
+  llama_context* ctx = nullptr;
+  const llama_vocab* vocab = nullptr;
+
+  // 中断标志：Abort() 从任意线程置位（R3 抢占依赖，见 §3.2-4）。
+  // 同时作为 llama 的 abort_callback 数据——长 prompt 预填也能被打断，而不必等 decode 跑完。
+  std::atomic<bool> abortFlag{false};
+
+  // 单飞行请求（§3.2-4）：同一会话同时只允许一个 Generate/Embed 在跑，第二个直接 BUSY。
+  std::atomic<bool> busy{false};
+
+  uint64_t modelBytes = 0;  // GGUF 文件大小，用于预算表核对
+
+  ~Session() {
+    // 顺序不可颠倒：ctx 持有 model 的张量引用。
+    if (ctx != nullptr) {
+      llama_free(ctx);
+      ctx = nullptr;
+    }
+    if (model != nullptr) {
+      llama_model_free(model);
+      model = nullptr;
+    }
+  }
 };
+
+namespace {
+// llama 的 abort_callback：返回 true 即中止当前 decode（仅 CPU 后端有效——本项目恰好纯 CPU，§3.2-1）。
+bool AbortCallback(void* data) {
+  auto* flag = static_cast<std::atomic<bool>*>(data);
+  return flag != nullptr && flag->load(std::memory_order_relaxed);
+}
+}  // namespace
 
 // 定义在此处（Session 已完整）：见 engine.h 中的说明。
 Engine::~Engine() = default;
@@ -32,69 +197,457 @@ ErrorCode Engine::CreateSession(const SessionConfig& config, SessionHandle* outH
     return ErrorCode::INVALID_ARGUMENT;
   }
   *outHandle = kInvalidSession;
+  if (config.contextSize == 0) {
+    return ErrorCode::INVALID_ARGUMENT;
+  }
 
-  // TODO(T0.9-06): 按设计文档 §3.2 实现 llama.cpp 会话管理：
-  //   1. stat(modelPath) 取模型文件大小，与 ModelBudgetBytes(config.deviceTier) 比对，
-  //      超预算直接返回 MEMORY_BUDGET_EXCEEDED（不加载，避免触发系统 OOM killer）；
-  //   2. llama_backend_init() 进程级只做一次；
-  //   3. llama_model_params.use_mmap = config.useMmap，n_gpu_layers = 0（平台无 GPU 后端）；
-  //   4. llama_context_params.n_ctx = config.contextSize，n_threads 由 worker 按大核数注入；
-  //      embeddingOnly 会话置 embeddings=true、pooling_type=MEAN；
-  //   5. 加载失败返回 MODEL_LOAD_FAILED，KV cache 分配失败返回 OOM；
-  //   6. 成功后登记 sessions_[nextHandle_++]。
-  return ErrorCode::NOT_IMPLEMENTED;
+  // ── 内存预算闸门（§3.2-3）────────────────────────────────────────────────
+  // 模型 mmap 进来后常驻内存 ≈ 权重 + KV cache + 计算缓冲，权重是大头。
+  // 超预算的模型**不加载**：一旦加载再 OOM，被系统 OOM killer 杀掉的是整个应用进程，
+  // 拿不到任何可降级的错误——所以这道闸门必须在 llama_model_load_from_file 之前。
+  const uint64_t fileBytes = GgufFileSize(config.modelPath);
+  if (fileBytes == 0) {
+    return ErrorCode::MODEL_LOAD_FAILED;  // 文件不存在 / 不是普通文件 / 无权限
+  }
+  if (fileBytes > ModelBudgetBytes(config.deviceTier)) {
+    return ErrorCode::MEMORY_BUDGET_EXCEEDED;
+  }
+
+  EnsureBackendInit();
+
+  llama_model_params mparams = llama_model_default_params();
+  mparams.use_mmap = config.useMmap;
+  mparams.n_gpu_layers = 0;  // 平台无可用 GPU 后端（Vulkan/OpenCL 关闭，§3.2-1），恒为 0
+
+  llama_model* model = llama_model_load_from_file(config.modelPath.c_str(), mparams);
+  if (model == nullptr) {
+    return ErrorCode::MODEL_LOAD_FAILED;
+  }
+
+  uint32_t threads = config.threadCount;
+  if (threads == 0) {
+    threads = Worker::Instance().RecommendedThreadCount();  // 大核数（§3.2-2）
+  }
+
+  llama_context_params cparams = llama_context_default_params();
+  cparams.n_ctx = config.contextSize;
+  if (threads > 0) {
+    cparams.n_threads = static_cast<int32_t>(threads);
+    cparams.n_threads_batch = static_cast<int32_t>(threads);
+  }
+  if (config.embeddingOnly) {
+    // embedding 会话（bge-small / bge-m3 量化档）：整条文本必须落在**同一个 ubatch** 里，
+    // pooling 才能算出序列级向量——因此 n_batch/n_ubatch 拉到 n_ctx。
+    cparams.embeddings = true;
+    cparams.pooling_type = LLAMA_POOLING_TYPE_MEAN;
+    cparams.n_batch = config.contextSize;
+    cparams.n_ubatch = config.contextSize;
+  } else {
+    // 生成会话：n_batch 限流以压住预填阶段的计算缓冲峰值（手机内存预算紧，§3.2-3），
+    // 超长 prompt 由 Generate 分块预填。
+    cparams.n_batch = std::min<uint32_t>(config.contextSize, 512);
+    cparams.n_ubatch = std::min<uint32_t>(cparams.n_batch, 512);
+  }
+
+  llama_context* ctx = llama_init_from_model(model, cparams);
+  if (ctx == nullptr) {
+    llama_model_free(model);
+    return ErrorCode::OOM;  // ctx 创建失败的实际原因几乎总是 KV cache / 计算缓冲分配不下
+  }
+
+  auto session = std::unique_ptr<Session>(new Session());
+  session->config = config;
+  session->model = model;
+  session->ctx = ctx;
+  session->vocab = llama_model_get_vocab(model);
+  session->modelBytes = fileBytes;
+  // abort_callback 读的是 session 自己的 atomic 标志，指针在 Session 生命周期内恒有效。
+  llama_set_abort_callback(ctx, AbortCallback, &session->abortFlag);
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  const SessionHandle handle = nextHandle_++;
+  sessions_[handle] = std::move(session);
+  *outHandle = handle;
+  return ErrorCode::OK;
 }
 
 ErrorCode Engine::ReleaseSession(SessionHandle handle) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  (void)handle;
-  // 骨架期 sessions_ 恒为空（CreateSession 未实现），此处不做 erase，避免给出"已释放"的假语义。
-  // TODO(T0.9-06): 实现为：查表 → 未命中返回 SESSION_NOT_FOUND；命中则先 Abort 并等 worker 排空
-  //   该会话的在跑任务（否则悬垂指针），再按 llama_free(ctx) → llama_model_free(model) 顺序释放，
-  //   最后 sessions_.erase(it)。重复释放幂等返回 SESSION_NOT_FOUND。
-  return ErrorCode::NOT_IMPLEMENTED;
+  // 三步走，顺序是关键：
+  //   1. 先从表里摘除（但**不析构**）：此后新提交/仍在排队的 Generate 查表就是 SESSION_NOT_FOUND，
+  //      不会再拿到这个 Session 的指针；
+  //   2. 置中断标志 + Drain：把**已经在跑**的那个任务（它握着裸指针）逼退并等它退出；
+  //   3. 最后才析构。反过来先析构再 Drain 就是悬垂指针。
+  std::unique_ptr<Session> victim;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = sessions_.find(handle);
+    if (it == sessions_.end()) {
+      return ErrorCode::SESSION_NOT_FOUND;  // 幂等：重复释放走这里
+    }
+    victim = std::move(it->second);
+    sessions_.erase(it);
+  }
+
+  victim->abortFlag.store(true, std::memory_order_relaxed);
+  Worker::Instance().Drain();
+  victim.reset();  // ~Session：llama_free(ctx) → llama_model_free(model)
+  return ErrorCode::OK;
 }
 
 ErrorCode Engine::Generate(SessionHandle handle, const GenerateParams& params,
                            const TokenCallback& onToken) {
-  (void)handle;
-  (void)params;
-  (void)onToken;
-  // TODO(T0.9-06): 按设计文档 §3.2 实现：tokenize → decode（prefill，尽量命中 KV 前缀缓存，
-  //   §23.4/R2 要求易变内容挂在 prompt 尾部）→ 采样循环 → 每 token 触发 onToken(token,false)，
-  //   结束/遇 stop/达 maxTokens 触发 onToken("",true)；中断标志置位时立即返回 ABORTED。
-  return ErrorCode::NOT_IMPLEMENTED;
+  if (!onToken) {
+    return ErrorCode::INVALID_ARGUMENT;
+  }
+
+  Session* s = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = sessions_.find(handle);
+    if (it == sessions_.end()) {
+      return ErrorCode::SESSION_NOT_FOUND;
+    }
+    s = it->second.get();
+  }
+  if (s->config.embeddingOnly) {
+    return ErrorCode::INVALID_ARGUMENT;  // embedding 会话没有 logits，不能生成
+  }
+
+  // 单飞行请求（§3.2-4）：worker 已把任务串行化，这里再兜一层，防止上层绕过队列直调。
+  bool expected = false;
+  if (!s->busy.compare_exchange_strong(expected, true)) {
+    return ErrorCode::BUSY;
+  }
+  struct BusyGuard {
+    std::atomic<bool>* flag;
+    ~BusyGuard() { flag->store(false, std::memory_order_release); }
+  } busyGuard{&s->busy};
+
+  s->abortFlag.store(false, std::memory_order_relaxed);
+
+  // ArkTS 侧 ContextBuilder 已按 R2 顺序装配好分段（易变内容在尾部），这里直接顺序拼接，
+  // 原生层不再对 prompt 做任何重排——重排会破坏 §23.4 的 KV 前缀复用前提。
+  std::string prompt;
+  size_t total = 0;
+  for (const std::string& part : params.promptParts) {
+    total += part.size();
+  }
+  prompt.reserve(total);
+  for (const std::string& part : params.promptParts) {
+    prompt += part;
+  }
+
+  std::vector<llama_token> tokens;
+  const ErrorCode tkErr = TokenizeText(s->vocab, prompt, /*addSpecial=*/true, &tokens);
+  if (tkErr != ErrorCode::OK) {
+    return tkErr;
+  }
+  if (tokens.empty()) {
+    return ErrorCode::INVALID_ARGUMENT;
+  }
+
+  const uint32_t nCtx = llama_n_ctx(s->ctx);
+  const int32_t maxTokens = params.maxTokens > 0 ? params.maxTokens : 512;
+  if (tokens.size() >= static_cast<size_t>(nCtx)) {
+    return ErrorCode::CONTEXT_OVERFLOW;  // prompt 本身就塞不下 ctx
+  }
+
+  // V1 不做 KV 前缀复用：每次生成从干净的 KV 起步。
+  // TODO(§23.4): 命中前缀时用 llama_memory_seq_rm 只回滚尾部，省掉重复预填——
+  //   前提是 ArkTS 侧保证 prompt 前缀稳定（R2 已要求易变内容挂尾部）。
+  llama_memory_clear(llama_get_memory(s->ctx), true);
+
+  // 采样链（§3.2）：top_k → top_p → temp → dist。temperature ≤ 0 时退化为贪心（可复现输出）。
+  llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+  if (smpl == nullptr) {
+    return ErrorCode::OOM;
+  }
+  struct SamplerGuard {
+    llama_sampler* p;
+    ~SamplerGuard() { llama_sampler_free(p); }
+  } samplerGuard{smpl};
+
+  if (params.temperature <= 0.0f) {
+    llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+  } else {
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_p(params.topP, /*min_keep=*/1));
+    llama_sampler_chain_add(smpl, llama_sampler_init_temp(params.temperature));
+    llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+  }
+
+  // ── 预填（prefill）：按 n_batch 分块 decode ────────────────────────────────
+  const uint32_t nBatch = llama_n_batch(s->ctx);
+  int32_t nPast = 0;
+  for (size_t i = 0; i < tokens.size(); i += nBatch) {
+    if (s->abortFlag.load(std::memory_order_relaxed)) {
+      return ErrorCode::ABORTED;
+    }
+    const int32_t chunk = static_cast<int32_t>(std::min<size_t>(nBatch, tokens.size() - i));
+    llama_batch batch = llama_batch_get_one(tokens.data() + i, chunk);
+    const int32_t rc = llama_decode(s->ctx, batch);
+    if (rc == 1) {
+      return ErrorCode::CONTEXT_OVERFLOW;  // 找不到 KV slot：ctx 用尽
+    }
+    if (rc == 2) {
+      return ErrorCode::ABORTED;  // abort_callback 生效（长 prompt 预填被打断）
+    }
+    if (rc != 0) {
+      return ErrorCode::INTERNAL;
+    }
+    nPast += chunk;
+  }
+
+  // ── 采样循环 ──────────────────────────────────────────────────────────────
+  std::string pending;  // 尚未回吐的尾巴（stop 串可能横跨多个 token，见 StopSuffixHold）
+  for (int32_t produced = 0; produced < maxTokens; ++produced) {
+    if (s->abortFlag.load(std::memory_order_relaxed)) {
+      return ErrorCode::ABORTED;
+    }
+    if (nPast >= static_cast<int32_t>(nCtx)) {
+      return ErrorCode::CONTEXT_OVERFLOW;
+    }
+
+    llama_token token = llama_sampler_sample(smpl, s->ctx, -1);  // 内部已 accept
+    if (llama_vocab_is_eog(s->vocab, token)) {
+      break;
+    }
+
+    pending += TokenToPiece(s->vocab, token);
+
+    // 命中完整 stop 串：回吐 stop 之前的部分，丢弃 stop 本身及其后的内容。
+    size_t hit = std::string::npos;
+    for (const std::string& stop : params.stop) {
+      if (stop.empty()) {
+        continue;
+      }
+      const size_t pos = pending.find(stop);
+      if (pos != std::string::npos) {
+        hit = std::min(hit, pos);
+      }
+    }
+    if (hit != std::string::npos) {
+      if (hit > 0) {
+        onToken(pending.substr(0, hit), false);
+      }
+      pending.clear();
+      break;
+    }
+
+    // 未命中：把"确定不会成为 stop 串前缀"的部分回吐，其余留在 pending 里等下一个 token。
+    const size_t hold = StopSuffixHold(pending, params.stop);
+    if (pending.size() > hold) {
+      onToken(pending.substr(0, pending.size() - hold), false);
+      pending.erase(0, pending.size() - hold);
+    }
+
+    llama_batch next = llama_batch_get_one(&token, 1);
+    const int32_t rc = llama_decode(s->ctx, next);
+    if (rc == 1) {
+      return ErrorCode::CONTEXT_OVERFLOW;
+    }
+    if (rc == 2) {
+      return ErrorCode::ABORTED;
+    }
+    if (rc != 0) {
+      return ErrorCode::INTERNAL;
+    }
+    nPast += 1;
+  }
+
+  if (!pending.empty()) {
+    onToken(pending, false);  // 扣留的尾巴不是 stop 串，正常结束时补吐
+  }
+  onToken(std::string(), true);  // 终止事件：done
+  return ErrorCode::OK;
 }
 
 ErrorCode Engine::Abort(SessionHandle handle) {
-  (void)handle;
-  // TODO(T0.9-06): 置 session->abortFlag，llama 的 abort_callback 读取后中止 decode；
-  //   本方法必须可从任意线程调用且不阻塞（R3 抢占依赖它）。
-  return ErrorCode::NOT_IMPLEMENTED;
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto it = sessions_.find(handle);
+  if (it == sessions_.end()) {
+    return ErrorCode::SESSION_NOT_FOUND;
+  }
+  // 只置标志、立即返回：不等生成线程退出（R3 抢占要求 abort 非阻塞，§3.2-4）。
+  // decode 中途也能被打断——标志同时挂在 llama 的 abort_callback 上。
+  it->second->abortFlag.store(true, std::memory_order_relaxed);
+  return ErrorCode::OK;
 }
 
 ErrorCode Engine::Embed(SessionHandle handle, const std::vector<std::string>& texts,
                         std::vector<std::vector<float>>* outVectors) {
-  (void)handle;
-  (void)texts;
   if (outVectors == nullptr) {
     return ErrorCode::INVALID_ARGUMENT;
   }
-  // TODO(T0.9-06): 按设计文档 §3.2-4 实现 embedding：批量 decode + pooling + L2 归一化；
-  //   产出 float32 交给 ArkTS，落盘时由 vec_index 转 float16（§4.1）。
-  return ErrorCode::NOT_IMPLEMENTED;
+  outVectors->clear();
+
+  Session* s = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = sessions_.find(handle);
+    if (it == sessions_.end()) {
+      return ErrorCode::SESSION_NOT_FOUND;
+    }
+    s = it->second.get();
+  }
+  if (!s->config.embeddingOnly) {
+    return ErrorCode::INVALID_ARGUMENT;  // 生成会话无 pooling，拿不到序列级向量
+  }
+
+  bool expected = false;
+  if (!s->busy.compare_exchange_strong(expected, true)) {
+    return ErrorCode::BUSY;
+  }
+  struct BusyGuard {
+    std::atomic<bool>* flag;
+    ~BusyGuard() { flag->store(false, std::memory_order_release); }
+  } busyGuard{&s->busy};
+
+  s->abortFlag.store(false, std::memory_order_relaxed);
+
+  const int32_t nEmbd = llama_model_n_embd_out(s->model);
+  if (nEmbd <= 0) {
+    return ErrorCode::INTERNAL;
+  }
+  const uint32_t nBatch = llama_n_batch(s->ctx);
+  outVectors->reserve(texts.size());
+
+  for (const std::string& text : texts) {
+    if (s->abortFlag.load(std::memory_order_relaxed)) {
+      return ErrorCode::ABORTED;
+    }
+
+    std::vector<llama_token> tokens;
+    const ErrorCode tkErr = TokenizeText(s->vocab, text, /*addSpecial=*/true, &tokens);
+    if (tkErr != ErrorCode::OK) {
+      return tkErr;
+    }
+    if (tokens.empty()) {
+      outVectors->emplace_back(static_cast<size_t>(nEmbd), 0.0f);  // 空文本 → 零向量
+      continue;
+    }
+    // 超长文本截断到 n_batch：pooling 要求整条序列在一个 batch 内。
+    // 分块摘要/切片是 RAG 摄取管线（ArkTS 侧）的职责，原生层不擅自改语义，只保底不崩。
+    if (tokens.size() > nBatch) {
+      tokens.resize(nBatch);
+    }
+
+    // 每条文本独占一次 decode：先清 KV，避免上一条的残留参与 pooling。
+    llama_memory_clear(llama_get_memory(s->ctx), true);
+
+    llama_batch batch = llama_batch_init(static_cast<int32_t>(tokens.size()), /*embd=*/0,
+                                         /*n_seq_max=*/1);
+    struct BatchGuard {
+      llama_batch b;
+      ~BatchGuard() { llama_batch_free(b); }
+    } batchGuard{batch};
+
+    batch.n_tokens = static_cast<int32_t>(tokens.size());
+    for (size_t i = 0; i < tokens.size(); ++i) {
+      batch.token[i] = tokens[i];
+      batch.pos[i] = static_cast<llama_pos>(i);
+      batch.n_seq_id[i] = 1;
+      batch.seq_id[i][0] = 0;
+      batch.logits[i] = 1;  // pooling 需要所有 token 参与
+    }
+
+    const int32_t rc = llama_decode(s->ctx, batch);
+    if (rc == 1) {
+      return ErrorCode::CONTEXT_OVERFLOW;
+    }
+    if (rc == 2) {
+      return ErrorCode::ABORTED;
+    }
+    if (rc != 0) {
+      return ErrorCode::INTERNAL;
+    }
+
+    const float* embd = llama_get_embeddings_seq(s->ctx, 0);
+    if (embd == nullptr) {
+      return ErrorCode::INTERNAL;  // pooling_type 未生效（模型不支持 embedding）
+    }
+    std::vector<float> vec(embd, embd + nEmbd);
+    L2Normalize(&vec);
+    outVectors->push_back(std::move(vec));
+  }
+  return ErrorCode::OK;
 }
 
 ErrorCode Engine::Tokenize(SessionHandle handle, const std::string& text,
                            std::vector<int32_t>* outTokens) {
-  (void)handle;
-  (void)text;
   if (outTokens == nullptr) {
     return ErrorCode::INVALID_ARGUMENT;
   }
-  // TODO(T0.9-06): llama_tokenize，供 ContextGovernor 令牌预算账本使用（§23.2）。
+  outTokens->clear();
+
+  const llama_vocab* vocab = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = sessions_.find(handle);
+    if (it == sessions_.end()) {
+      return ErrorCode::SESSION_NOT_FOUND;
+    }
+    vocab = it->second->vocab;
+  }
+
+  // add_special=false：ContextGovernor 是给**片段**记账（§23.2），不该把 BOS/EOS 算进片段成本。
+  // llama_tokenize 本身是线程安全的（llama.h 明示），故不必持 session 锁，也不会挡住在跑的生成。
+  std::vector<llama_token> tokens;
+  const ErrorCode err = TokenizeText(vocab, text, /*addSpecial=*/false, &tokens);
+  if (err != ErrorCode::OK) {
+    return err;
+  }
+  outTokens->assign(tokens.begin(), tokens.end());
+  return ErrorCode::OK;
+}
+
+#else  // !LLAMA_BRIDGE_HAS_LLAMA
+
+// ── 骨架模式：子模块未拉取时的降级实现（CMakeLists 的守卫分支）────────────────
+// 保证工程可构建、可跑门禁；运行时所有推理入口返回 NOT_IMPLEMENTED(1099)。
+struct Engine::Session {
+  SessionConfig config;
+};
+
+Engine::~Engine() = default;
+
+Engine& Engine::Instance() {
+  static Engine instance;
+  return instance;
+}
+
+ErrorCode Engine::CreateSession(const SessionConfig& config, SessionHandle* outHandle) {
+  if (outHandle == nullptr || config.modelPath.empty()) {
+    return ErrorCode::INVALID_ARGUMENT;
+  }
+  *outHandle = kInvalidSession;
   return ErrorCode::NOT_IMPLEMENTED;
 }
+
+ErrorCode Engine::ReleaseSession(SessionHandle) { return ErrorCode::NOT_IMPLEMENTED; }
+
+ErrorCode Engine::Generate(SessionHandle, const GenerateParams&, const TokenCallback&) {
+  return ErrorCode::NOT_IMPLEMENTED;
+}
+
+ErrorCode Engine::Abort(SessionHandle) { return ErrorCode::NOT_IMPLEMENTED; }
+
+ErrorCode Engine::Embed(SessionHandle, const std::vector<std::string>&,
+                        std::vector<std::vector<float>>* outVectors) {
+  if (outVectors == nullptr) {
+    return ErrorCode::INVALID_ARGUMENT;
+  }
+  return ErrorCode::NOT_IMPLEMENTED;
+}
+
+ErrorCode Engine::Tokenize(SessionHandle, const std::string&, std::vector<int32_t>* outTokens) {
+  if (outTokens == nullptr) {
+    return ErrorCode::INVALID_ARGUMENT;
+  }
+  return ErrorCode::NOT_IMPLEMENTED;
+}
+
+#endif  // LLAMA_BRIDGE_HAS_LLAMA
 
 }  // namespace llama
 }  // namespace agentdock

@@ -20,6 +20,9 @@
     // 公共能力层（HAR）——entry 直接需要的：日志/事件总线/配置（core-infra）、启动期数据库初始化（core-data）
     // 其余 core-* 由各 feature 自行依赖，entry 不越层直连（设计文档 §2 依赖方向）
     "core-infra": "file:../../../common/core-infra",
+    // TODO(T0.9-22)：S1 冒烟台（pages/DevSmoke）用；冒烟进 CI 后本依赖与该页一并删除，
+    // 正式链路由 core-llm 依赖 llama-bridge，entry 不直连（§2 依赖方向）
+    "llama-bridge": "file:../../../native/llama_bridge",
     "core-data": "file:../../../common/core-data"
   }
 }

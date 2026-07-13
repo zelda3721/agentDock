@@ -62,3 +62,7 @@ keystore*
 native/*/third_party/*
 !native/*/third_party/.gitkeep
 !native/*/third_party/README.md
+# 例外：以 git submodule 引入的上游（仅记录 gitlink 与 .gitmodules 中的 tag，源码不入本仓）
+!native/llama_bridge/third_party/llama.cpp
+!native/vec_index/third_party/hnswlib
+!native/doc_parsers/third_party/pdfium

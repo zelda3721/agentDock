@@ -1,0 +1,7 @@
+#!/bin/sh
+# Copyright (c) 2026 AgentDock Contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# 提交前：把签名材料从暂存内容里剥离（红线 23）。工作区文件不动，本地签名构建照常。
+# 启用方式（每个克隆一次）：git config core.hooksPath .githooks
+node tools/git/sanitize-signing.mjs || exit 1
