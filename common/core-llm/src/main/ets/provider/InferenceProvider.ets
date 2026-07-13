@@ -219,8 +219,28 @@ export interface TokenUsage {
 export type FinishReason = 'stop' | 'length' | 'tool_calls' | 'aborted' | 'error';
 
 /**
+ * 单轮生成的性能指标（§10 可观测性）。
+ * UI 的溯源条（AdProvenanceRail，签名组件）要展示"本地 42 tok/s、首 token 242ms"这类事实，
+ * 而只有 Provider 知道真实的首 token 时刻——上层无法事后推算，故随流带回。
+ */
+export interface StreamMetrics {
+  /** 请求发出 → 第一个 text 增量到达（毫秒）；未产出任何 token 时为 -1 */
+  firstTokenMs: number;
+  /** 请求发出 → 流结束（毫秒） */
+  latencyMs: number;
+  /** 输出速度（token/秒）；无法计算时为 0 */
+  tokensPerSec: number;
+}
+
+/**
  * 统一流式增量（§3.1）。
  * 用 type 字段做判别；各分支只填自己那一组字段，其余留空。
+ *
+ * 错误的传递方式（重要，上层按此写消费代码）：
+ *  - **中断**（用户取消 / R3 抢占）是正常终态 → `{type:'done', finishReason:'aborted'}`，流正常结束，
+ *    已产出的 text 增量全部保留（[R-37]）；
+ *  - **失败**（网络/鉴权/模型加载）→ 从 for-await **抛出 InferenceError**，
+ *    在此之前已产出的 text 增量同样已经交付给消费方，不会被回收。
  */
 export interface StreamDelta {
   type: StreamDeltaType;
@@ -232,6 +252,64 @@ export interface StreamDelta {
   usage?: TokenUsage;
   /** type==='done'：结束原因 */
   finishReason?: FinishReason;
+  /** type==='usage' / 'done'：本轮性能指标（溯源条数据源）。其余 type 不填 */
+  metrics?: StreamMetrics;
+}
+
+// ============================================================================
+// 结构化错误
+// ============================================================================
+
+/**
+ * 推理层错误码。
+ * 上层（ChatService → UI）按 code 给出**可操作**的提示，而不是把原始异常糊到界面上：
+ * 例如 NETWORK_POLICY_BLOCKED → "当前为蜂窝网络，已按设置拒绝远程模型；改用本地模型 / 修改设置"。
+ */
+export enum InferenceErrorCode {
+  UNKNOWN = 3000,
+  /** 生成被中断。正常路径不用它（中断走 finishReason='aborted'），仅用于内部信号传递 */
+  ABORTED = 3001,
+  /** networkPolicy='wifi_only' 且当前为蜂窝网/网络类型不可知（§3.3） */
+  NETWORK_POLICY_BLOCKED = 3002,
+  /** 无可用网络 */
+  NETWORK_UNAVAILABLE = 3003,
+  /** 401/403：Key 无效或无权限 */
+  AUTH_FAILED = 3004,
+  /** 429：限流（已重试耗尽） */
+  RATE_LIMITED = 3005,
+  /** 5xx：服务端错误（已重试耗尽） */
+  SERVER_ERROR = 3006,
+  /** 响应不可解析（非 OpenAI 兼容格式） */
+  BAD_RESPONSE = 3007,
+  /** 本地模型加载失败（文件缺失/OOM/超内存预算） */
+  MODEL_LOAD_FAILED = 3008,
+  /** 本地引擎忙（违反单飞行；正常路径由 InferenceQueue 排队，不应出现） */
+  BUSY = 3009,
+  /** 上下文超长 */
+  CONTEXT_OVERFLOW = 3010,
+  /** 该 Provider 不支持此能力（如远程 embedding 未开启、本地不支持工具） */
+  UNSUPPORTED = 3011,
+  /** SecretStore 中没有该 alias 对应的 API Key（用户还没配） */
+  SECRET_MISSING = 3012,
+  /** 没有任何健康的 Provider 可路由（§3.4-5） */
+  NO_PROVIDER = 3013
+}
+
+/**
+ * 推理层结构化错误。
+ * message 必须是**已脱敏**的可读文案：禁止包含 API Key / Authorization 头 / 用户正文（红线 16/20）。
+ */
+export class InferenceError extends Error {
+  readonly code: InferenceErrorCode;
+  /** 是否值得重试（429/5xx/网络抖动为 true；鉴权失败为 false——重试只会更快耗尽配额） */
+  readonly retriable: boolean;
+
+  constructor(code: InferenceErrorCode, message: string, retriable: boolean = false) {
+    super(message);
+    this.code = code;
+    this.retriable = retriable;
+    this.name = 'InferenceError';
+  }
 }
 
 // ============================================================================

@@ -17,8 +17,19 @@ import { CancellationToken } from '../runtime/AgentRun';
  * 本文件为 T1.0-02 的接口定义与内置工具名常量。
  */
 
-/** JSON 值（工具入参/JSON Schema 的通用载体；ArkTS 严格类型下不使用 any） */
-export type JsonValue = string | number | boolean | null | JsonValue[] | Record<string, JsonValue>;
+/** JSON 标量（工具入参的叶子类型） */
+export type JsonScalar = string | number | boolean | null;
+
+/**
+ * JSON 值（工具入参/JSON Schema 的通用载体；ArkTS 严格类型下不使用 any）。
+ *
+ * 为什么不是 `string | number | boolean | null | JsonValue[] | Record<string, JsonValue>`：
+ * ArkTS 编译器禁止**自引用的 type alias**（10505001: Type alias circularly references itself），
+ * 递归 JSON 类型在 ArkTS 里无法用 type alias 表达。这里用 Object 承载嵌套的数组/对象，
+ * 类型安全由 ToolBus 的 JSON-Schema 校验器在运行时保证（§5.2，随 T1.0-02 交付）——
+ * 校验器本来就是工具入参的唯一可信关卡，静态类型再花哨也替代不了它。
+ */
+export type JsonValue = JsonScalar | Object;
 
 /** 工具入参：JSON 对象 */
 export type ToolArgs = Record<string, JsonValue>;

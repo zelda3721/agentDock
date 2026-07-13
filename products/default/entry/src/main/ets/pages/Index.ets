@@ -21,6 +21,7 @@
  *   TODO(T0.9-16/18/27): 依次接入 agents / knowledge / settings HSP 组件
  */
 import { AdColor, AdSpace, AdStroke, AdType } from 'design-system';
+import { ChatPage } from 'chat';
 import { Breakpoint, BREAKPOINT_KEY } from '../common/BreakpointSystem';
 
 /** 一级导航项 */
@@ -84,8 +85,12 @@ struct Index {
     Tabs({ index: this.navIndex }) {
       ForEach(NAV_ITEMS, (item: NavItem, index: number): void => {
         TabContent() {
-          // 单栏：列表与聊天走 Navigation 跳转（本页只放列表，聊天为二级页）
-          this.PlaceholderPane(item.label, 'sm 单栏 · 列表→详情 Navigation 跳转')
+          // 聊天由 chat HSP 承载（它自带 sm 的 Navigation 列表→详情）；其余 Tab 仍是占位
+          if (item.key === 'chat') {
+            ChatPage({ breakpoint: this.breakpoint })
+          } else {
+            this.PlaceholderPane(item.label, 'sm 单栏 · 列表→详情 Navigation 跳转')
+          }
         }
         .tabBar(this.BottomTabBar(item, index))
       }, (item: NavItem): string => item.key)
@@ -121,11 +126,13 @@ struct Index {
     SideBarContainer(SideBarContainerType.Embed) {
       // 侧边栏（窄栏导航）
       this.NavRail()
-      // 内容区：双栏 —— 列表 + 聊天
-      Row() {
-        this.ConversationListPane()
-        Divider().vertical(true).strokeWidth(AdStroke.hairline).color(AdColor.border)
-        this.ChatPane()
+      // 内容区：聊天由 chat HSP 自行分栏（列表 + 消息流），entry 不越俎代庖
+      Column() {
+        if (this.navIndex === 0) {
+          ChatPage({ breakpoint: this.breakpoint })
+        } else {
+          this.PlaceholderPane(NAV_ITEMS[this.navIndex].label, '待接入对应 feature HSP')
+        }
       }
       .width('100%')
       .height('100%')
@@ -149,17 +156,14 @@ struct Index {
     SideBarContainer(SideBarContainerType.Embed) {
       // 常驻侧边栏（可折叠）
       this.NavRail()
-      // 内容区：三栏为基线形态；检视栏是否常驻由窗口宽度阶梯裁决（[R-69]）
-      Row() {
-        this.ConversationListPane()
-        Divider().vertical(true).strokeWidth(AdStroke.hairline).color(AdColor.border)
-        this.ChatPane()
-        if (this.inspectorPersistent()) {
-          Divider().vertical(true).strokeWidth(AdStroke.hairline).color(AdColor.border)
-          this.InspectorPane()
+      // 内容区：聊天的三栏（列表 + 消息流 + 检视栏）由 chat HSP 自行装配——
+      // 检视栏是溯源条的展开态，与消息流强耦合，拆到 entry 反而会把状态打散（[R-70]）。
+      Column() {
+        if (this.navIndex === 0) {
+          ChatPage({ breakpoint: this.breakpoint })
+        } else {
+          this.PlaceholderPane(NAV_ITEMS[this.navIndex].label, '待接入对应 feature HSP')
         }
-        // TODO(T1.0-15): <1232vp 时检视栏降级为右侧 overlay（[R-70] 检视栏在任何降级下都不许消失，
-        //   入口「溯源条点按 / Ctrl+I」必须恒在）；md/sm 降级为底部 Sheet，内容完全相同，只换容器。
       }
       .width('100%')
       .height('100%')

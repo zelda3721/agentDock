@@ -1,0 +1,261 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+
+/**
+ * ChatService 对外类型（V0.9 聊天链路三层合同「二、core-agent 对外」的逐字实现）。
+ *
+ * 为什么这些类型放在 core-agent 而不是 core-llm：
+ * 依赖方向（§2）是 features/chat → core-agent → core-llm，**features/chat 禁止直连 core-llm**。
+ * 因此聊天 UI 需要的一切类型（含从 core-llm 借来的 TokenUsage / FinishReason）都必须由 core-agent 再导出，
+ * 否则 UI 就得越层 import，破坏依赖方向。
+ *
+ * 版本纪律（V0.9 = T0.9-16 的前身）：**无工具循环、无 RAG、无记忆**。
+ * ChatProvenance 的 citations / memories / blockedByFence 三个计数在 V0.9 恒为 0，
+ * 但字段必须存在——溯源条（UI 设计规范 B1 签名组件）是 V0.9 不可裁的，
+ * 且 [R-17] 要求 remote provider 即使拦截数为 0 也要渲染"未拦截"，所以"0"与"没有该字段"语义不同。
+ */
+
+import { FinishReason, TokenUsage } from 'core-llm';
+import { COMPACTION_TRIGGER_RATIO, EMERGENCY_RATIO, RESERVED_OUTPUT_MARGIN } from '../context/GovernorDefaults';
+
+// core-llm 的两个纯类型再导出：让 features/chat 只依赖 core-agent（见文件头注释）。
+export { FinishReason, TokenUsage };
+
+// ---------------------------------------------------------------------------
+// 事件流（合同 §二）
+// ---------------------------------------------------------------------------
+
+export type ChatTurnEventType = 'text' | 'usage' | 'done' | 'error';
+
+export interface ChatTurnEvent {
+  type: ChatTurnEventType;
+  /** type==='text' 的增量（UI 侧必须攒批渲染，禁止逐 token setState——S1 实测约束） */
+  text?: string;
+  usage?: TokenUsage;
+  /** 'stop' | 'length' | 'aborted' | 'error'（core-llm 的 FinishReason 是其超集，含 'tool_calls'） */
+  finishReason?: FinishReason;
+  code?: number;
+  message?: string;
+}
+
+/**
+ * 事件错误码（ChatTurnEvent.code）。
+ * 用数值码而非字符串：UI 需要按码分支（如 CTX_EXHAUSTED 要额外渲染"新建会话"行动按钮），
+ * 而 message 是给人看的文案，不适合当判定依据。
+ */
+export enum ChatErrorCode {
+  /** 没有可用 Provider（未下载本地模型且未配置远程端点） */
+  NO_PROVIDER = 1001,
+  /**
+   * 上下文预算耗尽（§23.3："宁可诚实失败，不做静默掐头截尾"）。
+   * V0.9 不做压缩，直接以本码失败并提示"新建会话"；L3 滚动摘要见 TODO(T0.9-17)。
+   */
+  CTX_EXHAUSTED = 1002,
+  /** Provider 生成失败（网络/引擎错误；message 已脱敏，禁止含 API Key——红线 16/§9.5） */
+  PROVIDER_FAILED = 1003,
+  /** 持久化失败（RDB 写入被拒，含安全模式只读） */
+  PERSIST_FAILED = 1004,
+  /** 会话不存在 */
+  CONVERSATION_NOT_FOUND = 1005
+}
+
+// ---------------------------------------------------------------------------
+// 溯源（AdProvenanceRail 的数据源）
+// ---------------------------------------------------------------------------
+
+/** 溯源条（UI 设计规范 B1 签名组件）的数据源。V0.9 无 RAG/记忆，计数为 0，但字段必须在。 */
+export interface ChatProvenance {
+  providerId: string;
+  providerKind: 'local' | 'remote';
+  /** 模型标签（如 'Qwen2.5-0.5B'）。取自 providers.name，缺失时回退为 providerId */
+  modelLabel: string;
+  /** V0.9 恒 0（RAG 未接，TODO(T1.0)） */
+  citations: number;
+  /** V0.9 恒 0（记忆未接，TODO(T1.0)） */
+  memories: number;
+  /** 隐私围栏拦截条数；**remote 时即使为 0 也要渲染"未拦截"**（[R-17]） */
+  blockedByFence: number;
+  /** 端到端耗时（ms） */
+  latencyMs: number;
+  /** 首 token 延迟（ms，§10 核心指标）；未产出任何 token 时为 0 */
+  firstTokenMs: number;
+  /** 解码速度（tok/s，按"首 token 之后"的解码时间算，不含 prefill） */
+  tokensPerSec: number;
+}
+
+// ---------------------------------------------------------------------------
+// 消息与会话
+// ---------------------------------------------------------------------------
+
+/**
+ * 消息状态（对外语义）。
+ *
+ * **注意 DB 映射**：messages.status 的 CHECK 约束是 ('sending','streaming','done','failed','cancelled')，
+ * 没有 'aborted'。对外的 'aborted'（[R-37] 用户中断）在库里存为 **'cancelled'**，
+ * 由 toDbStatus/fromDbStatus 双向映射。不改 core-data 的 Schema（跨模块契约，另有 owner）。
+ */
+export type ChatMessageStatus = 'streaming' | 'done' | 'aborted' | 'failed';
+
+export interface ChatMessageRecord {
+  id: string;
+  convId: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  createdAt: number;
+  status: ChatMessageStatus;
+  /** assistant 消息才有（存 messages.citations 的 JSON 信封，见 ProvenanceCodec） */
+  provenance?: ChatProvenance;
+  errorMessage?: string;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  updatedAt: number;
+  messageCount: number;
+  /** 会话列表行的 local/remote 芯片；取自 conversations.meta 的 lastProviderKind */
+  lastProviderKind?: 'local' | 'remote';
+}
+
+/** 一轮对话的句柄（send 的返回值） */
+export interface ChatTurnHandle {
+  readonly runId: string;
+  readonly assistantMessageId: string;
+  stream(): AsyncIterable<ChatTurnEvent>;
+  cancel(): void;
+}
+
+// ---------------------------------------------------------------------------
+// ctx 水位线（AdCtxGauge 的数据源）
+// ---------------------------------------------------------------------------
+
+/**
+ * ctx 占用（AdCtxGauge）。
+ *
+ * 口径（必须与 send() 的硬门限同源，否则会出现"水位显示 60% 却发送失败"）：
+ * - totalTokens = **可用于 prompt 的预算** = ctxTotal − reserved_output（§23.2 预算账本）；
+ *   不是模型 ctx 上限本身——预留生成空间是模型永远拿不到的那一块。
+ * - usedTokens  = 当前会话按 R2 顺序装配后的 prompt token 数（**provider.countTokens 真算**，不是估的）。
+ * - percent     = usedTokens / totalTokens × 100，取值 0..100（可 >100，表示已超预算 → send 会诚实失败）。
+ */
+export interface CtxUsage {
+  usedTokens: number;
+  totalTokens: number;
+  percent: number;
+}
+
+/**
+ * AdCtxGauge 的告警阈值（百分比）。
+ *
+ * [R-18]"与 ContextGovernor 同源"：这里**不硬编码数字**，而是从 GovernorDefaults 的比例常量换算，
+ * 保证治理层调阈值时 UI 自动跟随（红线 28：不得散落两套数字）。
+ *
+ * 注：合同文本写的是 70%/90%，而 §27.4 / 红线 28 已把紧急线由 §23.2 早期文本的 90% **收敛为 85%**。
+ * 以红线 28 为准 —— 故此处危险线为 85，UI 请直接引用本常量，勿再写字面量 90。
+ */
+export const CTX_GAUGE_WARN_PERCENT: number = COMPACTION_TRIGGER_RATIO * 100;   // 70
+export const CTX_GAUGE_DANGER_PERCENT: number = EMERGENCY_RATIO * 100;          // 85
+
+/** 预留生成空间的倍率（= maxTokens × 1.1，§23.2），供 ctxUsage 与 send 共用 */
+export const CTX_RESERVED_OUTPUT_MARGIN: number = RESERVED_OUTPUT_MARGIN;
+
+/** V0.9 单轮输出上限（token）。Provider 声明的 maxOutputTokens 更小时以其为准 */
+export const CHAT_DEFAULT_MAX_OUTPUT_TOKENS: number = 1024;
+
+/**
+ * V0.9 默认 system prompt（会话未绑定 Agent 时使用）。
+ * 它是 R2 装配顺序里【稳定前缀】的第一段——内容必须字节级稳定，
+ * 任何随轮次变化的内容（时间戳、随机 id）都不得写进来，否则本地 llama.cpp 的 KV 前缀复用直接失效（[R2]）。
+ */
+export const DEFAULT_SYSTEM_PROMPT: string =
+  '你是 AgentDock 的本地智能助手。请用简洁、准确的中文回答用户的问题；不确定时如实说明，不要编造。';
+
+/** 会话标题的最大长度（V0.9 截断生成；TODO(T1.0) 改用 Nano 模型生成，§3.4 任务路由） */
+export const TITLE_MAX_CHARS: number = 24;
+
+// ---------------------------------------------------------------------------
+// DB 状态映射（对外语义 ↔ messages.status 的 CHECK 约束）
+// ---------------------------------------------------------------------------
+
+/** 对外状态 → DB 列值（'aborted' → 'cancelled'，见 ChatMessageStatus 注释） */
+export function toDbStatus(status: ChatMessageStatus): string {
+  return status === 'aborted' ? 'cancelled' : status;
+}
+
+/** DB 列值 → 对外状态（'cancelled' → 'aborted'；'sending' 为历史/其它写入方留的值，归一为 streaming） */
+export function fromDbStatus(dbStatus: string): ChatMessageStatus {
+  if (dbStatus === 'cancelled') {
+    return 'aborted';
+  }
+  if (dbStatus === 'sending' || dbStatus === 'streaming') {
+    return 'streaming';
+  }
+  if (dbStatus === 'failed') {
+    return 'failed';
+  }
+  return 'done';
+}
+
+// ---------------------------------------------------------------------------
+// provenance 的 JSON 信封（存 messages.citations 列）
+// ---------------------------------------------------------------------------
+
+/**
+ * **为什么 provenance 存在 citations 列里**：
+ * messages 表（core-data/Schema.ets）没有 provenance/meta 列，可用的 JSON 列只有
+ * tool_calls（V1.0 ToolBus 要用）与 citations（§4.3 可点击引用要用）。
+ * 按"不改 Schema（另有 owner，改列要走迁移）"的约束，选 citations——
+ * 它与溯源条语义最近（溯源条的 citations 计数本就来自 RAG 引用）。
+ *
+ * 为避免与 T1.0 的 RAG 引用数组打架，这里存的是一个**自描述信封**：
+ *   {"schema":"chat_provenance@1","provenance":{…},"citations":[…]}
+ * 读侧同时兼容"裸数组"（若将来别的写入方按 Schema 注释写了纯 citations 数组，不会崩，只是 provenance 为空）。
+ *
+ * TODO(T1.0): core-data 若为 messages 增补独立的 provenance/meta 列（一次迁移），
+ *   本 codec 只需改 column 名，信封结构可原样搬过去。
+ */
+export const PROVENANCE_ENVELOPE_SCHEMA: string = 'chat_provenance@1';
+
+/** RAG 引用（V0.9 不产生，仅为信封占位，保证 T1.0 接 RAG 时列语义不变） */
+export interface ChatCitation {
+  docId: string;
+  chunkId: string;
+  page?: number;
+  score?: number;
+}
+
+interface ProvenanceEnvelope {
+  schema: string;
+  provenance?: ChatProvenance;
+  citations: ChatCitation[];
+}
+
+export class ProvenanceCodec {
+  /** 编码为 messages.citations 的列值 */
+  static encode(provenance: ChatProvenance, citations: ChatCitation[]): string {
+    const envelope: ProvenanceEnvelope = {
+      schema: PROVENANCE_ENVELOPE_SCHEMA,
+      provenance: provenance,
+      citations: citations
+    };
+    return JSON.stringify(envelope);
+  }
+
+  /** 从列值解码 provenance；列为空/裸数组/损坏 JSON 时返回 undefined（读路径绝不抛异常，历史消息必须能渲染） */
+  static decode(columnValue: string | null): ChatProvenance | undefined {
+    if (columnValue === null || columnValue.length === 0) {
+      return undefined;
+    }
+    const trimmed: string = columnValue.trim();
+    if (!trimmed.startsWith('{')) {
+      // 裸数组（纯 citations）或非 JSON：无 provenance 可取
+      return undefined;
+    }
+    try {
+      const envelope: ProvenanceEnvelope = JSON.parse(trimmed) as ProvenanceEnvelope;
+      return envelope.provenance;
+    } catch (e) {
+      return undefined;
+    }
+  }
+}

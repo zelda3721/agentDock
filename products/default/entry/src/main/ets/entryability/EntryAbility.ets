@@ -14,7 +14,12 @@ import display from '@ohos.display';
 import deviceInfo from '@ohos.deviceInfo';
 import hilog from '@ohos.hilog';
 import { BusinessError } from '@ohos.base';
+import { fileIo as fs } from '@kit.CoreFileKit';
 import { MotionPreference, AD_REDUCE_MOTION_KEY } from 'design-system';
+import { AppRdbStore, FileRepo } from 'core-data';
+import { Logger } from 'core-infra';
+import { LocalProvider, ProviderRegistry } from 'core-llm';
+import { ChatService } from 'core-agent';
 import { BreakpointSystem } from '../common/BreakpointSystem';
 
 const DOMAIN: number = 0x1001;
@@ -35,8 +40,55 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, TAG, 'onCreate, deviceType=%{public}s', deviceInfo.deviceType);
     // 动效减弱偏好（§2.7.4）：App 内设置，PersistentStorage 持久化（系统开关三方不可读，见方法注释）
     this.initMotionPreference();
-    // TODO(T0.9-03): 按设计文档 §7 在此初始化 core-data（RDB 打开 + schema 迁移 + 文件沙箱布局）
-    // TODO(T0.9-04): 按设计文档 §2 在此初始化 core-infra（日志、事件总线、配置、任务队列）
+    // 数据层与聊天链路装配（§2：products 层负责装配，common 层不自举）
+    this.initCoreStack();
+  }
+
+  /**
+   * 启动装配：RDB（加密 + 迁移）→ 沙箱目录 → 本地 Provider 注册 → ChatService。
+   *
+   * 顺序不可颠倒：ChatService 依赖已打开的 RDB；Provider 依赖模型文件存在。
+   * 任一步失败都**不崩溃**——记录并降级（无模型时聊天页显示"未配置模型"，仍可浏览历史）。
+   */
+  private async initCoreStack(): Promise<void> {
+    const ctx = this.context;
+    try {
+      // 1) 打开加密库并跑迁移（§7）。失败会进安全模式：只读但可导出。
+      const rdb: AppRdbStore = AppRdbStore.get();
+      await rdb.init(ctx, '0.1.0');
+      if (rdb.isSafeMode()) {
+        hilog.error(DOMAIN, TAG, 'RDB in safe mode: %{public}s', String(rdb.safeModeReason()));
+      }
+
+      // 2) 沙箱目录布局（files/models、files/kb/... §7）
+      await new FileRepo(ctx).ensureLayout();
+
+      // 3) 本地 Provider：V0.9 先认 S1 冒烟台下载的那个模型。
+      //    TODO(T0.9-10)：改由 models 页管理（档位表 + 下载 + sha256 校验 + 切换）。
+      const modelPath: string = `${ctx.filesDir}/models/smoke.gguf`;
+      if (fs.accessSync(modelPath)) {
+        const local: LocalProvider = new LocalProvider({
+          id: 'local:qwen2.5-0.5b',
+          modelPath: modelPath,
+          modelLabel: 'Qwen2.5-0.5B',
+          contextSize: 2048
+        });
+        ProviderRegistry.get().register(local);
+        ProviderRegistry.get().setDefault(local.id);
+        hilog.info(DOMAIN, TAG, 'local provider registered: %{public}s', local.id);
+      } else {
+        hilog.warn(DOMAIN, TAG, 'no local model at files/models/smoke.gguf —— 聊天页将提示未配置模型');
+      }
+
+      // 4) 聊天服务
+      await ChatService.get().init(rdb);
+      hilog.info(DOMAIN, TAG, 'core stack ready');
+    } catch (e) {
+      const err = e as BusinessError;
+      // 装配失败不崩应用：聊天页会显示明确错误与下一步（"宁可诚实失败"，§23.3）
+      hilog.error(DOMAIN, TAG, 'initCoreStack failed: code=%{public}d %{public}s', err.code, err.message);
+      Logger.error(TAG, 'initCoreStack failed', [{ key: 'code', value: err.code }]);
+    }
   }
 
   onDestroy(): void {

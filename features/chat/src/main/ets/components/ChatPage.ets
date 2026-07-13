@@ -1,212 +1,382 @@
 // Copyright (c) 2026 AgentDock Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { BreakpointKey, ChatFacade, ChatMessageItem, ChatSessionItem, CitationRef, RunTraceStep,
-  StreamState } from '../model/ChatViewModel';
+import {
+  AdBrainIndicator,
+  AdBrainKind,
+  AdBreakpoint,
+  AdBreakpoints,
+  AdColor,
+  AdMessageStatus,
+  AdProvenance,
+  AdSpace,
+  AdStroke,
+  AdType
+} from 'design-system';
+import { ChatController, ChatHost } from '../model/ChatController';
+import { BreakpointKey, ChatMessageVM, ConversationVM, CtxUsageVM, LoadState } from '../model/ChatViewModel';
+import { ChatComposer } from './ChatComposer';
+import { ConversationListPane } from './ConversationListPane';
+import { InspectorPane } from './InspectorPane';
+import { MessageStream } from './MessageStream';
 
 /**
- * 聊天主页面（骨架）。设计文档 §5.2（流式渲染/中断）、§4.3（可点击引用）、§8（断点布局）。
+ * 会话页（V0.9 主战场 · T0.9-15 —— UI 设计规范 §4.2）。
  *
- * 断点行为（§8 表格）：
- *   sm  → 单栏：会话列表 ↔ 聊天由 entry 侧 Navigation 跳转，本组件只渲染聊天区
- *   md  → 双栏：会话列表 + 聊天
- *   lg  → 三栏：会话列表 + 聊天 + 详情区（引用 / 运行轨迹）
- * 断点由 entry 统一计算并以参数下发，features 不自行监听窗口尺寸（避免多模块重复订阅）。
+ * 三端一套代码（§2.5.2 / §7.5）：
+ *   sm  单栏：会话列表与聊天是两个 Navigation 页（列表为一级页，选中即 push 聊天页）
+ *   md  双栏：列表 + 聊天；检视栏降级为溯源条的就地展开态（AdProvenanceRail 自理）
+ *   lg  三栏：列表 + 聊天（正文列最大 720vp）+ 检视栏（溯源条的展开态）
+ * 断点由 entry 统一计算下发（@Prop breakpoint），**features 不自行监听 mediaquery**——
+ * design-system 组件另经 AppStorage['currentBreakpoint'] 订阅同一真值。
  *
- * TODO(T0.9-15): 按设计文档 §5.2/§4.3/§8 实现 chat UI：会话列表、StreamDelta 流式渲染、
- *                中断按钮、可点击引用定位原文。当前仅为组件骨架与占位 @Builder。
+ * 依赖方向（三层合同）：features/chat → core-agent（ChatService）→ core-llm。
+ * **本组件不直连 core-llm / llama-bridge**；所有业务调用集中在 ChatController。
+ *
+ * 性能红线（S1 §5.4，实测）：**禁止逐 token setState**。增量文本在 ChatController 里攒批
+ * （~32ms 一提交，只 notifyDataChange 最后一条），滚动跟随直接调 Scroller（不经状态）。
  */
-/**
- * TODO(T0.9-15 · UI-MIGRATION): 迁移到 design-system —— UI 设计规范 §3「features 只消费不自造」。
- *   本文件当前**自造**了排版与色彩，design-system 依赖已在 oh-package.json5 声明但尚未消费
- *   （"已接线未通电"）。迁移清单：
- *     · 字号 → AdType.*（[R-24] 禁止裸字号；标题 titleS/bodyM、说明 bodyS/caption）
- *     · 颜色 → AdColor.*（§2.8.2 铁律：ets 层颜色必须是 Resource，禁止 hex 字面量）
- *     · 仪表数字（token 计数 / 进度 % / 字节数 / sha256）→ AdType.instrumentS + AdType.TABULAR（§2.4.3）
- *     · 列表行 → AdListItem；卡片 → AdCard；本地/远程徽标 → AdTag（自带四重冗余 [R-31]）
- *   在完成迁移前，本文件登记在 tools/ui/ui-debt.json 的迁移账本中；
- *   **门禁 check-tokens.mjs 只放行账本内的既有欠账，账本外的任何新违规一律 exit 1。**
- */
+@Extend(Text)
+function topBarTitle() {
+  .fontSize(AdType.titleS.size)
+  .lineHeight(AdType.titleS.lineHeight)
+  .fontWeight(AdType.titleS.weight)
+  .fontFamily(AdType.titleS.family)
+  .fontColor(AdColor.ink)
+  .maxLines(1)
+  .textOverflow({ overflow: TextOverflow.Ellipsis })
+}
+
 @Component
 export struct ChatPage {
-  /** 断点：'sm' | 'md' | 'lg'，由 entry 下发。 */
-  @Prop breakpoint: BreakpointKey = 'sm';
-  /** 当前会话 id；空串表示未选中（sm 下由 entry 保证非空）。 */
-  @Prop sessionId: string = '';
-  /** 点击引用回调，由 entry 路由到 knowledge 的原文预览（features 之间不得互相依赖）。 */
-  public onCitationClick: (citation: CitationRef) => void = () => {};
-  /** 新建会话回调。 */
-  public onCreateSession: () => void = () => {};
+  /** 断点：'sm' | 'md' | 'lg'，由 entry 下发（三层合同 §3 的组件契约）。 */
+  @Prop breakpoint: string = 'sm';
 
-  @State private sessions: ChatSessionItem[] = [];
-  @State private messages: ChatMessageItem[] = [];
-  @State private draft: string = '';
-  @State private streamState: StreamState = 'idle';
-  /** 详情区（lg 三栏）当前展示的引用与运行轨迹。 */
-  @State private activeCitations: CitationRef[] = [];
-  @State private traceSteps: RunTraceStep[] = [];
+  @State private conversations: ConversationVM[] = [];
+  @State private selectedId: string = '';
+  @State private listState: LoadState = 'idle';
+  @State private messagesLoading: boolean = false;
+  @State private messageCount: number = 0;
+  @State private streaming: boolean = false;
+  @State private ctx: CtxUsageVM = new CtxUsageVM();
+  @State private pageError: string = '';
+  /** 顶栏「当前大脑」：取自**最近一条已完成回答**的溯源（它是事实，不是配置） */
+  @State private brain: AdBrainKind = AdBrainKind.LOCAL;
+  @State private brainModel: string = '';
+  /** lg 检视栏：被检视消息的溯源 */
+  @State private inspected: AdProvenance = new AdProvenance(AdBrainKind.LOCAL, '');
+  @State private hasInspection: boolean = false;
 
-  private facade: ChatFacade = new ChatFacade();
+  /** sm 的两页栈（列表 ↔ 聊天） */
+  private navStack: NavPathStack = new NavPathStack();
+  private scroller: Scroller = new Scroller();
+  private controller: ChatController = new ChatController(new ChatHost());
 
   aboutToAppear(): void {
-    // TODO(T0.9-15): 调 facade.listSessions() / listMessages(sessionId) 填充 @State；
-    //                当前 facade 未实现（抛 Not implemented），故骨架阶段不调用。
+    const host: ChatHost = new ChatHost();
+    host.onConversations = (list: ConversationVM[]): void => {
+      this.conversations = list;
+      this.listState = 'ready';
+    };
+    host.onStreaming = (streaming: boolean): void => {
+      this.streaming = streaming;
+    };
+    host.onCtxUsage = (usage: CtxUsageVM): void => {
+      this.ctx = usage;
+    };
+    host.onPageError = (reason: string): void => {
+      this.pageError = reason;
+      if (this.listState !== 'ready') {
+        this.listState = 'failed';
+      }
+    };
+    host.onMessageCountChanged = (count: number): void => {
+      this.messageCount = count;
+      this.messagesLoading = false;
+      this.syncBrain();
+      this.scroller.scrollEdge(Edge.Bottom);
+    };
+    // 流式跟随：只调 Scroller，不 setState（见类注释的性能红线）
+    host.onStreamAppended = (): void => {
+      this.scroller.scrollEdge(Edge.Bottom);
+    };
+
+    this.controller = new ChatController(host);
+    this.listState = 'loading';
+    this.controller.loadConversations(50);
   }
 
-  /** 会话列表区（md/lg 常驻；sm 由 entry 用独立页承载）。 */
-  @Builder
-  private SessionListArea() {
-    Column() {
-      Row() {
-        Text('会话').fontSize(16)
-        Blank()
-        Button('新建')
-          .onClick(() => {
-            this.onCreateSession();
-          })
-      }
-      .width('100%')
-
-      List() {
-        ForEach(this.sessions, (item: ChatSessionItem) => {
-          ListItem() {
-            // TODO(T0.9-15): 会话卡片（标题/最近消息/时间），选中态高亮，PC 右键菜单见 T1.0-15（§8）
-            Text(item.title).fontSize(14)
-          }
-        }, (item: ChatSessionItem) => item.id)
-      }
-      .layoutWeight(1)
-    }
-    .width('100%')
-    .height('100%')
-  }
-
-  /** 消息流区：流式渲染占位 + 可点击引用。 */
-  @Builder
-  private MessageStreamArea() {
-    Column() {
-      List() {
-        ForEach(this.messages, (msg: ChatMessageItem) => {
-          ListItem() {
-            Column() {
-              // TODO(T0.9-15): 按设计文档 §5.2 做增量文本渲染——StreamDelta 到达即追加，
-              //                打字机效果与滚动跟随；工具调用卡片属 V1.0（T1.0-10）不在本版。
-              Text(msg.content).fontSize(14)
-
-              // 流式光标占位：msg.streaming 为 true 时展示
-              if (msg.streaming) {
-                Text('▍').fontSize(14)
-              }
-
-              // 隐私围栏提示（§9.2：N 条本地内容因隐私设置未发送）
-              if (msg.privacyNotice.length > 0) {
-                Text(msg.privacyNotice).fontSize(12)
-              }
-
-              // 可点击引用（§4.3）：点击后由 entry 路由到 knowledge 原文预览；
-              // lg 断点下同时把引用推给右侧详情区。
-              Row() {
-                ForEach(msg.citations, (cite: CitationRef) => {
-                  Text(`[${cite.index}]`)
-                    .fontSize(12)
-                    .onClick(() => {
-                      this.activeCitations = msg.citations;
-                      this.onCitationClick(cite);
-                    })
-                }, (cite: CitationRef) => cite.chunkId)
-              }
-            }
-            .alignItems(HorizontalAlign.Start)
-            .width('100%')
-          }
-        }, (msg: ChatMessageItem) => msg.id)
-      }
-      .layoutWeight(1)
-
-      this.ComposerArea()
-    }
-    .width('100%')
-    .height('100%')
-  }
-
-  /** 输入区：发送 / 中断按钮（§3.2 AbortSignal）。 */
-  @Builder
-  private ComposerArea() {
-    Row() {
-      TextInput({ text: this.draft, placeholder: '输入消息' })
-        .layoutWeight(1)
-        .onChange((value: string) => {
-          this.draft = value;
-        })
-
-      // 生成中显示"中断"，否则显示"发送"（§5.2 全程可中断）
-      if (this.streamState === 'streaming' || this.streamState === 'connecting') {
-        Button('中断')
-          .onClick(() => {
-            // TODO(T0.9-15): 按设计文档 §3.2/§21-R3 调 facade.abort(sessionId)，
-            //                中断后保留已产出的部分文本并标记 aborted
-          })
-      } else {
-        Button('发送')
-          .enabled(this.draft.length > 0)
-          .onClick(() => {
-            // TODO(T0.9-15): 按设计文档 §5.2 调 facade.sendStreaming(...)，
-            //                onDelta 回调里增量追加到 messages 末条
-          })
-      }
-    }
-    .width('100%')
-  }
-
-  /** 详情区（仅 lg 三栏）：展示引用与运行轨迹（§8 会话页 lg 列）。 */
-  @Builder
-  private DetailPane() {
-    Column() {
-      Text('引用').fontSize(16)
-      ForEach(this.activeCitations, (cite: CitationRef) => {
-        // TODO(T0.9-15): 引用卡片（文档标题 + 命中片段 + 融合得分），点击定位原文
-        Text(`[${cite.index}] ${cite.docTitle}`).fontSize(13)
-      }, (cite: CitationRef) => cite.chunkId)
-
-      Text('运行轨迹').fontSize(16)
-      // TODO(T1.0-10): 按设计文档 §5.4 实现 Run 完整轨迹回放（每步 prompt/工具入出参/token）；
-      //                V0.9 无工具循环（§26.4），此处仅占位展示步骤概要。
-      ForEach(this.traceSteps, (step: RunTraceStep) => {
-        Text(`${step.stepIndex}. ${step.label}`).fontSize(13)
-      }, (step: RunTraceStep) => `${step.stepIndex}`)
-    }
-    .alignItems(HorizontalAlign.Start)
-    .width('100%')
-    .height('100%')
+  aboutToDisappear(): void {
+    this.controller.dispose();
   }
 
   build() {
-    Row() {
-      // md/lg：会话列表常驻左栏；sm：entry 用 Navigation 单栏跳转，此处不渲染
-      if (this.breakpoint !== 'sm') {
-        Column() {
-          this.SessionListArea()
-        }
-        .width(this.breakpoint === 'lg' ? '22%' : '32%')
-        .height('100%')
+    if (this.bp() === 'sm') {
+      // sm：列表与聊天是两个页（Navigation 单栏跳转）
+      Navigation(this.navStack) {
+        this.listPane()
       }
-
-      Column() {
-        this.MessageStreamArea()
-      }
-      .layoutWeight(1)
+      .navDestination(this.chatDestination)
+      .mode(NavigationMode.Stack)
+      .hideTitleBar(true)
+      .width('100%')
       .height('100%')
-
-      // lg：第三栏详情区（引用 / 运行轨迹）
-      if (this.breakpoint === 'lg') {
+      .backgroundColor(AdColor.bg)
+    } else {
+      Row() {
         Column() {
-          this.DetailPane()
+          this.listPane()
         }
-        .width('28%')
+        .width(this.listPaneWidth())
         .height('100%')
+
+        this.verticalRule()
+
+        Column() {
+          this.chatPane(false)
+        }
+        .layoutWeight(1)
+        .height('100%')
+
+        // lg 第三栏：检视栏（溯源条的展开态）
+        if (this.bp() === 'lg') {
+          this.verticalRule()
+
+          Column() {
+            InspectorPane({ provenance: this.inspected, hasSelection: this.hasInspection })
+          }
+          .width(AdBreakpoints.inspectorMinVp)
+          .height('100%')
+        }
       }
+      .width('100%')
+      .height('100%')
+      .backgroundColor(AdColor.bg)
+    }
+  }
+
+  /** sm 的聊天页（NavDestination）。返回键回列表。 */
+  @Builder
+  chatDestination(name: string) {
+    NavDestination() {
+      this.chatPane(true)
+    }
+    .title(this.currentTitle())
+    .backgroundColor(AdColor.bg)
+    .onBackPressed((): boolean => {
+      this.navStack.pop();
+      return true;
+    })
+  }
+
+  @Builder
+  listPane() {
+    ConversationListPane({
+      conversations: this.conversations,
+      selectedId: this.selectedId,
+      state: this.listState,
+      errorText: this.pageError,
+      onSelect: (convId: string): void => {
+        this.selectConversation(convId);
+      },
+      onCreate: (): void => {
+        this.createConversation();
+      },
+      onRetry: (): void => {
+        this.listState = 'loading';
+        this.pageError = '';
+        this.controller.loadConversations(50);
+      }
+    })
+  }
+
+  /** 聊天栏：顶栏（当前大脑）+ 消息流 + 输入区。 */
+  @Builder
+  chatPane(compactTop: boolean) {
+    Column() {
+      // 顶栏：**当前大脑常驻**，不藏进设置（§1.4 / §4.2）
+      Row({ space: AdSpace.s3 }) {
+        if (!compactTop) {
+          Text(this.currentTitle()).topBarTitle().layoutWeight(1)
+        } else {
+          Blank().layoutWeight(1)
+        }
+        AdBrainIndicator({
+          brain: this.brain,
+          modelName: this.brainModel,
+          tooltip: this.brainTooltip(),
+          onAction: () => {
+            // TODO(T0.9-10)：接模型切换菜单（本地 / 远程 / 不可运行三组）。
+            //               切换**只影响下一条消息**，不改写已发消息的溯源；
+            //               ChatService.send() 已支持 providerId 入参，缺的是 ModelRouter.current()
+            //               与可选模型清单的读取口（合同 §2 未含）。
+          }
+        })
+      }
+      .width('100%')
+      .padding({
+        left: AdSpace.pageMargin(this.adBp()),
+        right: AdSpace.pageMargin(this.adBp()),
+        top: AdSpace.s2,
+        bottom: AdSpace.s2
+      })
+      .alignItems(VerticalAlign.Center)
+      .backgroundColor(AdColor.surface)
+
+      Divider()
+        .strokeWidth(AdStroke.hairline)
+        .color(AdColor.border)
+
+      MessageStream({
+        source: this.controller.messages,
+        scroller: this.scroller,
+        messageCount: this.messageCount,
+        hasConversation: this.selectedId.length > 0,
+        loading: this.messagesLoading,
+        onAbort: (): void => {
+          this.controller.stop();
+        },
+        onRetry: (): void => {
+          this.controller.retryLast();
+        },
+        onRegenerate: (): void => {
+          this.controller.retryLast();
+        },
+        onSwitchToLocal: (): void => {
+          // TODO(T0.9-10)：切到本地模型重试 —— 需要模型清单（本地 providerId）。
+          //               合同 §2 的 send(convId, text, providerId?) 已留入参，缺清单读取口。
+          this.controller.retryLast();
+        },
+        onRailSegment: (messageId: string, segment: number): void => {
+          this.inspectMessage(messageId);
+        },
+        onCreateConversation: (): void => {
+          this.createConversation();
+        }
+      })
+        .layoutWeight(1)
+
+      ChatComposer({
+        ctx: this.ctx,
+        streaming: this.streaming,
+        composerEnabled: this.selectedId.length > 0,
+        warnAt: this.controller.ctxWarnPercent(),
+        dangerAt: this.controller.ctxDangerPercent(),
+        onSend: (text: string): void => {
+          this.controller.send(text);
+        },
+        onStop: (): void => {
+          this.controller.stop();
+        }
+      })
     }
     .width('100%')
     .height('100%')
+  }
+
+  @Builder
+  verticalRule() {
+    Divider()
+      .vertical(true)
+      .strokeWidth(AdStroke.hairline)
+      .color(AdColor.border)
+      .height('100%')
+  }
+
+  // ——————————————— 交互 ———————————————
+
+  private selectConversation(convId: string): void {
+    this.selectedId = convId;
+    this.messagesLoading = true;
+    this.hasInspection = false;
+    this.controller.selectConversation(convId);
+    if (this.bp() === 'sm') {
+      this.navStack.pushPath({ name: 'chat' });
+    }
+  }
+
+  private createConversation(): void {
+    this.pageError = '';
+    this.controller.createConversation('新会话').then((id: string): void => {
+      if (id.length > 0) {
+        this.selectedId = id;
+        this.hasInspection = false;
+        if (this.bp() === 'sm') {
+          this.navStack.pushPath({ name: 'chat' });
+        }
+      }
+    });
+  }
+
+  /** 点溯源条任一段 → lg 推入检视栏；md/sm 由 AdProvenanceRail 就地展开（[R-70] 内容相同，只换容器）。 */
+  private inspectMessage(messageId: string): void {
+    for (let i = this.controller.messages.lastIndex(); i >= 0; i--) {
+      const item: ChatMessageVM | null = this.controller.messages.itemAt(i);
+      if (item !== null && item.id === messageId) {
+        this.inspected = item.provenance;
+        this.hasInspection = true;
+        return;
+      }
+    }
+  }
+
+  /**
+   * 当前大脑 = **最近一条已完成回答的实际来源**（不是配置项）。
+   * 流式中的占位消息不参与——它的溯源要等流结束才由 core-agent 写全，提前取就是在猜。
+   * TODO(T0.9-10)：接 ModelRouter.current() 后改为「下一条消息会用谁」，与切换菜单同源。
+   */
+  private syncBrain(): void {
+    for (let i = this.controller.messages.lastIndex(); i >= 0; i--) {
+      const item: ChatMessageVM | null = this.controller.messages.itemAt(i);
+      if (item === null || !item.showRail || item.status === AdMessageStatus.STREAMING) {
+        continue;
+      }
+      this.brain = item.provenance.isLocal() ? AdBrainKind.LOCAL : AdBrainKind.REMOTE;
+      this.brainModel = item.provenance.modelName;
+      return;
+    }
+  }
+
+  /** hover Tooltip：ctx 长度 / 生成速度（全仪表体，由页面格式化） */
+  private brainTooltip(): string {
+    if (this.ctx.totalTokens <= 0) {
+      return '';
+    }
+    return `ctx ${this.ctx.usedTokens} / ${this.ctx.totalTokens} tok`;
+  }
+
+  private currentTitle(): string {
+    for (let i = 0; i < this.conversations.length; i++) {
+      if (this.conversations[i].id === this.selectedId) {
+        return this.conversations[i].title;
+      }
+    }
+    return '会话';
+  }
+
+  private bp(): BreakpointKey {
+    if (this.breakpoint === 'lg') {
+      return 'lg';
+    }
+    if (this.breakpoint === 'md') {
+      return 'md';
+    }
+    return 'sm';
+  }
+
+  /** entry 下发的断点 → design-system 的断点枚举（间距 / 密度取值同源） */
+  private adBp(): AdBreakpoint {
+    if (this.breakpoint === 'lg') {
+      return AdBreakpoint.LG;
+    }
+    if (this.breakpoint === 'md') {
+      return AdBreakpoint.MD;
+    }
+    return AdBreakpoint.SM;
+  }
+
+  /** 列表栏宽（§2.5.2 关键栏宽：lg 280 / md 320） */
+  private listPaneWidth(): number {
+    return this.bp() === 'lg' ? AdBreakpoints.listPaneMinVp + AdSpace.s8 : AdBreakpoints.listPaneMaxVp - AdSpace.s8;
   }
 }

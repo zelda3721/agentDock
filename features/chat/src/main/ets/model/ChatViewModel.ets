@@ -1,116 +1,157 @@
 // Copyright (c) 2026 AgentDock Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { AdBrainKind, AdMessageRole, AdMessageStatus, AdProvenance } from 'design-system';
+
 /**
- * chat 模块的 UI 侧视图模型（设计文档 §2 / §5.2 / §8）。
+ * chat 模块的 UI 侧视图模型（UI 设计规范 §4.2 会话页 · 三层合同「三、features/chat 对外」）。
  *
- * 说明：本文件只定义 UI 需要的数据形状与占位服务，**不含任何业务实现**。
- * 真实数据来源为 core-agent（AgentRun / StreamDelta）与 core-data（会话、消息持久化），
- * 接线在 T0.9-15 完成。
+ * 纪律：
+ *  - 本文件只有**数据形状与格式化**，无业务实现——数据来自 core-agent 的 ChatService（见 ChatController）。
+ *  - UI **不重算**围栏、不重算召回、不重算阈值：溯源条上的每个数字都来自 ChatProvenance，
+ *    UI 只渲染（design-system model/Provenance 的纪律）。
+ *  - **禁止伪实现**：拿不到的值不编造（如未返回的 token 数显示 `~—— tok` 而不是 0）。
  */
 
-/** 断点标识（设计文档 §8：sm<600vp / md 600–840 / lg>840）。 */
+/** 断点标识（UI 设计规范 §2.5.2：sm <600vp / md 600–840 / lg ≥840）。 */
 export type BreakpointKey = 'sm' | 'md' | 'lg';
 
-/** 消息角色。V0.9 无工具循环（§26.4），tool 角色为 V1.0 T1.0-01 预留。 */
-export type ChatRole = 'user' | 'assistant' | 'system' | 'tool';
-
-/** 流式渲染状态（设计文档 §5.2：StreamDelta 直通 UI）。 */
-export type StreamState = 'idle' | 'connecting' | 'streaming' | 'aborted' | 'failed';
-
-/** 会话列表项。 */
-export interface ChatSessionItem {
-  id: string;
-  title: string;
-  /** 绑定的 Agent（V0.9 单 Agent，无编排）。 */
-  agentId: string;
-  updatedAt: number;
-  lastMessagePreview: string;
-}
+/** 页面级加载态（列表 / 消息流分别持有一份）。 */
+export type LoadState = 'idle' | 'loading' | 'ready' | 'failed';
 
 /**
- * 引用（Citation）：RAG 检索命中的溯源指针（设计文档 §4.3 引用元数据）。
- * UI 要求可点击定位原文（T0.9-15 / T0.9-18）。
- */
-export interface CitationRef {
-  /** 引用序号，消息正文中以 [n] 形式出现。 */
-  index: number;
-  libId: string;
-  docId: string;
-  chunkId: string;
-  docTitle: string;
-  /** 命中片段的摘要文本，用于详情区预览。 */
-  snippet: string;
-  /** 融合得分（RRF），检索调试器完整版见 T1.0-13。 */
-  score: number;
-}
-
-/** 单条消息。 */
-export interface ChatMessageItem {
-  id: string;
-  role: ChatRole;
-  content: string;
-  createdAt: number;
-  /** 该条消息是否仍在流式产出中。 */
-  streaming: boolean;
-  /** 助手消息携带的引用列表；用户消息为空数组。 */
-  citations: CitationRef[];
-  /** 隐私围栏提示（设计文档 §9.2：N 条本地内容因隐私设置未发送）；无提示为空串。 */
-  privacyNotice: string;
-}
-
-/**
- * 运行轨迹步骤（设计文档 §5.4：每步 prompt / 工具入参出参 / token 消耗）。
- * V0.9 三栏详情区只展示"引用 + 极简运行信息"，完整轨迹回放见 T1.0-10。
- */
-export interface RunTraceStep {
-  stepIndex: number;
-  label: string;
-  detail: string;
-  promptTokens: number;
-  completionTokens: number;
-}
-
-/** 聊天页对外回调集合，由 entry 在装配时注入（features 之间不得互相依赖）。 */
-export interface ChatPageCallbacks {
-  /** 点击引用 → 由 entry 路由到 knowledge 模块的原文预览。 */
-  onCitationClick: (citation: CitationRef) => void;
-  /** 请求新建会话。 */
-  onCreateSession: () => void;
-}
-
-/**
- * 聊天服务的 UI 侧门面。V0.9 由 T0.9-15 接 core-agent 的 AgentService
- * 与 core-llm 的 StreamDelta（设计文档 §3.1 / §5.2）。
+ * 一条消息的视图模型。
  *
- * 红线：禁止伪实现——未实现方法一律抛错，避免 UI 拿到假数据。
+ * 直接携带 design-system 的枚举与 AdProvenance —— 让 AdMessage 的 @Prop 零转换接入，
+ * 避免在渲染热路径（流式攒批提交）上做对象映射。
  */
-export class ChatFacade {
-  /** 加载会话列表。 */
-  public listSessions(): Promise<ChatSessionItem[]> {
-    // TODO(T0.9-15): 按设计文档 §7 从 core-data 的会话表读取，按 updatedAt 倒序分页
-    throw new Error('Not implemented: T0.9-15');
+@Observed
+export class ChatMessageVM {
+  id: string = '';
+  role: AdMessageRole = AdMessageRole.ASSISTANT;
+  /** 眉标：用户 = 「你」；智能体 = Agent 名（§5.1 术语表：**禁止**用「助手」当角色名） */
+  roleLabel: string = '';
+  text: string = '';
+  /** 形如 14:02（列表中的时间戳走仪表体，由 AdMessage 负责排版） */
+  timestamp: string = '';
+  status: AdMessageStatus = AdMessageStatus.DONE;
+  /** 溯源数据；用户消息为空壳（showRail=false 时不渲染） */
+  provenance: AdProvenance = new AdProvenance(AdBrainKind.LOCAL, '');
+  /** 只有 assistant 消息渲染溯源条（[R-72] 与正文列左对齐同一基线） */
+  showRail: boolean = false;
+  /** 中断时已生成的 token 数；-1 表示 core-agent 尚未回吐 usage —— **不显示 0**（假值即错误） */
+  generatedTokens: number = -1;
+  /** 错误文案：具体、不道歉（§5.3） */
+  errorText: string = '';
+
+  constructor(id: string, role: AdMessageRole, roleLabel: string) {
+    this.id = id;
+    this.role = role;
+    this.roleLabel = roleLabel;
+  }
+}
+
+/** 会话列表行的视图模型。 */
+@Observed
+export class ConversationVM {
+  id: string = '';
+  title: string = '';
+  /** 副行：消息条数 */
+  subtitle: string = '';
+  timestamp: string = '';
+  /** 该会话最后一次回答的来源；unknown = 还没有回答过，不渲染 local/remote 芯片（不猜） */
+  brainKnown: boolean = false;
+  local: boolean = true;
+
+  constructor(id: string, title: string) {
+    this.id = id;
+    this.title = title;
+  }
+}
+
+/** ctx 水位（AdCtxGauge 入参）。percent < 0 表示尚未测得——**不显示 0%**。 */
+@Observed
+export class CtxUsageVM {
+  usedTokens: number = 0;
+  totalTokens: number = 0;
+  percent: number = 0;
+}
+
+/**
+ * 消息流的 LazyForEach 数据源。
+ *
+ * **为什么必须是 LazyForEach + 单条 notifyDataChange（S1 真机实测硬约束，见 docs/spikes/S1 §5.4）**：
+ * llama.cpp 的 token 经 threadsafe function **阻塞投递**回 ArkTS —— ArkTS 侧渲染没画完，
+ * 生成线程就卡在下一个 token 的投递上。若每次增量都触发整条消息流（ForEach + @State 数组）重渲染，
+ * **UI 渲染速度会直接成为生成速度的上限**（实测被压到 2.4 tok/s）。
+ * 这里只对**最后一条**消息发 notifyDataChange，其余行不参与 diff。
+ */
+export class MessageDataSource implements IDataSource {
+  private items: ChatMessageVM[] = [];
+  private listeners: DataChangeListener[] = [];
+
+  totalCount(): number {
+    return this.items.length;
   }
 
-  /** 加载指定会话的消息流。 */
-  public listMessages(sessionId: string): Promise<ChatMessageItem[]> {
-    // TODO(T0.9-15): 按设计文档 §7 从 core-data 读取消息，并回填 §4.3 的引用元数据
-    throw new Error('Not implemented: T0.9-15');
+  getData(index: number): ChatMessageVM {
+    return this.items[index];
   }
 
-  /**
-   * 发送消息并订阅流式增量。
-   * @param onDelta 每个 StreamDelta 触发一次，UI 侧做增量拼接渲染
-   */
-  public sendStreaming(sessionId: string, text: string, onDelta: (delta: string) => void): Promise<void> {
-    // TODO(T0.9-15): 按设计文档 §5.2 调 core-agent 发起 Run，StreamDelta 直通 UI；
-    //                本地/远程 Provider 的流式协议归一由 core-llm 负责（§3.1）
-    throw new Error('Not implemented: T0.9-15');
+  registerDataChangeListener(listener: DataChangeListener): void {
+    if (this.listeners.indexOf(listener) < 0) {
+      this.listeners.push(listener);
+    }
   }
 
-  /** 中断当前生成（设计文档 §3.2：AbortSignal 抢占）。 */
-  public abort(sessionId: string): Promise<void> {
-    // TODO(T0.9-15): 按设计文档 §3.2/§21-R3 透传 AbortSignal 到 core-llm，取消进行中的 Run
-    throw new Error('Not implemented: T0.9-15');
+  unregisterDataChangeListener(listener: DataChangeListener): void {
+    const at: number = this.listeners.indexOf(listener);
+    if (at >= 0) {
+      this.listeners.splice(at, 1);
+    }
   }
+
+  /** 整表重载（切会话 / 首次加载）。 */
+  reset(items: ChatMessageVM[]): void {
+    this.items = items;
+    this.listeners.forEach((l: DataChangeListener) => l.onDataReloaded());
+  }
+
+  append(item: ChatMessageVM): number {
+    this.items.push(item);
+    const at: number = this.items.length - 1;
+    this.listeners.forEach((l: DataChangeListener) => l.onDataAdd(at));
+    return at;
+  }
+
+  /** 单条变更 —— 流式攒批提交只走这条路径。 */
+  notifyChanged(index: number): void {
+    if (index < 0 || index >= this.items.length) {
+      return;
+    }
+    this.listeners.forEach((l: DataChangeListener) => l.onDataChange(index));
+  }
+
+  itemAt(index: number): ChatMessageVM | null {
+    if (index < 0 || index >= this.items.length) {
+      return null;
+    }
+    return this.items[index];
+  }
+
+  lastIndex(): number {
+    return this.items.length - 1;
+  }
+
+  isEmpty(): boolean {
+    return this.items.length === 0;
+  }
+}
+
+/** 时间格式化：形如 14:02（列表 / 消息眉标共用）。 */
+export function formatClock(epochMs: number): string {
+  const d: Date = new Date(epochMs);
+  const h: string = `${d.getHours()}`.padStart(2, '0');
+  const m: string = `${d.getMinutes()}`.padStart(2, '0');
+  return `${h}:${m}`;
 }

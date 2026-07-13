@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * 模型路由器（设计文档 §3.4）。
+ * 模型路由器（设计文档 §3.4，任务 T0.9-09）。
  *
  * 生产级的关键组件——决定"哪个任务用哪个模型"。规则优先级（可在设置中覆盖）：
  *
@@ -18,7 +18,7 @@
  * 【红线 17 / §9.2】围栏的**强制执行点在 core-rag 的 ContextBuilder 数据层**，
  * 不在这里，也不在 UI。
  *
- * 本路由器只提供一个"围栏钩子"：当调用方声明本轮上下文含 local_only 内容
+ * 本路由器只提供一个"围栏钩子"（PrivacyFence）：当调用方声明本轮上下文含 local_only 内容
  * （RouteRequest.containsLocalOnly === true）时，路由结果**必须**是 local Provider，
  * 降级链中的 remote 候选一律被剔除。
  *
@@ -26,11 +26,19 @@
  * 真正的保证是 ContextBuilder 在装配时，按目标 Provider.kind 硬过滤 local_only 内容。
  * 即使路由器被绕过或判断失误，ContextBuilder 仍会把敏感内容拦下——**围栏在数据层生效，
  * 不依赖任何调用方的自觉**。两层是纵深防御，不可相互替代。
+ *
+ * V0.9 的钩子是**空转**的（DefaultPrivacyFence：只按 kind 判定，blockedCount 恒 0），
+ * 因为 V0.9 还没有 RAG/记忆，不存在 local_only 内容。但接口必须先在——
+ * T0.9-14（ContextBuilder）落地时直接实现 PrivacyFence 接入，无需改动本文件的调用点。
  * ========================================================================
  */
 
 import { ModelTier } from '../provider/LocalProvider';
+import { InferenceError, InferenceErrorCode } from '../provider/InferenceProvider';
 import type { InferenceProvider, ProviderKind } from '../provider/InferenceProvider';
+import { Logger } from 'core-infra';
+
+const TAG: string = 'ModelRouter';
 
 /**
  * 任务类别（§3.4-2 的路由依据）。
@@ -102,6 +110,34 @@ export interface ProviderRegistration {
   readonly healthy: boolean;
 }
 
+/**
+ * 隐私围栏钩子（红线 17 的路由侧接口）。
+ *
+ * V0.9 空转，但签名必须**现在**就定下来：T0.9-14 的 ContextBuilder 会实现它，
+ * 届时路由与装配共用同一套判定语义，避免"路由说能发、装配说不能发"两套标准打架（§9.2）。
+ */
+export interface PrivacyFence {
+  /** 该 Provider 是否被允许承载本轮上下文 */
+  allows(provider: InferenceProvider, request: RouteRequest): boolean;
+  /** 本轮被围栏拦下的条目数（溯源条 ChatProvenance.blockedByFence 的数据源）。V0.9 恒 0 */
+  blockedCount(): number;
+}
+
+/** 默认围栏：只做 kind 判定（local_only → 仅 local）。V0.9 无 RAG/记忆，拦截数恒 0。 */
+export class DefaultPrivacyFence implements PrivacyFence {
+  allows(provider: InferenceProvider, request: RouteRequest): boolean {
+    if (!request.containsLocalOnly) {
+      return true;
+    }
+    return ModelRouter.allowsLocalOnlyContent(provider.kind);
+  }
+
+  blockedCount(): number {
+    // V0.9 恒 0：真正的拦截发生在 ContextBuilder（T0.9-14），届时由其实现回填。
+    return 0;
+  }
+}
+
 /** 任务类别 → 期望的本地档位（§3.4-2） */
 export function defaultTierFor(kind: TaskKind): ModelTier {
   switch (kind) {
@@ -129,20 +165,10 @@ export function prefersRemote(kind: TaskKind): boolean {
   return kind === TaskKind.TOOL_CHAIN || kind === TaskKind.CODE_GEN;
 }
 
-/**
- * 模型路由器。
- *
- * TODO(T0.9-09): 按设计文档 §3.4 实现 route()：
- *   1. userOverrideProviderId / agentBoundProviderId 命中且健康 → 直接采用（规则 1）；
- *   2. 否则按 defaultTierFor(taskKind) + prefersRemote(taskKind) 选首选（规则 2）；
- *   3. 组装降级链（规则 3）：remote → local(STANDARD) → 报错保留可重试上下文；
- *   4. containsLocalOnly === true → 从首选与降级链中剔除所有 kind==='remote' 的候选，
- *      fencedToLocal 置 true（规则 4 的路由侧钩子）；
- *   5. 无任何健康候选 → 抛出可读错误，UI 引导用户下载本地模型或配置远程 Provider。
- * 依赖 T0.9-07/T0.9-08 落地后接线；围栏子项须与 T0.9-14（ContextBuilder）于 W7 联调。
- */
+/** 模型路由器。 */
 export class ModelRouter {
   private readonly registry: Map<string, ProviderRegistration> = new Map<string, ProviderRegistration>();
+  private fence: PrivacyFence = new DefaultPrivacyFence();
 
   register(registration: ProviderRegistration): void {
     this.registry.set(registration.provider.id, registration);
@@ -163,11 +189,108 @@ export class ModelRouter {
   }
 
   /**
+   * 更新健康状态（由 models 页的周期性 healthCheck 调用）。
+   * 不健康的 Provider 不参与路由——但**仍留在注册表里**，UI 要能显示"某某端点不可达"。
+   */
+  setHealthy(providerId: string, healthy: boolean): void {
+    const reg: ProviderRegistration | undefined = this.registry.get(providerId);
+    if (reg === undefined) {
+      return;
+    }
+    this.registry.set(providerId, {
+      provider: reg.provider,
+      tier: reg.tier,
+      isDefault: reg.isDefault,
+      healthy
+    });
+  }
+
+  /** 注入隐私围栏实现（T0.9-14 的 ContextBuilder 接线点）。 */
+  setPrivacyFence(fence: PrivacyFence): void {
+    this.fence = fence;
+  }
+
+  /**
    * 按 §3.4 规则做出路由决策。
-   * TODO(T0.9-09): 实现规则 1–4（见类注释）。
+   *
+   * 无任何健康候选时抛 InferenceError(NO_PROVIDER)——**不返回一个注定失败的 id**：
+   * UI 需要据此引导用户"去下载本地模型 / 配置远程 Provider"，而不是让用户对着一个
+   * 永远转圈的气泡发呆。
    */
   route(request: RouteRequest): RouteDecision {
-    throw new Error('Not implemented: T0.9-09');
+    // 围栏（规则 4）：先把不允许承载本轮上下文的候选全部剔除
+    const all: ProviderRegistration[] = this.list();
+    const healthy: ProviderRegistration[] = all.filter((r: ProviderRegistration) => r.healthy);
+    const allowed: ProviderRegistration[] =
+      healthy.filter((r: ProviderRegistration) => this.fence.allows(r.provider, request));
+    const fencedToLocal: boolean = request.containsLocalOnly && allowed.length < healthy.length;
+
+    if (allowed.length === 0) {
+      const why: string = healthy.length === 0
+        ? '没有可用的模型：请先在「模型」页下载本地模型或配置远程 Provider'
+        : '本轮上下文含"仅本地"内容，但没有可用的本地模型（隐私围栏已拦下全部远程候选）';
+      throw new InferenceError(InferenceErrorCode.NO_PROVIDER, why);
+    }
+
+    // 规则 1：显式指定（用户覆盖 > Agent 绑定）
+    const explicitId: string | undefined =
+      request.userOverrideProviderId !== undefined ? request.userOverrideProviderId
+        : request.agentBoundProviderId;
+    let preferred: ProviderRegistration | undefined;
+    let reason: string = '';
+
+    if (explicitId !== undefined) {
+      preferred = ModelRouter.findById(allowed, explicitId);
+      if (preferred !== undefined) {
+        reason = request.userOverrideProviderId !== undefined ? 'user_override' : 'agent_bound';
+      } else {
+        // 指定了但不可用（不健康 / 被围栏剔除 / 已删除）——降级但**必须留痕**，
+        // 否则用户会以为"我明明绑了 GPT-4o"却在用本地小模型，且无从知晓。
+        Logger.warn(TAG, 'explicit provider unavailable, falling back', [
+          { key: 'requested', value: explicitId },
+          { key: 'fenced', value: fencedToLocal }
+        ]);
+        reason = fencedToLocal ? 'explicit_fenced_to_local' : 'explicit_unavailable';
+      }
+    }
+
+    // 规则 2：任务类别路由
+    if (preferred === undefined) {
+      const kind: TaskKind = request.taskKind;
+      if (prefersRemote(kind)) {
+        preferred = ModelRouter.findRemote(allowed);
+        if (preferred !== undefined) {
+          reason = reason.length > 0 ? `${reason}+task_prefers_remote` : 'task_prefers_remote';
+        }
+      }
+      if (preferred === undefined) {
+        const tier: ModelTier = defaultTierFor(kind);
+        preferred = ModelRouter.findLocalByTier(allowed, tier);
+        if (preferred !== undefined) {
+          reason = reason.length > 0 ? `${reason}+task_tier:${tier}` : `task_tier:${tier}`;
+        }
+      }
+      if (preferred === undefined) {
+        preferred = ModelRouter.findDefault(allowed);
+        if (preferred !== undefined) {
+          reason = reason.length > 0 ? `${reason}+global_default` : 'global_default';
+        }
+      }
+      if (preferred === undefined) {
+        preferred = allowed[0];
+        reason = reason.length > 0 ? `${reason}+any_available` : 'any_available';
+      }
+    }
+
+    // 规则 3：降级链（远程失败 → 本地 Standard → 其余）
+    const chain: string[] = ModelRouter.buildFallbackChain(allowed, preferred);
+
+    return {
+      providerId: preferred.provider.id,
+      fallbackChain: chain,
+      reason,
+      fencedToLocal
+    };
   }
 
   /**
@@ -178,5 +301,61 @@ export class ModelRouter {
    */
   static allowsLocalOnlyContent(kind: ProviderKind): boolean {
     return kind === 'local';
+  }
+
+  /**
+   * 降级链（§3.4-3）：首选之后，优先本地 Standard（离线可跑、无计费），再排其余本地，最后远程。
+   * 远程排最后是因为"远程失败"本就是最常见的降级触发因，把另一个远程排在前面收益有限。
+   */
+  private static buildFallbackChain(allowed: ProviderRegistration[],
+                                    preferred: ProviderRegistration): string[] {
+    const rest: ProviderRegistration[] =
+      allowed.filter((r: ProviderRegistration) => r.provider.id !== preferred.provider.id);
+    const localStandard: ProviderRegistration[] = rest.filter((r: ProviderRegistration) =>
+      r.provider.kind === 'local' && r.tier === ModelTier.STANDARD);
+    const otherLocal: ProviderRegistration[] = rest.filter((r: ProviderRegistration) =>
+      r.provider.kind === 'local' && r.tier !== ModelTier.STANDARD);
+    const remote: ProviderRegistration[] =
+      rest.filter((r: ProviderRegistration) => r.provider.kind === 'remote');
+
+    const chain: string[] = [];
+    for (const reg of localStandard) {
+      chain.push(reg.provider.id);
+    }
+    for (const reg of otherLocal) {
+      chain.push(reg.provider.id);
+    }
+    for (const reg of remote) {
+      chain.push(reg.provider.id);
+    }
+    return chain;
+  }
+
+  private static findById(regs: ProviderRegistration[], id: string): ProviderRegistration | undefined {
+    return regs.find((r: ProviderRegistration) => r.provider.id === id);
+  }
+
+  private static findRemote(regs: ProviderRegistration[]): ProviderRegistration | undefined {
+    const preferredDefault: ProviderRegistration | undefined =
+      regs.find((r: ProviderRegistration) => r.provider.kind === 'remote' && r.isDefault);
+    if (preferredDefault !== undefined) {
+      return preferredDefault;
+    }
+    return regs.find((r: ProviderRegistration) => r.provider.kind === 'remote');
+  }
+
+  private static findLocalByTier(regs: ProviderRegistration[], tier: ModelTier): ProviderRegistration | undefined {
+    const exact: ProviderRegistration | undefined =
+      regs.find((r: ProviderRegistration) => r.provider.kind === 'local' && r.tier === tier);
+    if (exact !== undefined) {
+      return exact;
+    }
+    // 没有目标档位就退到任意本地模型：V0.9 大多数设备上只会装一个本地模型，
+    // 这里退化为"就用它"，而不是因为档位不匹配而拒绝服务。
+    return regs.find((r: ProviderRegistration) => r.provider.kind === 'local');
+  }
+
+  private static findDefault(regs: ProviderRegistration[]): ProviderRegistration | undefined {
+    return regs.find((r: ProviderRegistration) => r.isDefault);
   }
 }

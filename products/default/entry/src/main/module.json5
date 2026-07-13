@@ -42,6 +42,20 @@
     // 麦克风（ohos.permission.MICROPHONE）等语音相关权限属于 V1.5 语音子系统（§17/§18），届时再加，此处刻意不申请。
     "requestPermissions": [
       {
+        // 判断当前是 Wi-Fi 还是蜂窝网，用于「仅 Wi-Fi 使用远程大模型」策略（§3.3 / T0.9-27 设置项）。
+        // 只读网络类型，不读 SSID、不读位置——权限最小化（红线 18）。
+        // networkPolicy='any'（默认）时根本不调该 API；wifi_only 下查询失败按 fail-closed 拒绝，
+        // 宁可提示用户，也不替他在蜂窝网上花流量。
+        "name": "ohos.permission.GET_NETWORK_INFO",
+        "reason": "$string:permission_network_info_reason",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
+      },
+      {
         "name": "ohos.permission.INTERNET",
         "reason": "$string:permission_internet_reason",
         "usedScene": {
