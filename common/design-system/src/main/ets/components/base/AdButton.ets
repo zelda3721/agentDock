@@ -68,6 +68,15 @@ export struct AdButton {
 
   build() {
     Button({ type: ButtonType.Normal, stateEffect: false }) {
+      // 交互染色 = Stack 自己的半透明背景（盖在 Button 底色之上），内距也在 Stack 上——
+      // 于是 Stack 的面积就是按钮的完整视觉区，染色天然全覆盖，**不需要任何铺满用的子节点**。
+      //
+      // 【真机翻车记录，勿回退】此前染色层是 Stack 里一个 `Column().width('100%').height('100%')`：
+      // ArkUI 里 Stack 的百分比子节点按**父约束（可用空间）**测量，而不是按兄弟内容——
+      // 这层把每个 AdButton 都吹到父容器的最大可用宽度（uitest dumpLayout 实证：文字 67px，
+      // 按钮 398px = 整个 Row）。在带 layoutWeight 兄弟的 Row 里（聊天输入区），
+      // 非权重的按钮**先测量**、吃光全部空间 → 权重列分到 0 → 输入框塌成竖条。
+      // 全 App 的按钮此前"看起来全宽"其实都是这个 bug 的巧合，不是设计。
       Stack() {
         Row({ space: AdSpace.s1 }) {
           if (this.renderGlyph()) {
@@ -90,16 +99,15 @@ export struct AdButton {
         if (this.loading) {
           this.loadingRing()
         }
-
-        // 自绘交互叠加层（系统 stateEffect 已关闭）
-        Column()
-          .width('100%')
-          .height('100%')
-          .backgroundColor(this.getOverlay())
-          .borderRadius(AdRadius.sm)
-          .hitTestBehavior(HitTestMode.None)
       }
       .alignContent(Alignment.Center)
+      .backgroundColor(this.getOverlay())
+      .borderRadius(AdRadius.sm)
+      .padding({ left: this.getPadding(), right: this.getPadding() })
+      .height('100%')
+      // fullWidth 时 Stack 要撑满 Button（否则染色与内容只占内容宽）；
+      // 非 fullWidth 时**绝不能**给百分比——那就是上面记录的翻车根因。
+      .constraintSize({ minWidth: this.fullWidth ? '100%' : 0 })
     }
     .type(ButtonType.Normal)
     .stateEffect(false)
@@ -107,7 +115,6 @@ export struct AdButton {
     .height(this.getHeight())
     // fullWidth 用 minWidth 100% 表达（避免给非通栏按钮写死宽度，内容宽由 Button 自适应）
     .constraintSize({ minWidth: this.fullWidth ? '100%' : this.getHeight() })
-    .padding({ left: this.getPadding(), right: this.getPadding() })
     .backgroundColor(this.getBackground())
     .border({
       width: this.getBorderWidth(),
