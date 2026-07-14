@@ -226,7 +226,7 @@ export class IngestPipeline {
         policy: policy !== null ? policy : { maxTokens: 512, overlapTokens: 64, keepTableWhole: true, headingAware: true }
       });
       if (drafts.length === 0) {
-        await this.repo.setDocStatus(docId, 'failed', '切片结果为空：文档内容过短或无法切分');
+        await this.repo.setDocStatus(docId, 'failed', '没有可索引的片段：文档内容过短或无法切分');
         return;
       }
 

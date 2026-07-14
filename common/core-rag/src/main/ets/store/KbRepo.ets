@@ -282,7 +282,7 @@ export class KbRepo {
    */
   async commitChunks(docId: string, libId: string, drafts: DraftChunk[], ftsTexts: string[]): Promise<void> {
     if (drafts.length !== ftsTexts.length) {
-      throw new Error('commitChunks: drafts 与 ftsTexts 数量不一致（编程错误）');
+      throw new Error('commit 参数不一致：drafts 与 ftsTexts 数量不同（编程错误）');
     }
     const now: number = Date.now();
     await this.rdb.withTransaction<void>(async (): Promise<void> => {
