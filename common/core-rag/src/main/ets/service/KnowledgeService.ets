@@ -145,11 +145,19 @@ export class KnowledgeService {
     return this.requirePipeline().importFiles(libId, uris);
   }
 
-  search(libIds: string[], query: string, opts?: SearchOpts): Promise<ScoredChunk[]> {
+  async search(libIds: string[], query: string, opts?: SearchOpts): Promise<ScoredChunk[]> {
     if (this.retriever === null) {
       throw new Error('KnowledgeService 尚未初始化');
     }
-    return this.retriever.search(libIds, query, opts);
+    const startedAt: number = Date.now();
+    const hits: ScoredChunk[] = await this.retriever.search(libIds, query, opts);
+    // §12-M2 验收口径打点：万级片段真机检索 <300ms（hilog 过滤 PERF|search 量测）
+    Logger.info(TAG, 'PERF|search', [
+      { key: 'ms', value: Date.now() - startedAt },
+      { key: 'libs', value: libIds.length },
+      { key: 'hits', value: hits.length }
+    ]);
+    return hits;
   }
 
   // --- 库 / 文档管理（§4.5 UI 数据口） -----------------------------------------

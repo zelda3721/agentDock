@@ -67,8 +67,8 @@ try {
   for (const rel of SOURCES) {
     const src = readFileSync(join(ROOT, rel), 'utf8');
     const rewritten = src.replace(/from\s+'([^']+)'/g, (_m, spec) => {
-      if (spec === '@kit.CoreFileKit') {
-        return `from './kit-stub.ts'`;   // TextParser.parse 才用 fileIo；金标集直喂文本不触达
+      if (spec.startsWith('@kit.')) {
+        return `from './kit-stub.ts'`;   // 平台 Kit 统一打桩；金标集直喂文本，不触达文件/解压
       }
       if (spec.startsWith('.')) {
         return `from './${basename(spec)}.ts'`;
@@ -90,10 +90,14 @@ try {
 
   // 2) 平台 Kit 桩：Parser.ets 顶层 import { fileIo }，转译后以值形态残留
   writeFileSync(join(build, 'kit-stub.ts'), [
-    '// @kit.CoreFileKit 桩（仅供金标集转译运行；金标集直喂文本，不走 TextParser.parse）',
+    '// 平台 Kit 桩（仅供金标集转译运行；金标集直喂文本，不走文件读取与解压）',
     'export const fileIo = {',
     "  readText: async (_uri: string): Promise<string> => { throw new Error('harness 不读平台文件'); },",
+    '  accessSync: (_p: string): boolean => false,',
+    '  mkdirSync: (_p: string, _r?: boolean): void => {},',
+    '  rmdirSync: (_p: string): void => {},',
     '};',
+    "export const zlib = { decompressFile: async (_a: string, _b: string): Promise<void> => { throw new Error('harness 不解压'); } };",
     '',
   ].join('\n'));
 

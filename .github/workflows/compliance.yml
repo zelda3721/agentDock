@@ -118,6 +118,12 @@ jobs:
       - name: docx 抽取回归（跑真实源码）
         run: node tools/eval/docx-parse/run-tests.mjs
 
+      # T0.9-26：万级片段检索复杂度门禁（宿主侧信号；真机口径由 PERF|search 打点量测）。
+      # 由来：lib_id 过滤曾诱使 SQLite 反转计划（p50 665ms），CROSS JOIN 钉住后 1ms——
+      # 本步骤防该修复被无意改回。
+      - name: RAG 检索压测（10k 片段宿主侧）
+        run: node tools/eval/rag-perf/run-perf.mjs
+
       # T0.9-22 / §12-M2：RAG 金标集 30 组，recall@6 ≥85% 为 V0.9 发布门禁。
       # 同一方法论：转译直跑 Parser/Chunker/Tokenize/Retriever 真实源码 + Schema 真 DDL，
       # node:sqlite 建 FTS5 影子表；KbRepo.searchFts 的 SQL 逐字镜像并在 runner 里核对防漂移。

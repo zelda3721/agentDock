@@ -135,8 +135,8 @@ console.log(`[rag-gold] 语料入库：${corpusFiles.length} 篇文档 / ${total
 export const MIRRORED_SEARCH_SQL = `SELECT c.id, c.doc_id, c.lib_id, c.seq, c.text, c.token_count, c.meta,
               l.privacy_level, bm25(kb_chunk_fts) AS score
          FROM kb_chunk_fts
-         JOIN kb_chunk c ON c.rowid = kb_chunk_fts.rowid
-         JOIN kb_library l ON l.id = c.lib_id
+        CROSS JOIN kb_chunk c ON c.rowid = kb_chunk_fts.rowid
+        CROSS JOIN kb_library l ON l.id = c.lib_id
         WHERE kb_chunk_fts MATCH ?
           AND c.lib_id IN ({placeholders})
         ORDER BY score

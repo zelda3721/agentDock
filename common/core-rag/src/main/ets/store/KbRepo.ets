@@ -344,6 +344,11 @@ export class KbRepo {
   /**
    * FTS5 关键词召回：MATCH 影子列，bm25 升序（越小越相关）→ rank 1-based。
    * privacy_level 逐块带出（围栏在 ContextBuilder 统一过滤，检索层不过滤——见 Retriever 注释）。
+   *
+   * 【CROSS JOIN 是性能修复，不是风格】lib_id 过滤 + idx_kb_chunk_lib 会诱使 SQLite
+   * 反转计划（从 lib 索引驱动、逐行探 FTS）：宿主侧 10k 片段实测 p50 665ms→1.0ms。
+   * CROSS JOIN 钉住连接顺序（FTS MATCH 先行 → rowid 主键回查 → lib 过滤逐候选行做），
+   * 语义与普通 JOIN 完全一致。改回 JOIN 会被 tools/eval/rag-perf 复杂度门禁拦下。
    */
   async searchFts(libIds: string[], query: string, topK: number): Promise<RankedHit[]> {
     if (libIds.length === 0) {
@@ -367,8 +372,8 @@ export class KbRepo {
       `SELECT c.id, c.doc_id, c.lib_id, c.seq, c.text, c.token_count, c.meta,
               l.privacy_level, bm25(kb_chunk_fts) AS score
          FROM kb_chunk_fts
-         JOIN kb_chunk c ON c.rowid = kb_chunk_fts.rowid
-         JOIN kb_library l ON l.id = c.lib_id
+        CROSS JOIN kb_chunk c ON c.rowid = kb_chunk_fts.rowid
+        CROSS JOIN kb_library l ON l.id = c.lib_id
         WHERE kb_chunk_fts MATCH ?
           AND c.lib_id IN (${placeholders})
         ORDER BY score
