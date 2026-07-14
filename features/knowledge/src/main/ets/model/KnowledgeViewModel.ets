@@ -8,7 +8,7 @@
  * 检索调试器（§4.5 第 3 条）移入 V1.0 机动项 T1.0-13。
  */
 
-import { KbDocument, KbLibrary, KnowledgeService } from 'core-rag';
+import { KbChunk, KbDocument, KbLibrary, KnowledgeService } from 'core-rag';
 
 /** 断点标识（设计文档 §8）。 */
 export type BreakpointKey = 'sm' | 'md' | 'lg';
@@ -127,9 +127,16 @@ export class KnowledgeFacade {
     await KnowledgeService.get().deleteDocument(docId);
   }
 
-  public previewDocument(docId: string, focusChunkId: string): Promise<DocPreviewBlock[]> {
-    // TODO(T0.9-18 打磨项，裁剪顺序第 2 位): 原文预览——chunk 按 seq 拼接 + 定位高亮
-    throw new Error('Not implemented: T0.9-18（原文预览属打磨项，本版先交付库/文档管理与导入）');
+  /** 原文预览（§4.5）：片段按 seq 升序返回（渲染层拼接展示；focusChunkId 供定位高亮） */
+  public async previewDocument(docId: string, focusChunkId: string): Promise<DocPreviewBlock[]> {
+    await KnowledgeService.get().whenReady();
+    const chunks: KbChunk[] = await KnowledgeService.get().listChunks(docId);
+    let offset: number = 0;
+    return chunks.map((c: KbChunk): DocPreviewBlock => {
+      const block: DocPreviewBlock = { chunkId: c.id, text: c.text, offset: offset };
+      offset += c.text.length;
+      return block;
+    });
   }
 
   public exportAdkb(libId: string, targetUri: string): Promise<void> {

@@ -303,6 +303,25 @@ export class KbRepo {
     });
   }
 
+  /** 文档全部片段（按 seq 升序）——原文预览的数据源（§4.5；引用点击定位也用它） */
+  async listChunks(docId: string): Promise<KbChunk[]> {
+    return this.rdb.queryRows<KbChunk>(
+      `SELECT id, doc_id, seq, text, token_count, meta FROM kb_chunk WHERE doc_id = ? ORDER BY seq ASC;`,
+      [docId] as Array<SqlArg>,
+      (rs: relationalStore.ResultSet): KbChunk => {
+        const chunk: KbChunk = {
+          id: rs.getString(rs.getColumnIndex('id')),
+          docId: rs.getString(rs.getColumnIndex('doc_id')),
+          seq: rs.getLong(rs.getColumnIndex('seq')),
+          text: rs.getString(rs.getColumnIndex('text')),
+          tokenCount: rs.getLong(rs.getColumnIndex('token_count')),
+          meta: parseMeta(rs.getString(rs.getColumnIndex('meta')))
+        };
+        return chunk;
+      }
+    );
+  }
+
   /** 文档的切片数（进度与调试用） */
   async chunkCount(docId: string): Promise<number> {
     return (await this.rdb.queryScalarInt(

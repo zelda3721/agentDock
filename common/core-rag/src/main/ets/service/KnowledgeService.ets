@@ -24,6 +24,7 @@ import { IngestPipeline, IngestTaskPayload } from '../ingest/IngestPipeline';
 import { FtsSearchPort, Retriever } from '../query/Retriever';
 import {
   ImportTicket,
+  KbChunk,
   KbDocument,
   KbLibrary,
   PrivacyLevel,
@@ -157,6 +158,11 @@ export class KnowledgeService {
 
   listDocuments(libId: string): Promise<KbDocument[]> {
     return this.requireRepo().listDocuments(libId);
+  }
+
+  /** 文档全部片段（原文预览，§4.5） */
+  listChunks(docId: string): Promise<KbChunk[]> {
+    return this.requireRepo().listChunks(docId);
   }
 
   /** 文档标题批查（chat 侧构造引用明细用；一次取齐避免 N+1） */

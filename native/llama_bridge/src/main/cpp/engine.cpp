@@ -121,6 +121,35 @@ ErrorCode TokenizeText(const llama_vocab* vocab, const std::string& text, bool a
 // 流式 stop 串处理：返回 text 尾部与某个 stop 串**前缀**重叠的最长长度。
 // 这段尾巴必须"扣留"不回吐——否则 stop 串会被一个 token 一个 token 地漏给 UI，
 // 等下一个 token 拼出完整 stop 串时已经晚了（§3.2 流式契约：吐出去的字不能撤回）。
+// 末尾处于多字节 UTF-8 序列中间时，需要扣留的字节数（0 = 末尾是完整字符边界）。
+// 字节级 BPE 会把一个汉字（3 字节）劈进两个 token——把半个字符发出去，
+// napi_create_string_utf8 收到非法序列就是乱码（真机实证："342 米"的"米"变 "ç±³"）。
+size_t Utf8IncompleteTailLen(const std::string& text) {
+  const size_t n = text.size();
+  // 从末尾往回最多看 3 个字节，找多字节序列的首字节（0b11xxxxxx）
+  for (size_t back = 1; back <= 3 && back <= n; ++back) {
+    const unsigned char c = static_cast<unsigned char>(text[n - back]);
+    if ((c & 0x80U) == 0) {
+      return 0;                       // ASCII：边界完整
+    }
+    if ((c & 0xC0U) == 0xC0U) {       // 找到首字节：算该序列应有的长度
+      size_t expect = 0;
+      if ((c & 0xE0U) == 0xC0U) {
+        expect = 2;
+      } else if ((c & 0xF0U) == 0xE0U) {
+        expect = 3;
+      } else if ((c & 0xF8U) == 0xF0U) {
+        expect = 4;
+      } else {
+        return 0;                     // 非法首字节：不扣留（交给转换层按无效处理）
+      }
+      return back < expect ? back : 0;  // 序列没凑齐 → 扣留这 back 个字节
+    }
+    // 续字节（0b10xxxxxx）：继续往前找首字节
+  }
+  return 0;  // 连续 3 个续字节都没找到首字节：序列本身非法，不扣留
+}
+
 size_t StopSuffixHold(const std::string& text, const std::vector<std::string>& stops) {
   size_t hold = 0;
   for (const std::string& s : stops) {
@@ -511,17 +540,30 @@ ErrorCode Engine::Generate(SessionHandle handle, const GenerateParams& params,
     }
     if (hit != std::string::npos) {
       if (hit > 0) {
-        onToken(pending.substr(0, hit), false);
+        std::string head = pending.substr(0, hit);
+        const size_t tail = Utf8IncompleteTailLen(head);
+        if (tail > 0) {
+          head.resize(head.size() - tail);  // stop 边界劈开了多字节字符：残缺尾不发（本就要被丢弃）
+        }
+        if (!head.empty()) {
+          onToken(head, false);
+        }
       }
       pending.clear();
       break;
     }
 
-    // 未命中：把"确定不会成为 stop 串前缀"的部分回吐，其余留在 pending 里等下一个 token。
-    const size_t hold = StopSuffixHold(pending, params.stop);
+    // 未命中：把"确定不会成为 stop 串前缀、且不劈开 UTF-8 字符"的部分回吐，
+    // 其余留在 pending 里等下一个 token（两种扣留都作用于尾部，取更长者）。
+    size_t hold = StopSuffixHold(pending, params.stop);
     if (pending.size() > hold) {
-      onToken(pending.substr(0, pending.size() - hold), false);
-      pending.erase(0, pending.size() - hold);
+      const size_t emitLen = pending.size() - hold;
+      const size_t utf8Tail = Utf8IncompleteTailLen(pending.substr(0, emitLen));
+      const size_t emit = emitLen - utf8Tail;
+      if (emit > 0) {
+        onToken(pending.substr(0, emit), false);
+        pending.erase(0, emit);
+      }
     }
 
     llama_batch next = llama_batch_get_one(&token, 1);

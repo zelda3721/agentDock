@@ -92,21 +92,14 @@ export struct ChatPage {
   @State private ctx: CtxUsageVM = new CtxUsageVM();
   @State private pageError: string = '';
   /**
-   * 顶栏「当前大脑」。
-   *
-   * 两个时态，缺一不可：
-   *  - brainVM（**当前事实**：下一条消息会用谁 / 有没有大脑）——决定顶栏**显不显示**指示器、
-   *    输入区能不能用。真机上那条谎就出在这里：以前顶栏只有"历史事实"，没有模型时它照旧显示
-   *    「本地 · local:qwen2.5-0.5b」，用户以为能发送，一按发送必然 NO_PROVIDER 失败。
-   *  - brain / brainModel（**历史事实**：最近一条已完成回答的来源）——有回答时以它为准，
-   *    因为它是那条回答**实际**由谁生成的，不能被"当前默认模型"改写（改写就等于篡改溯源）。
-   * TODO(T0.9-10)：接 ModelRouter.current() 与切换菜单后，两者统一为「下一条消息会用谁」。
+   * 顶栏「当前大脑」= **当前事实**（下一条消息会用谁，已按会话绑定的智能体裁决）。
+   * 历史事实（某条回答实际由谁生成）在每条消息的溯源条上，永不改写。
+   * （曾经的"历史事实优先"双时态已废除——真机实测它让切换模型后的旧会话顶栏
+   * 停在上一轮旧模型上，对话一次才变；顶栏是发送前的承诺，必须跟着绑定即时走。）
    */
   @State private brainVM: BrainVM = new BrainVM();
   @State private brain: AdBrainKind = AdBrainKind.LOCAL;
   @State private brainModel: string = '';
-  /** 是否已有"历史事实"（至少一条已完成回答）：没有时顶栏用当前 Provider 顶上，不空着也不猜 */
-  @State private brainFromHistory: boolean = false;
   /** 检视 Sheet：被检视消息的溯源（三端一致，[R-70] 单内容 InspectorPane + AdSheet 容器） */
   @State private inspected: AdProvenance = new AdProvenance(AdBrainKind.LOCAL, '');
   @State private hasInspection: boolean = false;
@@ -149,10 +142,12 @@ export struct ChatPage {
       this.ctx = usage;
     };
     host.onBrain = (brain: BrainVM): void => {
+      // 顶栏 = **当前事实**（下一条消息会用谁——已按会话绑定的智能体裁决，见 currentBrain(convId)）。
+      // 历史事实（某条回答实际由谁生成）在每条消息自己的溯源条上，不由顶栏承载。
+      // 真机教训：此前"历史事实优先"让切换模型后的旧会话顶栏停在上一轮的旧模型上，
+      // 对话一次才变——顶栏是发送前的承诺，必须跟着绑定即时走。
       this.brainVM = brain;
-      // 还没有任何已完成回答时，顶栏显示**下一条消息会用谁**（当前事实，仍然为真）；
-      // 一旦有了回答，syncBrain() 会用那条回答的真实来源覆盖它（历史事实优先，不许改写溯源）。
-      if (!this.brainFromHistory && brain.available) {
+      if (brain.available) {
         this.brain = brain.kind;
         this.brainModel = brain.modelName;
       }
@@ -166,7 +161,6 @@ export struct ChatPage {
     host.onMessageCountChanged = (count: number): void => {
       this.messageCount = count;
       this.messagesLoading = false;
-      this.syncBrain();
       this.scroller.scrollEdge(Edge.Bottom);
     };
     // 流式跟随：只调 Scroller，不 setState（见类注释的性能红线）
@@ -522,30 +516,6 @@ export struct ChatPage {
     }
   }
 
-  /**
-   * 当前大脑 = **最近一条已完成回答的实际来源**（不是配置项）。
-   * 流式中的占位消息不参与——它的溯源要等流结束才由 core-agent 写全，提前取就是在猜。
-   * TODO(T0.9-10)：接 ModelRouter.current() 后改为「下一条消息会用谁」，与切换菜单同源。
-   */
-  private syncBrain(): void {
-    for (let i = this.controller.messages.lastIndex(); i >= 0; i--) {
-      const item: ChatMessageVM | null = this.controller.messages.itemAt(i);
-      if (item === null || !item.showRail || item.status === AdMessageStatus.STREAMING) {
-        continue;
-      }
-      this.brain = item.provenance.isLocal() ? AdBrainKind.LOCAL : AdBrainKind.REMOTE;
-      this.brainModel = item.provenance.modelName;
-      this.brainFromHistory = true;
-      return;
-    }
-    // 这个会话还没有任何已完成回答：顶栏改用**当前 Provider**（下一条消息会用谁）。
-    // 切会话时必须复位，否则上一个会话的历史来源会跟着显示在新会话上——那是张冠李戴。
-    this.brainFromHistory = false;
-    if (this.brainVM.available) {
-      this.brain = this.brainVM.kind;
-      this.brainModel = this.brainVM.modelName;
-    }
-  }
 
   /** hover Tooltip：ctx 长度 / 生成速度（全仪表体，由页面格式化） */
   private brainTooltip(): string {

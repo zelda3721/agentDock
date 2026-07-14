@@ -16,7 +16,7 @@ import {
   AdTagKind,
   AdType
 } from 'design-system';
-import { BreakpointKey, DocStatus, KbDocItem, KnowledgeFacade } from '../model/KnowledgeViewModel';
+import { BreakpointKey, DocPreviewBlock, DocStatus, KbDocItem, KnowledgeFacade } from '../model/KnowledgeViewModel';
 
 /**
  * 知识库文档列表（T0.9-18 —— 设计文档 §4.5 文档级）。
@@ -70,6 +70,10 @@ export struct KbDocumentList {
   @State private loadState: string = 'loading';
   @State private errorText: string = '';
   @State private importing: boolean = false;
+  /** 原文预览 Sheet（§4.5）：点已就绪文档打开；片段按 seq 拼接展示 */
+  @State private previewOpen: boolean = false;
+  @State private previewTitle: string = '';
+  @State private previewBlocks: DocPreviewBlock[] = [];
 
   private facade: KnowledgeFacade = new KnowledgeFacade();
   /** 摄取是异步任务：短周期轮询把 parsing→ready 的状态变化带回列表（事件总线接线属打磨项） */
@@ -241,7 +245,11 @@ export struct KbDocumentList {
                   ? item.errorMessage
                   : item.mimeType,
                 a11yText: `文档 ${item.title}，${statusLabel(item.status)}` +
-                  (item.errorMessage.length > 0 ? `，${item.errorMessage}` : ''),
+                  (item.errorMessage.length > 0 ? `，${item.errorMessage}` : '') +
+                  (item.status === 'ready' ? '。双击预览原文。' : ''),
+                onAction: () => {
+                  this.openPreview(item);
+                },
                 trailing: () => {
                   this.trailingSlot(item)
                 }
@@ -256,6 +264,61 @@ export struct KbDocumentList {
     .width('100%')
     .height('100%')
     .backgroundColor(AdColor.bg)
+    // 原文预览（§4.5）：Sheet 容器与检视同一形态（三端一致裁量）
+    .bindSheet($$this.previewOpen, this.previewSheet(), {
+      detents: [SheetSize.MEDIUM, SheetSize.LARGE],
+      showClose: true,
+      backgroundColor: AdColor.surface
+    })
+  }
+
+  /** 打开预览：仅对已就绪文档（解析中/失败的没有片段可看，不装作有） */
+  private async openPreview(item: KbDocItem): Promise<void> {
+    if (item.status !== 'ready') {
+      return;
+    }
+    try {
+      this.previewTitle = item.title;
+      this.previewBlocks = await this.facade.previewDocument(item.docId, '');
+      this.previewOpen = true;
+    } catch (e) {
+      this.errorText = `原文没能读出来：${(e as Error).message}`;
+      this.loadState = 'failed';
+    }
+  }
+
+  @Builder
+  previewSheet() {
+    Column({ space: AdSpace.s3 }) {
+      Text(this.previewTitle).docHeaderTitle().width('100%')
+      Text(`${this.previewBlocks.length} 个片段（按文档顺序）`)
+        .fontSize(AdType.caption.size)
+        .lineHeight(AdType.caption.lineHeight)
+        .fontFamily(AdType.caption.family)
+        .fontColor(AdColor.inkTertiary)
+        .width('100%')
+      Scroll() {
+        Column({ space: AdSpace.s3 }) {
+          ForEach(this.previewBlocks, (block: DocPreviewBlock) => {
+            Text(block.text)
+              .fontSize(AdType.bodyM.size)
+              .lineHeight(AdType.bodyM.lineHeight)
+              .fontFamily(AdType.bodyM.family)
+              .fontColor(AdColor.ink)
+              .width('100%')
+          }, (block: DocPreviewBlock) => block.chunkId)
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+      }
+      .layoutWeight(1)
+      .width('100%')
+      .scrollBar(BarState.Auto)
+      .align(Alignment.TopStart)
+    }
+    .width('100%')
+    .height('100%')
+    .padding(AdSpace.s4)
   }
 
   @Builder
