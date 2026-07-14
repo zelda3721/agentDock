@@ -133,25 +133,35 @@ export interface FtsSearchPort {
   searchFts(libIds: string[], query: string, topK: number): Promise<RankedHit[]>;
 }
 
+/**
+ * 向量路召回端口（KnowledgeService 实现：query embed → 每库 HNSW → vec_ref 回查 chunk）。
+ * 无本地 embedding 能力/库无向量时返回空数组——向量路诚实缺席，不是错误（FTS 兜底）。
+ */
+export interface VectorSearchPort {
+  searchVector(libIds: string[], query: string, topK: number): Promise<RankedHit[]>;
+}
+
 export class Retriever {
   private readonly fts: FtsSearchPort;
+  private readonly vector: VectorSearchPort | null;
 
-  constructor(fts: FtsSearchPort) {
+  constructor(fts: FtsSearchPort, vector?: VectorSearchPort) {
     this.fts = fts;
+    this.vector = vector === undefined ? null : vector;
   }
 
   /**
-   * 检索（附录 A：KnowledgeService.search）。
-   *
-   * 【V0.9 现状：FTS 单路，不是混合检索】向量路依赖 vec_index NAPI（T0.9-11，hnswlib
-   * 交叉编译未交付）与本地 embedding 模型——在此之前 searchVector 诚实缺席，
-   * fuseRRF 以空向量路输入退化为 FTS 单路排序（RRF 数学对单路输入即恒等排序）。
-   * TODO(T0.9-11): vec_index 交付后在此并行发起两路（不得串行，<300ms 验收）。
+   * 检索（附录 A：KnowledgeService.search，T0.9-14 + T0.9-11）。
+   * 两路**并行**发起（§4.3：串行会让检索耗时翻倍，§12-M2 万级片段 <300ms 验收），
+   * RRF(k=60) 融合。向量路失败/缺席时以空输入进 fuseRRF（对单路输入即恒等排序）。
    */
   async search(libIds: string[], query: string, opts?: SearchOpts): Promise<ScoredChunk[]> {
     const resolved: SearchOpts = Retriever.resolveOpts(opts);
-    const ftsHits: RankedHit[] = await this.fts.searchFts(libIds, query, resolved.ftsTopK ?? 24);
-    const fused: ScoredChunk[] = fuseRRF([], ftsHits, resolved.rrfK ?? 60);
+    const routes: [RankedHit[], RankedHit[]] = await Promise.all([
+      this.searchVectorRoute(libIds, query, resolved.vectorTopK ?? 24),
+      this.fts.searchFts(libIds, query, resolved.ftsTopK ?? 24)
+    ]);
+    const fused: ScoredChunk[] = fuseRRF(routes[0], routes[1], resolved.rrfK ?? 60);
     return fused.slice(0, resolved.topK ?? 6);
   }
 
@@ -161,22 +171,36 @@ export class Retriever {
   async searchWithTrace(libIds: string[], query: string, opts?: SearchOpts): Promise<RetrievalTrace> {
     const resolved: SearchOpts = Retriever.resolveOpts(opts);
     const t0: number = Date.now();
+    const vectorHits: RankedHit[] = await this.searchVectorRoute(libIds, query, resolved.vectorTopK ?? 24);
+    const tv: number = Date.now();
     const ftsHits: RankedHit[] = await this.fts.searchFts(libIds, query, resolved.ftsTopK ?? 24);
     const t1: number = Date.now();
-    const fused: ScoredChunk[] = fuseRRF([], ftsHits, resolved.rrfK ?? 60);
+    const fused: ScoredChunk[] = fuseRRF(vectorHits, ftsHits, resolved.rrfK ?? 60);
     const t2: number = Date.now();
     const trace: RetrievalTrace = {
       rewrittenQuery: query,   // 查询改写 V1.0 Could：未实现即原样（不假装改写过）
-      vectorHits: [],          // T0.9-11 前诚实为空
+      vectorHits: vectorHits,
       ftsHits: ftsHits,
       fused: fused,
       reranked: fused.slice(0, resolved.topK ?? 6),   // reranker V1.0 Should：关闭即取 RRF 序
-      vectorMs: 0,
-      ftsMs: t1 - t0,
+      vectorMs: tv - t0,
+      ftsMs: t1 - tv,
       fuseMs: t2 - t1,
       rerankMs: 0
     };
     return trace;
+  }
+
+  /** 向量路：端口缺席/查询失败 → 空（FTS 兜底），失败原因由端口实现方记日志。 */
+  private async searchVectorRoute(libIds: string[], query: string, topK: number): Promise<RankedHit[]> {
+    if (this.vector === null) {
+      return [];
+    }
+    try {
+      return await this.vector.searchVector(libIds, query, topK);
+    } catch (e) {
+      return [];   // 向量路任何异常都不拖垮检索主链路（端口内已记日志）
+    }
   }
 
   /**

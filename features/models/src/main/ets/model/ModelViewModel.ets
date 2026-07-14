@@ -272,12 +272,18 @@ export class ModelFacade {
         await this.repo().markReady(modelId, final.targetPath, final.downloadedBytes);
         this.publishDownload(modelId, DownloadState.READY as string, final.downloadedBytes,
           final.totalBytes, 0, '', DownloadFailureKind.NONE);
-        // 首个就绪的本地模型自动选中：[R-53] 默认值必须是好的——
-        // 用户下完模型就该能问第一句，而不是再去找一个"启用"开关。
-        // 已经有选中的模型时**不抢**（§4.1：完成时只提示 [切换]，绝不自动替换正在用的大脑）。
-        const active: LocalModelRow | null = await this.repo().getActiveModel();
-        if (active === null) {
-          await this.repo().setActiveModel(modelId);
+        if (item.kind === 'embedding') {
+          // 向量模型就绪：不进"当前模型"竞争（它不是对话大脑）；
+          // 重播一次 active 事件让 entry 重建 LocalProvider——embed 通路即时生效（T0.9-11）
+          await this.repo().republishActive();
+        } else {
+          // 首个就绪的本地模型自动选中：[R-53] 默认值必须是好的——
+          // 用户下完模型就该能问第一句，而不是再去找一个"启用"开关。
+          // 已经有选中的模型时**不抢**（§4.1：完成时只提示 [切换]，绝不自动替换正在用的大脑）。
+          const active: LocalModelRow | null = await this.repo().getActiveModel();
+          if (active === null) {
+            await this.repo().setActiveModel(modelId);
+          }
         }
       } else if (final.state === DownloadState.PAUSED) {
         await this.repo().updateProgress(modelId, DownloadState.PAUSED, final.downloadedBytes);
@@ -321,6 +327,11 @@ export class ModelFacade {
     await this.repo().clearActiveIfMatches(modelId);
     // 记录不删：清单里仍有这个模型，它只是回到"未下载"态（删了记录下次 init 又会登记回来）。
     await this.repo().updateProgress(modelId, DownloadState.NONE, 0);
+    const deleted: ModelManifestItem | undefined = this.find(modelId);
+    if (deleted !== undefined && deleted.kind === 'embedding') {
+      // 删的是向量模型：重建 LocalProvider（embed 通路随之失效，Provider 配置不能留旧路径）
+      await this.repo().republishActive();
+    }
     this.publishDownload(modelId, DownloadState.NONE as string, 0, 0, 0, '', DownloadFailureKind.NONE);
     Logger.info(TAG, 'model deleted', [{ key: 'model_id', value: modelId }]);
   }
@@ -519,7 +530,7 @@ export class ModelFacade {
       name: item.name,
       // family：清单没有这个字段，不编——留空比编一个"qwen"更诚实（列的默认值就是空串）。
       family: '',
-      purpose: 'chat',
+      purpose: item.kind === 'embedding' ? 'embed' : 'chat',
       quant: item.quant,
       tier: item.tier,
       ctxLen: item.contextLength,

@@ -41,6 +41,7 @@ import type {
 } from '../model/Types';
 import { IngestStep } from '../model/Types';
 import { KbRepo } from '../store/KbRepo';
+import { VectorIndexManager } from '../query/VectorIndexManager';
 import { ParseResult, ParserRegistry } from './Parser';
 import { Chunker, DraftChunk } from './Chunker';
 import { ftsTokenize } from './Tokenize';
@@ -116,6 +117,10 @@ export class IngestPipeline {
   private readonly files: FileRepo;
   /** null = 无队列（同步直跑，测试/降级路径）；正常装配下由 KnowledgeService 注入 */
   private readonly queue: TaskQueue | null;
+  /** 向量索引（T0.9-11）；null = 未装配（Node 回归等无原生层场景，EMBED 步整体跳过） */
+  private vectors: VectorIndexManager | null = null;
+  /** embedding Provider 候选源（装配注入：ProviderRegistry.list()；空数组 = 无候选） */
+  private embedCandidates: () => InferenceProvider[] = (): InferenceProvider[] => [];
 
   constructor(repo: KbRepo, parsers: ParserRegistry, chunker: Chunker,
               files: FileRepo, queue: TaskQueue | null) {
@@ -124,6 +129,12 @@ export class IngestPipeline {
     this.chunker = chunker;
     this.files = files;
     this.queue = queue;
+  }
+
+  /** T0.9-11 装配点：向量索引 + embedding 候选（KnowledgeService.init 调用） */
+  attachVectorStack(vectors: VectorIndexManager, embedCandidates: () => InferenceProvider[]): void {
+    this.vectors = vectors;
+    this.embedCandidates = embedCandidates;
   }
 
   /**
@@ -187,10 +198,9 @@ export class IngestPipeline {
    * 幂等（契约 C3）：status==='ready' 直接返回；commitChunks 先清后写——
    * 重复执行/中途被杀后重跑均无副作用。
    *
-   * 【EMBED 步（§4.2-[4]）诚实缺席】vec_index NAPI（T0.9-11 hnswlib 交叉编译）与
-   * 本地 embedding 模型链路未交付：vec_ref 落 NULL、检索走 FTS 单路（Retriever 同源说明）。
-   * TODO(T0.9-11): 交付后在 CHUNK 与 COMMIT 之间插入 32 条/批 embed + R3 批边界抢占检查，
-   * status 经 'embedding' 态——**在那之前本流水线不进入 embedding 态**（状态不说谎）。
+   * EMBED 步（§4.2-[4]，T0.9-11）在 COMMIT 之后执行（embedDocument）：FTS 先可用，
+   * 向量作为增强补齐；无合规 embedding Provider 时 vec_ref 留 NULL、走 FTS 单路（记日志）。
+   * TODO(T1.0): R3 批边界 AbortSignal 抢占检查（当前批量小、单批耗时短，抢占收益随库规模再接）。
    */
   async processDocument(docId: string): Promise<void> {
     const doc = await this.repo.getDocument(docId);
@@ -235,6 +245,11 @@ export class IngestPipeline {
         ftsTexts.push(ftsTokenize(d.text));
       }
       await this.repo.commitChunks(docId, doc.libId, drafts, ftsTexts);
+
+      // [4] EMBED（T0.9-11）：FTS 已可用后补向量——embed 失败不拖垮文档
+      // （vec_ref 留 NULL，该文档走 FTS 单路，原因写日志；围栏经 selectEmbedProvider 强制）
+      await this.embedDocument(docId, doc.libId);
+
       await this.repo.refreshStats(doc.libId);
       Logger.info(TAG, 'PERF|ingest doc committed', [
         { key: 'doc', value: docId },
@@ -246,6 +261,65 @@ export class IngestPipeline {
       Logger.error(TAG, 'ingest failed', [{ key: 'doc', value: docId }, { key: 'err', value: msg }]);
       await this.repo.setDocStatus(docId, 'failed', msg);
       throw new Error(msg);   // 抛给 TaskQueue 按 maxAttempts 重试（瞬时 IO 失败可自愈）
+    }
+  }
+
+  /**
+   * [4] EMBED（T0.9-11，§4.2-[4]）：32 条/批 embed → 向量索引追加 → vec_ref 回填。
+   *
+   * 诚实降级（不抛错）：向量栈未装配 / 无合规 embedding Provider / embed 中途失败
+   * → 本文档 vec_ref 留 NULL（或部分回填），检索退回 FTS 单路，原因记日志。
+   * FTS 在 COMMIT 已就绪——embedding 是增强，不是文档可用性的前置条件。
+   *
+   * 顺序契约：向量先落索引（平面文件 fsync）再回填 vec_ref——反过来会出现
+   * "账上有行号、文件里没向量"的谎账；正向最坏是孤儿向量（可由重建压实）。
+   */
+  private async embedDocument(docId: string, libId: string): Promise<void> {
+    if (this.vectors === null) {
+      return;   // 无原生向量栈（Node 回归等场景）：FTS 单路，诚实缺席
+    }
+    const lib: KbLibrary | null = await this.repo.getLibrary(libId);
+    if (lib === null) {
+      return;
+    }
+    let provider: InferenceProvider;
+    try {
+      provider = this.selectEmbedProvider(lib, this.embedCandidates());
+    } catch (e) {
+      Logger.info(TAG, 'embed skipped: no eligible provider (FTS-only for this doc)', [
+        { key: 'doc', value: docId }, { key: 'reason', value: (e as Error).message }
+      ]);
+      return;
+    }
+    try {
+      await this.repo.setDocStatus(docId, 'embedding', null);
+      const chunks = await this.repo.listChunks(docId);
+      let embedded: number = 0;
+      for (let i = 0; i < chunks.length; i += EMBED_BATCH_SIZE) {
+        const batch = chunks.slice(i, i + EMBED_BATCH_SIZE);
+        const texts: string[] = [];
+        for (const c of batch) {
+          texts.push(c.text);
+        }
+        const vectors: Float32Array[] = await provider.embed(texts);
+        const refs: number[] = await this.vectors.addVectors(libId, vectors);
+        const ids: string[] = [];
+        for (const c of batch) {
+          ids.push(c.id);
+        }
+        await this.repo.setVecRefs(ids, refs);
+        embedded += batch.length;
+      }
+      await this.repo.setDocStatus(docId, 'ready', null);
+      Logger.info(TAG, 'PERF|embed doc done', [
+        { key: 'doc', value: docId }, { key: 'chunks', value: embedded }
+      ]);
+    } catch (e) {
+      // embed 中途失败：已回填的批次有效，未回填的走 FTS；文档仍 ready（检索可用是真话）
+      await this.repo.setDocStatus(docId, 'ready', null);
+      Logger.warn(TAG, 'embed failed midway: doc stays FTS-searchable', [
+        { key: 'doc', value: docId }, { key: 'err', value: (e as Error).message }
+      ]);
     }
   }
 

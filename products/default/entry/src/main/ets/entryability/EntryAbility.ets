@@ -44,6 +44,9 @@ const PC_MIN_WIDTH_VP: number = 896;
 const PC_MIN_HEIGHT_VP: number = 600;
 
 export default class EntryAbility extends UIAbility {
+  /** 模型仓（构造 LocalProvider 时查向量模型路径，T0.9-11） */
+  private modelRepo: ModelRepo | null = null;
+
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(DOMAIN, TAG, 'onCreate, deviceType=%{public}s', deviceInfo.deviceType);
     // 动效减弱偏好（§2.7.4）：App 内设置，PersistentStorage 持久化（系统开关三方不可读，见方法注释）
@@ -82,6 +85,7 @@ export default class EntryAbility extends UIAbility {
       // 3) 本地 Provider：模型由 models 页管理（档位表 + 下载 + sha256 校验 + 切换，T0.9-10）。
       //    这里只负责"把当前选中的模型注册成 Provider"——**不猜路径、不写死文件名**。
       const modelRepo: ModelRepo = new ModelRepo(rdb);
+      this.modelRepo = modelRepo;
       await this.registerActiveLocalProvider(modelRepo);
 
       // 3b) 订阅模型切换：用户在 models 页换模型/删模型时，Provider 必须跟着换。
@@ -141,20 +145,39 @@ export default class EntryAbility extends UIAbility {
       hilog.info(DOMAIN, TAG, 'no usable local model —— 首启或尚未下载完成，聊天页会提示去模型页');
       return;
     }
+    // T0.9-11：有就绪的向量模型则接进同一个 Provider（embed 走专用 embeddingOnly 会话；
+    // 缺席时 LocalProvider 用聊天模型开 pooling 会话兜底——质量逊于专用模型但真实可用）
+    const embedPath: string = await this.readyEmbedPath(repo);
     const provider: LocalProvider = new LocalProvider({
       id: localProviderIdOf(active.id),
       modelPath: active.filePath,
       modelLabel: active.name,
-      contextSize: active.ctxLen
+      contextSize: active.ctxLen,
+      embeddingModelPath: embedPath.length > 0 ? embedPath : undefined
     });
     ProviderRegistry.get().register(provider);
     ProviderRegistry.get().setDefault(provider.id);
-    hilog.info(DOMAIN, TAG, 'local provider registered: %{public}s (%{public}s)',
-      provider.id, active.name);
+    hilog.info(DOMAIN, TAG, 'local provider registered: %{public}s (%{public}s, embed=%{public}s)',
+      provider.id, active.name, embedPath.length > 0 ? 'dedicated' : 'fallback');
+  }
+
+  /** 就绪向量模型的路径；无则空串。 */
+  private async readyEmbedPath(repo: ModelRepo): Promise<string> {
+    const embed: LocalModelRow | null = await repo.getReadyEmbedModel();
+    if (embed === null || embed.filePath === null || embed.filePath === '') {
+      return '';
+    }
+    return embed.filePath;
   }
 
   /** 模型切换：先注销旧的（释放 llama 会话与 KV cache），再注册新的。顺序不可颠倒——两份模型同时驻留会撞内存预算。 */
   private onActiveModelChanged(ev: ActiveModelChanged): void {
+    this.rebuildLocalProvider(ev).catch((e: Error): void => {
+      hilog.error(DOMAIN, TAG, 'rebuild local provider failed: %{public}s', e.message);
+    });
+  }
+
+  private async rebuildLocalProvider(ev: ActiveModelChanged): Promise<void> {
     const registry: ProviderRegistry = ProviderRegistry.get();
     // 注销所有本地 Provider（V0.9 同时只允许一个本地模型驻留，§3.2-3 内存预算）
     for (const p of registry.list()) {
@@ -166,15 +189,19 @@ export default class EntryAbility extends UIAbility {
       hilog.info(DOMAIN, TAG, 'active model cleared —— 本地 Provider 已注销');
       return;
     }
+    // T0.9-11：向量模型就绪/被删也走本通路（ModelRepo.republishActive 重播同事件）
+    const embedPath: string = this.modelRepo !== null ? await this.readyEmbedPath(this.modelRepo) : '';
     const provider: LocalProvider = new LocalProvider({
       id: ev.providerId,
       modelPath: ev.filePath,
       modelLabel: ev.displayName,
-      contextSize: ev.contextLength
+      contextSize: ev.contextLength,
+      embeddingModelPath: embedPath.length > 0 ? embedPath : undefined
     });
     registry.register(provider);
     registry.setDefault(provider.id);
-    hilog.info(DOMAIN, TAG, 'active model switched to %{public}s', ev.displayName);
+    hilog.info(DOMAIN, TAG, 'active model switched to %{public}s (embed=%{public}s)',
+      ev.displayName, embedPath.length > 0 ? 'dedicated' : 'fallback');
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {

@@ -171,6 +171,9 @@ export function toModelTier(row: ModelRow, budget: DeviceBudget): AdModelTier {
 
   tier.state = state;
   tier.hashState = toHashState(state, row.failureKind);
+  // 向量模型（kind=embedding）：不可选作对话大脑，就绪即被知识库自动使用（T0.9-11）
+  tier.usableAsChat = item.kind !== 'embedding';
+  tier.usageNote = item.kind === 'embedding' ? '知识库向量检索自动使用' : '';
   tier.runnability = row.runnable ? AdRunnability.RUNNABLE : AdRunnability.NOT_RUNNABLE;
   tier.reason = row.reason;
   tier.advice = row.advice;

@@ -4,8 +4,8 @@
 // libvec_index.so 的薄封装：不含业务逻辑，只做类型收敛。
 // 上层（core-rag）只依赖本文件，不直接 import .so。
 //
-// 现状（V0.9 骨架）：原生层所有入口抛 BusinessError{code:2099 NOT_IMPLEMENTED}，
-// 实现见 TODO(T0.9-11)。
+// T0.9-11 已实现：hnswlib v0.8.0（submodule）+ float16 平面文件；
+// 核心契约由 tools/eval/vec-store 宿主机单测考核（13 项：损坏恢复/维度契约/容量护栏）。
 
 import vecNative from 'libvec_index.so';
 import { VecIndexConfig, VecSearchHit } from './VecTypes';
@@ -47,5 +47,15 @@ export class VecIndex {
   /** 由平面文件全量重建索引，返回重建条数。 */
   static rebuild(handle: number): number {
     return vecNative.rebuild(handle);
+  }
+
+  /** 索引内条数（一致性核对与容量预检）。 */
+  static count(handle: number): number {
+    return vecNative.count(handle);
+  }
+
+  /** 释放句柄（索引不自动落盘——save 由调用方显式驱动）。 */
+  static close(handle: number): void {
+    vecNative.close(handle);
   }
 }

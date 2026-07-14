@@ -259,7 +259,15 @@ export struct AdModelTierCard {
       // 已安装：[下载]让位。动作由调用方注入，卡片只负责"形"
       AdDivider()
       Row({ space: AdSpace.s2 }) {
-        if (this.tier.active) {
+        if (!this.tier.usableAsChat) {
+          // 向量模型：无"当前模型"概念，说明去向（下载即被知识库自动使用）
+          Row({ space: AdSpace.s1 }) {
+            AdGlyph({ kind: AdGlyphKind.LOCAL_DOCK, glyphSize: 12, color: AdColor.localFg })
+            Text(this.tier.usageNote.length > 0 ? this.tier.usageNote : '已就绪')
+              .tierProse(AdColor.localFg)
+          }
+          .alignItems(VerticalAlign.Center)
+        } else if (this.tier.active) {
           // 当前模型：色（青）+ 形（实心坞形 SVG）+ 文字，三重冗余，不靠颜色单独承载
           Row({ space: AdSpace.s1 }) {
             AdGlyph({ kind: AdGlyphKind.LOCAL_DOCK, glyphSize: 12, color: AdColor.localFg })

@@ -21,7 +21,8 @@ import { KbRepo } from '../store/KbRepo';
 import { Chunker, TokenCounter } from '../ingest/Chunker';
 import { ParserRegistry, TextParser } from '../ingest/Parser';
 import { IngestPipeline, IngestTaskPayload } from '../ingest/IngestPipeline';
-import { FtsSearchPort, Retriever } from '../query/Retriever';
+import { FtsSearchPort, RankedHit, Retriever, VectorSearchPort } from '../query/Retriever';
+import { VectorIndexManager } from '../query/VectorIndexManager';
 import {
   ImportTicket,
   KbChunk,
@@ -73,6 +74,7 @@ export class KnowledgeService {
   private repo: KbRepo | null = null;
   private pipeline: IngestPipeline | null = null;
   private retriever: Retriever | null = null;
+  private vectors: VectorIndexManager | null = null;
 
   private readyResolve: (() => void) | null = null;
   private readyReject: ((e: Object) => void) | null = null;
@@ -105,13 +107,19 @@ export class KnowledgeService {
     const pipeline: IngestPipeline = new IngestPipeline(
       repo, parsers, new Chunker(new ProviderTokenCounter()), files, queue);
 
+    // T0.9-11：向量栈——每库 HNSW + float16 平面文件；索引重置时同步清 vec_ref（不留谎账）
+    const vectors: VectorIndexManager = new VectorIndexManager(files,
+      (libId: string): Promise<void> => repo.clearVecRefs(libId));
+    pipeline.attachVectorStack(vectors, (): InferenceProvider[] => ProviderRegistry.get().list());
+
     if (queue !== null) {
       queue.register(new KbIngestHandler(pipeline));
     }
 
     this.repo = repo;
     this.pipeline = pipeline;
-    this.retriever = new Retriever(repo as FtsSearchPort);
+    this.vectors = vectors;
+    this.retriever = new Retriever(repo as FtsSearchPort, new LocalVectorPort(repo, vectors));
     this.ready = true;
     if (this.readyResolve !== null) {
       this.readyResolve();
@@ -154,6 +162,9 @@ export class KnowledgeService {
 
   async deleteLibrary(libId: string): Promise<void> {
     await this.requireRepo().deleteLibrary(libId);
+    if (this.vectors !== null) {
+      this.vectors.resetLibrary(libId);   // 索引与平面文件随库删除（§7 目录纪律）
+    }
   }
 
   listDocuments(libId: string): Promise<KbDocument[]> {
@@ -195,6 +206,66 @@ export class KnowledgeService {
       throw new Error('KnowledgeService 尚未初始化（entry 的 initCoreStack 还没跑完或已失败）');
     }
     return this.pipeline;
+  }
+}
+
+/**
+ * 向量查询端口（T0.9-11）：query embed（**只用本地 Provider**——查询会命中 local_only 库，
+ * 远程 embed 查询等于把问题泄给服务商，围栏语义下一律禁止）→ 每库 HNSW → vec_ref 回查片段
+ * → 跨库按相似度合并编排名。无本地 embedding 能力时返回空（FTS 兜底，Retriever 同源说明）。
+ */
+class LocalVectorPort implements VectorSearchPort {
+  private readonly repo: KbRepo;
+  private readonly vectors: VectorIndexManager;
+
+  constructor(repo: KbRepo, vectors: VectorIndexManager) {
+    this.repo = repo;
+    this.vectors = vectors;
+  }
+
+  async searchVector(libIds: string[], query: string, topK: number): Promise<RankedHit[]> {
+    let local: InferenceProvider | null = null;
+    for (const p of ProviderRegistry.get().list()) {
+      if (p.kind === 'local' && p.capabilities().supportsEmbedding) {
+        local = p;
+        break;
+      }
+    }
+    if (local === null || libIds.length === 0) {
+      return [];
+    }
+    const embedded: Float32Array[] = await local.embed([query]);
+    if (embedded.length === 0) {
+      return [];
+    }
+    interface ScoredRef {
+      hit: RankedHit;
+      score: number;
+    }
+    const merged: ScoredRef[] = [];
+    for (const libId of libIds) {
+      const raw = this.vectors.search(libId, embedded[0], topK);
+      const refs: number[] = [];
+      for (const r of raw) {
+        refs.push(r.chunkId);
+      }
+      const byRef: Map<number, RankedHit> = await this.repo.chunksByVecRefs(libId, refs);
+      for (const r of raw) {
+        const hit: RankedHit | undefined = byRef.get(r.chunkId);
+        if (hit !== undefined) {   // 查不到 = 文档已删的孤儿向量，如实丢弃
+          merged.push({ hit: hit, score: r.score });
+        }
+      }
+    }
+    merged.sort((a: ScoredRef, b: ScoredRef): number => b.score - a.score);
+    const out: RankedHit[] = [];
+    for (let i = 0; i < merged.length && i < topK; i++) {
+      const hit: RankedHit = merged[i].hit;
+      hit.rank = i + 1;
+      hit.rawScore = merged[i].score;
+      out.push(hit);
+    }
+    return out;
   }
 }
 

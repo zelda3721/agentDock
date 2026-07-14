@@ -239,6 +239,10 @@ export class ModelRepo {
     if (row.downloadState !== DownloadState.READY as string || row.filePath === null) {
       throw new Error(`setActiveModel: model ${id} is not ready (state=${row.downloadState})`);
     }
+    if (row.purpose === 'embed') {
+      // T0.9-11：向量模型不是对话大脑——设它为 active 会让聊天链路加载一个没有 logits 的模型
+      throw new Error(`setActiveModel: ${id} 是向量（embedding）模型，不能选作对话模型`);
+    }
     await this.config.write({
       key: KEY_ACTIVE_LOCAL_MODEL,
       value: id,
@@ -268,6 +272,30 @@ export class ModelRepo {
     if (active === id) {
       await this.clearActiveModel();
     }
+  }
+
+  /**
+   * 重播一次 MODEL_ACTIVE_CHANGED（当前 active 不变，T0.9-11）：
+   * 向量模型就绪/被删时调用，entry 借同一条换脑通路重建 LocalProvider，
+   * 让 embeddingModelPath 的变化即时生效——不为 embed 另设第二条事件通路。
+   * 无 active 模型时为 no-op（没有 Provider 可重建）。
+   */
+  async republishActive(): Promise<void> {
+    const active: LocalModelRow | null = await this.getActiveModel();
+    if (active !== null) {
+      this.publishActive(active);
+    }
+  }
+
+  /** 就绪的向量（embedding）模型；无则 null（T0.9-11：entry 构造 LocalProvider 时查）。 */
+  async getReadyEmbedModel(): Promise<LocalModelRow | null> {
+    return await this.rdb.queryOne<LocalModelRow>(
+      `SELECT ${ModelRepo.COLUMNS} FROM models_local
+        WHERE purpose = 'embed' AND download_state = 'ready' AND file_path IS NOT NULL
+        ORDER BY installed_at DESC LIMIT 1;`,
+      [],
+      ModelRepo.mapRow
+    );
   }
 
   private publishActive(row: LocalModelRow): void {

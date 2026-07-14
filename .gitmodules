@@ -1,3 +1,6 @@
 [submodule "native/llama_bridge/third_party/llama.cpp"]
 	path = native/llama_bridge/third_party/llama.cpp
 	url = https://github.com/ggml-org/llama.cpp
+[submodule "native/vec_index/third_party/hnswlib"]
+	path = native/vec_index/third_party/hnswlib
+	url = https://github.com/nmslib/hnswlib

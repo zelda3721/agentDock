@@ -1,25 +1,28 @@
 // Copyright (c) 2026 AgentDock Contributors
 // SPDX-License-Identifier: Apache-2.0
 //
-// vec_index 的 NAPI 导出层（设计文档 §4.1 / ADR-2）。
+// vec_index 的 NAPI 导出层（设计文档 §4.1 / ADR-2，T0.9-11 实现）。
 //
-// 设计要点（实现时严格遵守）：
-// 1. 索引引擎：**hnswlib**（header-only，Apache-2.0，§22.2 审计表绿）。header-only 意味着
-//    无需产出额外 .so，直接编进 libvec_index.so；义务＝保留 NOTICE、声明修改。
-// 2. 存储布局：每个知识库一个 HNSW 索引文件 + 一个**向量平面文件**。平面文件按 **float16**
-//    存储（省一半空间），与 kb_chunk.id 建立映射。
-// 3. 容灾：**索引损坏可由平面文件全量重建**（rebuild）——平面文件是唯一真相源，HNSW 索引是
-//    可再生的派生物。任何 search/load 检测到索引不一致，一律走 rebuild 而非静默降级。
-// 4. 崩溃隔离：所有入口 try/catch + 结构化错误码（对齐 §3.2-5 的原生层纪律），
-//    C++ 异常绝不穿透 NAPI（hnswlib 内部会 throw std::runtime_error，必须在此收口）。
+// 分层：算法与存储契约在 vec_store.h（宿主机可测，tools/eval/vec-store 考核），
+// 本文件只做参数解析、句柄表与错误码翻译——C++ 异常绝不穿透 NAPI 边界。
 //
-// V0.9 骨架：只做 NAPI 导出与错误隔离，不实现任何索引算法。
+// 线程纪律：所有入口同步执行（检索 <10ms/万条、写入按 32 条/批走 TaskQueue 节拍），
+// V0.9 不引入 worker 线程；若未来批量 rebuild 造成卡顿，随 T1.0 迁移 FFRT。
 
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <new>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "napi/native_api.h"
+
+#if defined(VEC_INDEX_HAS_HNSWLIB)
+#include "vec_store.h"
+#endif
 
 namespace {
 
@@ -60,16 +63,33 @@ napi_value ThrowError(napi_env env, VecErrorCode code, const std::string& messag
   return nullptr;
 }
 
+}  // namespace
+
+#if !defined(VEC_INDEX_HAS_HNSWLIB)
+// ── 子模块缺席的骨架分支：全部入口如实报 NOT_IMPLEMENTED（构建守卫见 CMakeLists）──
+namespace {
 napi_value ThrowNotImplemented(napi_env env, const std::string& api) {
   return ThrowError(env, VecErrorCode::NOT_IMPLEMENTED,
-                    api + " 尚未实现（TODO(T0.9-11)：按设计文档 §4.1 实现 hnswlib 索引）");
+                    api + " 不可用：hnswlib 子模块未参与构建（git submodule update --init）");
 }
-
+static napi_value CreateIndex(napi_env env, napi_callback_info) { return ThrowNotImplemented(env, "createIndex"); }
+static napi_value Add(napi_env env, napi_callback_info) { return ThrowNotImplemented(env, "add"); }
+static napi_value Search(napi_env env, napi_callback_info) { return ThrowNotImplemented(env, "search"); }
+static napi_value Save(napi_env env, napi_callback_info) { return ThrowNotImplemented(env, "save"); }
+static napi_value Load(napi_env env, napi_callback_info) { return ThrowNotImplemented(env, "load"); }
+static napi_value Rebuild(napi_env env, napi_callback_info) { return ThrowNotImplemented(env, "rebuild"); }
+static napi_value CloseIndex(napi_env env, napi_callback_info) { return ThrowNotImplemented(env, "close"); }
+static napi_value CountOf(napi_env env, napi_callback_info) { return ThrowNotImplemented(env, "count"); }
 }  // namespace
+
+#else  // VEC_INDEX_HAS_HNSWLIB —— 真实实现
 
 // 崩溃隔离宏：hnswlib 会抛 std::runtime_error（如维度不符、容量超限），必须在 NAPI 边界收口。
 #define VEC_NAPI_GUARD_BEGIN try {
 #define VEC_NAPI_GUARD_END(env)                                                        \
+  }                                                                                    \
+  catch (const vecstore::VecError& e) {                                                \
+    return ThrowError((env), static_cast<VecErrorCode>(e.code), e.what());             \
   }                                                                                    \
   catch (const std::bad_alloc&) {                                                      \
     return ThrowError((env), VecErrorCode::OOM, "原生层内存分配失败");                 \
@@ -84,9 +104,75 @@ napi_value ThrowNotImplemented(napi_env env, const std::string& api) {
 
 namespace {
 
-// createIndex(config: IndexConfig): number
-// 建索引：hnswlib::HierarchicalNSW<float>，space=cosine（embedding 已 L2 归一化）。
-static napi_value CreateIndex(napi_env env, napi_callback_info info) {
+// ── 句柄表 ───────────────────────────────────────────────────────────────────
+std::mutex g_mutex;
+std::map<int32_t, std::unique_ptr<vecstore::VecStore>> g_stores;
+int32_t g_nextHandle = 1;
+
+vecstore::VecStore* StoreOf(int32_t handle) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  auto it = g_stores.find(handle);
+  return it == g_stores.end() ? nullptr : it->second.get();
+}
+
+// ── 参数解析小工具 ────────────────────────────────────────────────────────────
+bool GetInt32(napi_env env, napi_value v, int32_t* out) {
+  return napi_get_value_int32(env, v, out) == napi_ok;
+}
+
+bool GetString(napi_env env, napi_value obj, const char* key, std::string* out) {
+  napi_value prop = nullptr;
+  bool has = false;
+  if (napi_has_named_property(env, obj, key, &has) != napi_ok || !has) {
+    return false;
+  }
+  napi_get_named_property(env, obj, key, &prop);
+  size_t len = 0;
+  if (napi_get_value_string_utf8(env, prop, nullptr, 0, &len) != napi_ok) {
+    return false;
+  }
+  out->resize(len);
+  return napi_get_value_string_utf8(env, prop, out->data(), len + 1, &len) == napi_ok;
+}
+
+bool GetSize(napi_env env, napi_value obj, const char* key, size_t* out, size_t fallback) {
+  napi_value prop = nullptr;
+  bool has = false;
+  if (napi_has_named_property(env, obj, key, &has) != napi_ok || !has) {
+    *out = fallback;
+    return true;
+  }
+  napi_get_named_property(env, obj, key, &prop);
+  double d = 0;
+  if (napi_get_value_double(env, prop, &d) != napi_ok || d < 0) {
+    return false;
+  }
+  *out = static_cast<size_t>(d);
+  return true;
+}
+
+/** Float32Array → std::vector<float>（拷贝：向量随后要归一化+转 f16，不能改 JS 内存） */
+bool GetF32Array(napi_env env, napi_value v, std::vector<float>* out) {
+  bool isTa = false;
+  if (napi_is_typedarray(env, v, &isTa) != napi_ok || !isTa) {
+    return false;
+  }
+  napi_typedarray_type type;
+  size_t length = 0;
+  void* data = nullptr;
+  napi_value buffer;
+  size_t offset = 0;
+  if (napi_get_typedarray_info(env, v, &type, &length, &data, &buffer, &offset) != napi_ok ||
+      type != napi_float32_array) {
+    return false;
+  }
+  const float* f = static_cast<const float*>(data);
+  out->assign(f, f + length);
+  return true;
+}
+
+// createIndex(config: VecIndexConfig): number —— 打开/新建（不自动 load，索引载入显式走 load()）
+napi_value CreateIndex(napi_env env, napi_callback_info info) {
   VEC_NAPI_GUARD_BEGIN
     size_t argc = 1;
     napi_value args[1] = {nullptr};
@@ -94,98 +180,201 @@ static napi_value CreateIndex(napi_env env, napi_callback_info info) {
     if (argc < 1) {
       return ThrowError(env, VecErrorCode::INVALID_ARGUMENT, "createIndex 需要 1 个参数：IndexConfig");
     }
-    // TODO(T0.9-11): 按设计文档 §4.1 实现：
-    //   解析 { indexPath, flatPath, dim, maxElements, M=16, efConstruction=200 }；
-    //   new hnswlib::InnerProductSpace(dim) + hnswlib::HierarchicalNSW（新建或从 indexPath 载入）；
-    //   同时打开/创建 float16 向量平面文件（追加写，记录 chunkId → 行号 映射）。
-    return ThrowNotImplemented(env, "createIndex");
+    vecstore::Config config;
+    if (!GetString(env, args[0], "indexPath", &config.indexPath) ||
+        !GetString(env, args[0], "flatPath", &config.flatPath) ||
+        !GetSize(env, args[0], "dim", &config.dim, 0) ||
+        !GetSize(env, args[0], "maxElements", &config.maxElements, 0) ||
+        !GetSize(env, args[0], "m", &config.m, 16) ||
+        !GetSize(env, args[0], "efConstruction", &config.efConstruction, 200) ||
+        !GetSize(env, args[0], "efSearch", &config.efSearch, 64)) {
+      return ThrowError(env, VecErrorCode::INVALID_ARGUMENT,
+                        "IndexConfig 缺字段或类型不符（需 indexPath/flatPath/dim/maxElements）");
+    }
+    auto store = std::make_unique<vecstore::VecStore>(config);
+    int32_t handle = 0;
+    {
+      std::lock_guard<std::mutex> lock(g_mutex);
+      handle = g_nextHandle++;
+      g_stores[handle] = std::move(store);
+    }
+    napi_value out;
+    napi_create_int32(env, handle, &out);
+    return out;
   VEC_NAPI_GUARD_END(env)
 }
 
-// add(handle: number, chunkIds: number[], vectors: Float32Array[]): void
-static napi_value Add(napi_env env, napi_callback_info info) {
+// add(handle, chunkIds: number[], vectors: Float32Array[]): void
+napi_value Add(napi_env env, napi_callback_info info) {
   VEC_NAPI_GUARD_BEGIN
     size_t argc = 3;
     napi_value args[3] = {nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 3) {
-      return ThrowError(env, VecErrorCode::INVALID_ARGUMENT,
-                        "add 需要 3 个参数：handle、chunkIds、vectors");
+    int32_t handle = 0;
+    if (argc < 3 || !GetInt32(env, args[0], &handle)) {
+      return ThrowError(env, VecErrorCode::INVALID_ARGUMENT, "add 需要 3 个参数：handle、chunkIds、vectors");
     }
-    // TODO(T0.9-11): 按设计文档 §4.1 实现：
-    //   1. 先**原子追加写平面文件**（float32 → float16 转换后落盘），再插入 HNSW —— 顺序不可颠倒：
-    //      平面文件是唯一真相源，先写它才能保证任何时刻索引都可由它全量重建；
-    //   2. addPoint(vec, chunkId)；超 maxElements 返回 CAPACITY_EXCEEDED（上层扩容后 rebuild）；
-    //   3. 维度不符返回 DIM_MISMATCH（换 embedding 模型必然触发，上层须整库重建）。
-    return ThrowNotImplemented(env, "add");
+    vecstore::VecStore* store = StoreOf(handle);
+    if (store == nullptr) {
+      return ThrowError(env, VecErrorCode::INDEX_NOT_FOUND, "句柄无效或已释放");
+    }
+
+    uint32_t nIds = 0;
+    uint32_t nVecs = 0;
+    bool isArr = false;
+    napi_is_array(env, args[1], &isArr);
+    if (!isArr || napi_get_array_length(env, args[1], &nIds) != napi_ok) {
+      return ThrowError(env, VecErrorCode::INVALID_ARGUMENT, "chunkIds 必须是数组");
+    }
+    napi_is_array(env, args[2], &isArr);
+    if (!isArr || napi_get_array_length(env, args[2], &nVecs) != napi_ok) {
+      return ThrowError(env, VecErrorCode::INVALID_ARGUMENT, "vectors 必须是数组");
+    }
+    if (nIds != nVecs || nIds == 0) {
+      return ThrowError(env, VecErrorCode::INVALID_ARGUMENT, "chunkIds 与 vectors 数量不一致或为空");
+    }
+
+    std::vector<uint64_t> labels(nIds);
+    std::vector<std::vector<float>> vectors(nVecs);
+    for (uint32_t i = 0; i < nIds; i++) {
+      napi_value el;
+      double d = 0;
+      napi_get_element(env, args[1], i, &el);
+      if (napi_get_value_double(env, el, &d) != napi_ok || d < 0) {
+        return ThrowError(env, VecErrorCode::INVALID_ARGUMENT, "chunkIds 含非法值");
+      }
+      labels[i] = static_cast<uint64_t>(d);
+      napi_get_element(env, args[2], i, &el);
+      if (!GetF32Array(env, el, &vectors[i])) {
+        return ThrowError(env, VecErrorCode::INVALID_ARGUMENT, "vectors 元素必须是 Float32Array");
+      }
+    }
+    store->Add(labels, vectors);
+    return nullptr;
   VEC_NAPI_GUARD_END(env)
 }
 
-// search(handle: number, query: Float32Array, topK: number): SearchHit[]
-static napi_value Search(napi_env env, napi_callback_info info) {
+// search(handle, query: Float32Array, topK): SearchHit[]
+napi_value Search(napi_env env, napi_callback_info info) {
   VEC_NAPI_GUARD_BEGIN
     size_t argc = 3;
     napi_value args[3] = {nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 3) {
-      return ThrowError(env, VecErrorCode::INVALID_ARGUMENT,
-                        "search 需要 3 个参数：handle、query、topK");
+    int32_t handle = 0;
+    int32_t topK = 0;
+    std::vector<float> query;
+    if (argc < 3 || !GetInt32(env, args[0], &handle) || !GetF32Array(env, args[1], &query) ||
+        !GetInt32(env, args[2], &topK) || topK <= 0) {
+      return ThrowError(env, VecErrorCode::INVALID_ARGUMENT, "search 需要 handle、Float32Array、topK>0");
     }
-    // TODO(T0.9-11): 按设计文档 §4.3 实现：setEf(max(topK, efSearch)) → searchKnn(query, topK)
-    //   → 返回 [{ chunkId, score }]，score 为相似度（1 - 距离）。
-    //   结果交给 core-rag 与 FTS5 结果做 RRF(k=60) 融合。
-    return ThrowNotImplemented(env, "search");
+    vecstore::VecStore* store = StoreOf(handle);
+    if (store == nullptr) {
+      return ThrowError(env, VecErrorCode::INDEX_NOT_FOUND, "句柄无效或已释放");
+    }
+    const std::vector<vecstore::SearchHit> hits = store->Search(query, static_cast<size_t>(topK));
+
+    napi_value out;
+    napi_create_array_with_length(env, hits.size(), &out);
+    for (size_t i = 0; i < hits.size(); i++) {
+      napi_value hit;
+      napi_value chunkId;
+      napi_value score;
+      napi_create_object(env, &hit);
+      napi_create_double(env, static_cast<double>(hits[i].label), &chunkId);
+      napi_create_double(env, static_cast<double>(hits[i].score), &score);
+      napi_set_named_property(env, hit, "chunkId", chunkId);
+      napi_set_named_property(env, hit, "score", score);
+      napi_set_element(env, out, i, hit);
+    }
+    return out;
   VEC_NAPI_GUARD_END(env)
 }
 
-// save(handle: number): void  —— 索引落盘（平面文件在 add 时已即时落盘）
-static napi_value Save(napi_env env, napi_callback_info info) {
+// 一元 handle 入口的公共解析
+vecstore::VecStore* StoreFromArgs(napi_env env, napi_callback_info info, const char* api) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t handle = 0;
+  if (argc < 1 || !GetInt32(env, args[0], &handle)) {
+    ThrowError(env, VecErrorCode::INVALID_ARGUMENT, std::string(api) + " 需要 1 个参数：handle");
+    return nullptr;
+  }
+  vecstore::VecStore* store = StoreOf(handle);
+  if (store == nullptr) {
+    ThrowError(env, VecErrorCode::INDEX_NOT_FOUND, "句柄无效或已释放");
+    return nullptr;
+  }
+  return store;
+}
+
+napi_value Save(napi_env env, napi_callback_info info) {
+  VEC_NAPI_GUARD_BEGIN
+    vecstore::VecStore* store = StoreFromArgs(env, info, "save");
+    if (store == nullptr) {
+      return nullptr;
+    }
+    store->Save();
+    return nullptr;
+  VEC_NAPI_GUARD_END(env)
+}
+
+napi_value Load(napi_env env, napi_callback_info info) {
+  VEC_NAPI_GUARD_BEGIN
+    vecstore::VecStore* store = StoreFromArgs(env, info, "load");
+    if (store == nullptr) {
+      return nullptr;
+    }
+    store->Load();
+    return nullptr;
+  VEC_NAPI_GUARD_END(env)
+}
+
+napi_value Rebuild(napi_env env, napi_callback_info info) {
+  VEC_NAPI_GUARD_BEGIN
+    vecstore::VecStore* store = StoreFromArgs(env, info, "rebuild");
+    if (store == nullptr) {
+      return nullptr;
+    }
+    const uint64_t n = store->Rebuild();
+    napi_value out;
+    napi_create_double(env, static_cast<double>(n), &out);
+    return out;
+  VEC_NAPI_GUARD_END(env)
+}
+
+// count(handle): number —— 索引内条数（上层做一致性核对与容量预检）
+napi_value CountOf(napi_env env, napi_callback_info info) {
+  VEC_NAPI_GUARD_BEGIN
+    vecstore::VecStore* store = StoreFromArgs(env, info, "count");
+    if (store == nullptr) {
+      return nullptr;
+    }
+    napi_value out;
+    napi_create_double(env, static_cast<double>(store->Count()), &out);
+    return out;
+  VEC_NAPI_GUARD_END(env)
+}
+
+// close(handle): void —— 释放句柄（索引不自动落盘：save 由调用方显式驱动）
+napi_value CloseIndex(napi_env env, napi_callback_info info) {
   VEC_NAPI_GUARD_BEGIN
     size_t argc = 1;
     napi_value args[1] = {nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 1) {
-      return ThrowError(env, VecErrorCode::INVALID_ARGUMENT, "save 需要 1 个参数：handle");
+    int32_t handle = 0;
+    if (argc < 1 || !GetInt32(env, args[0], &handle)) {
+      return ThrowError(env, VecErrorCode::INVALID_ARGUMENT, "close 需要 1 个参数：handle");
     }
-    // TODO(T0.9-11): saveIndex(indexPath)。须**写临时文件 + rename 原子替换**，
-    //   避免掉电/杀进程留下半截索引文件（半截索引 → load 时 INDEX_CORRUPTED → rebuild）。
-    return ThrowNotImplemented(env, "save");
-  VEC_NAPI_GUARD_END(env)
-}
-
-// load(handle: number): void  —— 从索引文件载入；损坏时返回 INDEX_CORRUPTED，由上层调 rebuild
-static napi_value Load(napi_env env, napi_callback_info info) {
-  VEC_NAPI_GUARD_BEGIN
-    size_t argc = 1;
-    napi_value args[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 1) {
-      return ThrowError(env, VecErrorCode::INVALID_ARGUMENT, "load 需要 1 个参数：handle");
-    }
-    // TODO(T0.9-11): loadIndex(indexPath, space, maxElements)；
-    //   校验索引元素数与平面文件行数一致，不一致即 INDEX_CORRUPTED（不静默降级，§4.1）。
-    return ThrowNotImplemented(env, "load");
-  VEC_NAPI_GUARD_END(env)
-}
-
-// rebuild(handle: number): number  —— 由 float16 平面文件全量重建 HNSW 索引，返回重建条数
-static napi_value Rebuild(napi_env env, napi_callback_info info) {
-  VEC_NAPI_GUARD_BEGIN
-    size_t argc = 1;
-    napi_value args[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 1) {
-      return ThrowError(env, VecErrorCode::INVALID_ARGUMENT, "rebuild 需要 1 个参数：handle");
-    }
-    // TODO(T0.9-11): 按设计文档 §4.1「索引损坏可由向量平面文件全量重建」实现：
-    //   顺序读平面文件（float16 → float32）→ 逐条 addPoint → save。
-    //   这是索引损坏的唯一恢复路径，因此**平面文件的写入必须先于索引写入**（见 add 的 TODO）。
-    //   耗时与库规模成正比，须可被 ArkTS 侧 TaskQueue 断点续跑地驱动（§0-6）。
-    return ThrowNotImplemented(env, "rebuild");
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_stores.erase(handle);
+    return nullptr;
   VEC_NAPI_GUARD_END(env)
 }
 
 }  // namespace
+
+#endif  // VEC_INDEX_HAS_HNSWLIB
 
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
@@ -196,6 +385,8 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"save", nullptr, Save, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"load", nullptr, Load, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"rebuild", nullptr, Rebuild, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"count", nullptr, CountOf, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"close", nullptr, CloseIndex, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
   return exports;

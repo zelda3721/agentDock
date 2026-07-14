@@ -291,6 +291,14 @@ export class AdModelTier {
   downloadedGb: number = 0;
   /** 瞬时速率（字节 / 秒），仅下载中有意义；0 = 不显示速率（不编一个数出来） */
   bytesPerSec: number = 0;
+  /**
+   * 是否可被选作对话模型（T0.9-11：embedding 模型 = false）。
+   * false 时 READY 态不渲染[使用这个模型]——向量模型没有"当前模型"概念，
+   * 下载即被知识库自动使用，动作区以 usageNote 说明去向。
+   */
+  usableAsChat: boolean = true;
+  /** usableAsChat=false 时 READY 态的用途说明，如「知识库向量检索自动使用」 */
+  usageNote: string = '';
 
   constructor(tier: string, name: string, quant: string) {
     this.tier = tier;

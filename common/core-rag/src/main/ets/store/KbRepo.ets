@@ -398,6 +398,85 @@ export class KbRepo {
     return rows;
   }
 
+  // --- 向量路（T0.9-11） -------------------------------------------------------
+
+  /** EMBED 步回填：chunkId → vec_ref（平面文件行号）。单事务，两数组必须等长。 */
+  async setVecRefs(chunkIds: string[], vecRefs: number[]): Promise<void> {
+    if (chunkIds.length !== vecRefs.length) {
+      throw new Error('setVecRefs 参数不一致：片段 id 与向量行号数量不同（编程错误）');
+    }
+    await this.rdb.withTransaction<void>(async (): Promise<void> => {
+      for (let i = 0; i < chunkIds.length; i++) {
+        await this.rdb.exec(
+          `UPDATE kb_chunk SET vec_ref = ? WHERE id = ?;`,
+          [vecRefs[i], chunkIds[i]] as Array<SqlArg>
+        );
+      }
+    });
+  }
+
+  /** 库索引被重置（换 embedding 模型）后清悬空行号——vec_ref 指向已删平面文件即谎账。 */
+  async clearVecRefs(libId: string): Promise<void> {
+    await this.rdb.exec(
+      `UPDATE kb_chunk SET vec_ref = NULL WHERE lib_id = ?;`,
+      [libId] as Array<SqlArg>
+    );
+  }
+
+  /**
+   * 向量路回查：vec_ref → 片段（带隐私级别）。删除文档留下的孤儿行号自然查不到，
+   * 调用方按查得结果组装（孤儿向量随 T1.0 的整库重建任务压实）。
+   */
+  async chunksByVecRefs(libId: string, vecRefs: number[]): Promise<Map<number, RankedHit>> {
+    const byRef: Map<number, RankedHit> = new Map<number, RankedHit>();
+    if (vecRefs.length === 0) {
+      return byRef;
+    }
+    const placeholders: string = vecRefs.map((): string => '?').join(',');
+    const args: SqlArg[] = [libId];
+    for (const ref of vecRefs) {
+      args.push(ref);
+    }
+    interface RefRow {
+      ref: number;
+      hit: RankedHit;
+    }
+    const rows: RefRow[] = await this.rdb.queryRows<RefRow>(
+      `SELECT c.id, c.doc_id, c.lib_id, c.seq, c.text, c.token_count, c.meta, c.vec_ref,
+              l.privacy_level
+         FROM kb_chunk c
+         JOIN kb_library l ON l.id = c.lib_id
+        WHERE c.lib_id = ? AND c.vec_ref IN (${placeholders});`,
+      args,
+      (rs: relationalStore.ResultSet): RefRow => {
+        const privacy: string = rs.getString(rs.getColumnIndex('privacy_level'));
+        const chunk: KbChunk = {
+          id: rs.getString(rs.getColumnIndex('id')),
+          docId: rs.getString(rs.getColumnIndex('doc_id')),
+          seq: rs.getLong(rs.getColumnIndex('seq')),
+          text: rs.getString(rs.getColumnIndex('text')),
+          tokenCount: rs.getLong(rs.getColumnIndex('token_count')),
+          meta: parseMeta(rs.getString(rs.getColumnIndex('meta')))
+        };
+        const row: RefRow = {
+          ref: rs.getLong(rs.getColumnIndex('vec_ref')),
+          hit: {
+            chunk: chunk,
+            rank: 0,   // 排名由调用方按向量得分统一编（跨库合并后才有全序）
+            rawScore: 0,
+            libId: rs.getString(rs.getColumnIndex('lib_id')),
+            privacyLevel: privacy === 'allow_remote' ? 'allow_remote' : 'local_only'
+          }
+        };
+        return row;
+      }
+    );
+    for (const row of rows) {
+      byRef.set(row.ref, row.hit);
+    }
+    return byRef;
+  }
+
   /** 文档标题批查（引用展示 [标题#页] 用；一次取齐避免 N+1） */
   async docTitles(docIds: string[]): Promise<Map<string, string>> {
     const titles: Map<string, string> = new Map<string, string>();

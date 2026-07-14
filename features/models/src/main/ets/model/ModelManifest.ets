@@ -272,11 +272,14 @@ export class ModelCatalog {
     const decoder: util.TextDecoder = util.TextDecoder.create('utf-8');
     const text: string = decoder.decodeToString(bytes);
     const manifest: ModelManifest = JSON.parse(text) as ModelManifest;
-    // 只有 llm 进档位表：embedding/reranker 由 RAG 侧自管，不走模型页（§4.1 RAG 数据模型）。
-    const models: ModelManifestItem[] = manifest.models.filter((m: ModelManifestItem): boolean => m.kind === 'llm');
+    // llm + embedding 都进档位表（T0.9-11 修订）：向量模型复用同一套下载/校验/断点续传
+    // 机制，另建一条下载链路只会漂移；reranker（V1.0 Should）届时再议。
+    // 卡片侧以 usableAsChat=false 区分——向量模型没有"使用这个模型"动作。
+    const models: ModelManifestItem[] = manifest.models.filter(
+      (m: ModelManifestItem): boolean => m.kind === 'llm' || m.kind === 'embedding');
     Logger.info(TAG, 'manifest loaded', [
       { key: 'schema', value: manifest.schemaVersion },
-      { key: 'llm_models', value: models.length }
+      { key: 'models', value: models.length }
     ]);
     return models;
   }

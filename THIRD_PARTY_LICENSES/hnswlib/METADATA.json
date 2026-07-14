@@ -1,0 +1,8 @@
+{
+  "name": "hnswlib",
+  "version": "v0.8.0 (submodule 3f3429661187e4c24a490a0f148fc6bc89042b3d)",
+  "spdxId": "Apache-2.0",
+  "sourceUrl": "https://github.com/nmslib/hnswlib",
+  "usedBy": "native/vec_index（git submodule，header-only，HNSW 向量索引）",
+  "auditedAt": "2026-07-14"
+}

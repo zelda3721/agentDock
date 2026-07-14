@@ -5,7 +5,7 @@
 // 与 src/main/cpp/napi_entry.cpp 的导出表逐项对齐，任一侧改动须同步另一侧。
 //
 // 错误约定：失败以 BusinessError{code,message} 抛出，code 见 VecTypes.ets 的 VecErrorCode
-// （2001..2099）。V0.9 骨架下全部入口抛 2099 NOT_IMPLEMENTED。
+// （2001..2099）。hnswlib 子模块缺席的构建里全部入口抛 2099 NOT_IMPLEMENTED。
 //
 // 本文件为 .so 的环境声明，不得声明 enum 等需要运行时对象的实体。
 
@@ -50,3 +50,9 @@ export const load: (handle: number) => void;
 
 /** 由 float16 平面文件全量重建索引，返回重建条数（索引损坏的唯一恢复路径，§4.1）。 */
 export const rebuild: (handle: number) => number;
+
+/** 索引内条数（一致性核对与容量预检）。 */
+export const count: (handle: number) => number;
+
+/** 释放句柄（索引不自动落盘——save 由调用方显式驱动）。 */
+export const close: (handle: number) => void;
