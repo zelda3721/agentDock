@@ -30,6 +30,7 @@
  */
 
 import { fileIo } from '@kit.CoreFileKit';
+import { zlib } from '@kit.BasicServicesKit';
 import type { ChunkProvenance } from '../model/Types';
 
 /** 解析产出的一个结构化块（进入切片流水线的原料） */
@@ -237,25 +238,147 @@ export class TextParser implements DocumentParser {
   }
 }
 
+// ============================================================================
+// docx 解析（纯 ArkTS ZIP+XML，§4.2-[2]；XML 抽取为纯函数，Node 回归可直接考核）
+// ============================================================================
+
+/** XML 实体解码（document.xml 只会出现这五个命名实体 + 数值实体） */
+export function decodeXmlEntities(text: string): string {
+  return text
+    .replace(/&#x([0-9a-fA-F]+);/g, (_m: string, hex: string): string =>
+      String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_m: string, dec: string): string =>
+      String.fromCodePoint(Number.parseInt(dec, 10)))
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+/** 取一个 <w:p>…</w:p> 段内的全部 <w:t> 文本（run 级拼接；w:tab/w:br 归一为空格/换行） */
+function docxParagraphText(pXml: string): string {
+  const parts: string[] = [];
+  // w:tab 与 w:br 影响词边界，先归一（不处理会把「第1章<w:tab/>总则」拼成「第1章总则」）
+  const normalized: string = pXml.replace(/<w:tab[^>]*\/>/g, ' ').replace(/<w:br[^>]*\/>/g, '\n');
+  const runRe: RegExp = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g;
+  let m: RegExpExecArray | null = runRe.exec(normalized);
+  while (m !== null) {
+    parts.push(decodeXmlEntities(m[1]));
+    m = runRe.exec(normalized);
+  }
+  return parts.join('').trim();
+}
+
+/** 段落样式 → 标题层级（Heading1..9 / 1..9 / heading 1 等主流写法）；非标题返回 0 */
+function docxHeadingLevel(pXml: string): number {
+  const style: RegExpMatchArray | null = pXml.match(/<w:pStyle\s[^>]*w:val="([^"]+)"/);
+  if (style === null) {
+    return 0;
+  }
+  const value: string = style[1].toLowerCase();
+  const numMatch: RegExpMatchArray | null = value.match(/^(?:heading|h)\s*([1-9])$/);
+  if (numMatch !== null) {
+    return Number.parseInt(numMatch[1], 10);
+  }
+  // 中文 Word 常见样式 id：1/2/3…（样式名"标题 1"的 styleId 常为数字）
+  const bare: RegExpMatchArray | null = value.match(/^([1-9])$/);
+  return bare !== null ? Number.parseInt(bare[1], 10) : 0;
+}
+
 /**
- * OOXML 解析器（docx/xlsx/pptx：ArkTS 解 ZIP+XML，纯解文本，无需原生库，§4.2-[2]）。
+ * word/document.xml → 结构化块（纯函数）。
+ *  - 顶层 <w:tbl> → table（行内单元格以「 | 」连接，行以换行连接——整表一块，
+ *    交给 Chunker 的 keepTableWhole）；
+ *  - <w:p> 带 Heading 样式 → heading；其余非空段 → paragraph。
+ * 机器生成的 document.xml 结构规整，正则切分对其足够鲁棒；
+ * 抽取失败的兜底是显式报错（上层 status=failed），不是静默空文本。
+ */
+export function parseDocxDocumentXml(xml: string): ParsedBlock[] {
+  const blocks: ParsedBlock[] = [];
+  // 顶层节点扫描：交替匹配 <w:tbl>…</w:tbl> 与 <w:p …>…</w:p>（表格内的 w:p 不重复计）
+  const nodeRe: RegExp = /<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>|<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>|<w:p(?:\s[^>]*)?\/>/g;
+  let m: RegExpExecArray | null = nodeRe.exec(xml);
+  while (m !== null) {
+    const node: string = m[0];
+    if (node.startsWith('<w:tbl')) {
+      const rows: string[] = [];
+      const rowRe: RegExp = /<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g;
+      let row: RegExpExecArray | null = rowRe.exec(node);
+      while (row !== null) {
+        const cells: string[] = [];
+        const cellRe: RegExp = /<w:tc(?:\s[^>]*)?>([\s\S]*?)<\/w:tc>/g;
+        let cell: RegExpExecArray | null = cellRe.exec(row[0]);
+        while (cell !== null) {
+          cells.push(docxParagraphText(cell[1]));
+          cell = cellRe.exec(row[0]);
+        }
+        if (cells.length > 0) {
+          rows.push(`| ${cells.join(' | ')} |`);
+        }
+        row = rowRe.exec(node);
+      }
+      if (rows.length > 0) {
+        blocks.push({ kind: 'table', text: rows.join('\n'), page: 0, provenance: 'text_layer' });
+      }
+    } else {
+      const text: string = docxParagraphText(node);
+      if (text.length > 0) {
+        const level: number = docxHeadingLevel(node);
+        if (level > 0) {
+          blocks.push({ kind: 'heading', text: text, level: level, page: 0, provenance: 'text_layer' });
+        } else {
+          blocks.push({ kind: 'paragraph', text: text, page: 0, provenance: 'text_layer' });
+        }
+      }
+    }
+    m = nodeRe.exec(xml);
+  }
+  return blocks;
+}
+
+/**
+ * OOXML 解析器（docx：ArkTS 解 ZIP+XML，纯解文本，无需原生库，§4.2-[2]，T0.9-13 余项）。
  *
- * V0.9 范围：docx（开发计划 §5.1 Must）。
- * xlsx/pptx 自 V0.9 范围移出，归 V1.0 Could（开发计划 §6.1）——
- * mimeTypes 先声明齐全，但未实现的分支必须显式报错，禁止伪实现。
+ * 流程：zlib.decompressFile 解包到临时目录 → 读 word/document.xml →
+ * parseDocxDocumentXml（纯函数）→ 清理临时目录。
+ * xlsx/pptx 归 V1.0 Could（开发计划 §6.1）——未实现即不进 mimeTypes（注册即承诺）。
  */
 export class OoxmlParser implements DocumentParser {
   readonly name: string = 'ooxml';
   readonly mimeTypes: string[] = [
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-    // TODO(V1.0-Could, 开发计划 §6.1): xlsx/pptx 为 V1.0 Could 项，无独立 WBS 编号，
-    // 立项后在此追加 mime（届时补任务编号）：
-    //   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    //   'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    // TODO(V1.0-Could, 开发计划 §6.1): xlsx/pptx 立项后在此追加 mime（届时补任务编号）
   ];
 
   async parse(uri: string): Promise<ParseResult> {
-    throw new Error('Not implemented: T0.9-13');
+    const extractDir: string = `${uri}.unzip`;
+    try {
+      if (!fileIo.accessSync(extractDir)) {
+        fileIo.mkdirSync(extractDir, true);
+      }
+      await zlib.decompressFile(uri, extractDir);
+      const docXmlPath: string = `${extractDir}/word/document.xml`;
+      if (!fileIo.accessSync(docXmlPath)) {
+        throw new Error('不是有效的 docx 文件：包内没有 word/document.xml');
+      }
+      const xml: string = await fileIo.readText(docXmlPath);
+      const blocks: ParsedBlock[] = parseDocxDocumentXml(xml);
+      const result: ParseResult = {
+        blocks: blocks,
+        needsOcr: false,
+        ocrPendingPages: [],
+        title: inferTitle(blocks)
+      };
+      return result;
+    } finally {
+      // 临时目录无论成败都清（raw 目录不留解包产物——备份 copyDir 不该带上它们）
+      try {
+        fileIo.rmdirSync(extractDir);
+      } catch (e) {
+        // 清理失败不影响解析结果
+      }
+    }
   }
 }
 

@@ -19,7 +19,7 @@ import { InferenceProvider, ProviderRegistry } from 'core-llm';
 import { Logger, TaskContext, TaskHandler, TaskKind, TaskQueue, TaskResult } from 'core-infra';
 import { KbRepo } from '../store/KbRepo';
 import { Chunker, TokenCounter } from '../ingest/Chunker';
-import { ParserRegistry, TextParser } from '../ingest/Parser';
+import { OoxmlParser, ParserRegistry, TextParser } from '../ingest/Parser';
 import { IngestPipeline, IngestTaskPayload } from '../ingest/IngestPipeline';
 import { FtsSearchPort, RankedHit, Retriever, VectorSearchPort } from '../query/Retriever';
 import { VectorIndexManager } from '../query/VectorIndexManager';
@@ -102,8 +102,10 @@ export class KnowledgeService {
     const repo: KbRepo = new KbRepo(rdb);
     const parsers: ParserRegistry = new ParserRegistry();
     parsers.register(new TextParser());
-    // TODO(T0.9-12): parsers.register(new PdfParser())——PDFium NAPI 交付后
-    // TODO(T0.9-13 余项): parsers.register(new OoxmlParser())——docx ZIP+XML 解码实现后
+    parsers.register(new OoxmlParser());   // docx（T0.9-13 余项：ZIP+XML 纯 ArkTS）
+    // TODO(T0.9-12): parsers.register(new PdfParser())——PDFium OHOS 交叉编译交付后
+    // （用户裁决 2026-07-14：V0.9 不做 PDF——Android 预编译产物 bionic 与鸿蒙 musl 不兼容，
+    //   源码交叉编译耗时数小时成败不定；PDF 导入在 picker 层不放行 + 注册表报"暂不支持"）
     const pipeline: IngestPipeline = new IngestPipeline(
       repo, parsers, new Chunker(new ProviderTokenCounter()), files, queue);
 

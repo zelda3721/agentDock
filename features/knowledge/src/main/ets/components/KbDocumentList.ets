@@ -141,8 +141,8 @@ export struct KbDocumentList {
       const documentPicker: picker.DocumentViewPicker = new picker.DocumentViewPicker(hostContext);
       const selectOptions: picker.DocumentSelectOptions = new picker.DocumentSelectOptions();
       selectOptions.maxSelectNumber = 20;
-      // 如实只放已注册解析器覆盖的格式（txt/md）；PDF/docx 随 T0.9-12/13 余项开放
-      selectOptions.fileSuffixFilters = ['.txt', '.md', '.markdown'];
+      // 如实只放已注册解析器覆盖的格式（txt/md/docx）；PDF 随 T0.9-12（PDFium 交叉编译）开放
+      selectOptions.fileSuffixFilters = ['.txt', '.md', '.markdown', '.docx'];
       const uris: string[] = await documentPicker.select(selectOptions);
       if (uris.length === 0) {
         return;

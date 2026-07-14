@@ -114,6 +114,10 @@ jobs:
       - name: AgentRun 状态机 + RunGate 回归（跑真实源码）
         run: node tools/eval/agent-run/run-tests.mjs
 
+      # T0.9-13 余项：docx XML 抽取（纯函数）回归——跨 run 拼接/实体解码/表格整块
+      - name: docx 抽取回归（跑真实源码）
+        run: node tools/eval/docx-parse/run-tests.mjs
+
       # T0.9-22 / §12-M2：RAG 金标集 30 组，recall@6 ≥85% 为 V0.9 发布门禁。
       # 同一方法论：转译直跑 Parser/Chunker/Tokenize/Retriever 真实源码 + Schema 真 DDL，
       # node:sqlite 建 FTS5 影子表；KbRepo.searchFts 的 SQL 逐字镜像并在 runner 里核对防漂移。
