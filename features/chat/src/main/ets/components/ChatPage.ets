@@ -72,6 +72,11 @@ export struct ChatPage {
    * TODO(T0.9-10)：entry 的 Index 把 navIndex 切到 'models' 的能力传进来（canOpenModels + onOpenModels）。
    */
   @Prop canOpenModels: boolean = false;
+  /**
+   * entry 跨 Tab 送入的「打开这个会话」指令（T0.9-16：智能体页的「聊天」按钮新建绑定会话后跳来）。
+   * 空串 = 无指令。收到后重拉列表并选中该会话（新会话可能还不在已加载的列表里）。
+   */
+  @Prop @Watch('onOpenConversationChanged') openConversationId: string = '';
 
   onOpenModels: () => void = () => {
   };
@@ -287,10 +292,18 @@ export struct ChatPage {
       // 顶栏：**当前大脑常驻**，不藏进设置（§1.4 / §4.2）
       Row({ space: AdSpace.s3 }) {
         if (!compactTop) {
-          Text(this.currentTitle()).topBarTitle().layoutWeight(1)
-        } else {
-          Blank().layoutWeight(1)
+          Text(this.currentTitle()).topBarTitle()
         }
+        if (this.currentAgentName().length > 0) {
+          // 绑定智能体的会话：顶栏亮明身份（它决定了 system prompt 与模型——用户有权一眼看到）
+          Text(`智能体 · ${this.currentAgentName()}`)
+            .fontSize(AdType.caption.size)
+            .lineHeight(AdType.caption.lineHeight)
+            .fontFamily(AdType.caption.family)
+            .fontColor(AdColor.inkSecondary)
+            .maxLines(1)
+        }
+        Blank().layoutWeight(1)
         this.brainSlot()
       }
       .width('100%')
@@ -427,6 +440,17 @@ export struct ChatPage {
 
   // ——————————————— 交互 ———————————————
 
+  /** 跨 Tab 打开指定会话（entry 的智能体「聊天」路由）：先重拉列表（新会话尚不在列表），再走统一的选中路径 */
+  onOpenConversationChanged(): void {
+    const id: string = this.openConversationId;
+    if (id.length === 0 || id === this.selectedId) {
+      return;
+    }
+    this.controller.loadConversations(50).then((): void => {
+      this.selectConversation(id);
+    });
+  }
+
   private selectConversation(convId: string): void {
     this.selectedId = convId;
     this.messagesLoading = true;
@@ -494,6 +518,15 @@ export struct ChatPage {
       return '';
     }
     return `ctx ${this.ctx.usedTokens} / ${this.ctx.totalTokens} tok`;
+  }
+
+  private currentAgentName(): string {
+    for (let i = 0; i < this.conversations.length; i++) {
+      if (this.conversations[i].id === this.selectedId) {
+        return this.conversations[i].agentName;
+      }
+    }
+    return '';
   }
 
   private currentTitle(): string {

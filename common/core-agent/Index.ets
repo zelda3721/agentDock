@@ -13,6 +13,8 @@ export * from './src/main/ets/model/AgentDef';
 // 运行时（§5.2 / 附录 A）
 export * from './src/main/ets/runtime/AgentRun';
 export * from './src/main/ets/runtime/ReActLoop';
+export * from './src/main/ets/runtime/RunGate';
+export * from './src/main/ets/runtime/RunRecorder';
 
 // 工具总线（§5.2 / §9.4）
 export * from './src/main/ets/tools/ToolBus';
@@ -24,6 +26,7 @@ export * from './src/main/ets/context/ContextGovernor';
 
 // 服务入口（附录 A：features 层唯一依赖点）
 export * from './src/main/ets/service/AgentService';
+export * from './src/main/ets/service/AgentRepo';
 
 // 聊天链路（V0.9 三层合同 §二：features/chat 的唯一依赖点；T0.9-16 的前身，无工具循环/RAG/记忆）
 // ChatTypes 同时再导出 core-llm 的 TokenUsage / FinishReason，使 features/chat 不必直连 core-llm。

@@ -43,6 +43,18 @@ export interface ConversationRow {
   messageCount: number;
 }
 
+/** 会话绑定 Agent 的发送要素（agentBinding 的返回；providerId 空串 = 未绑定模型） */
+export interface AgentBindingRow {
+  name: string;
+  systemPrompt: string;
+  providerId: string;
+}
+
+/** agent_defs.model 列 JSON 的最小读形（只取 send 路径需要的 providerId） */
+interface AgentBindingModel {
+  providerId?: string;
+}
+
 /**
  * conversations.meta 的 JSON 结构（会话级元数据）。
  * - lastProviderKind：会话列表行的 local/remote 芯片；
@@ -66,25 +78,29 @@ export class ChatRepository {
 
   // --- 会话 -----------------------------------------------------------------
 
-  async createConversation(title: string): Promise<string> {
+  /** 新建会话；agentId 非空即绑定 Agent（conversations.agent_id，T0.9-16）。 */
+  async createConversation(title: string, agentId: string | null = null): Promise<string> {
     const id: string = util.generateRandomUUID(true);
     const now: number = Date.now();
     // 显式给全部 NOT NULL 无默认值列：id / created_at / updated_at
     await this.rdb.exec(
-      `INSERT INTO conversations (id, title, message_count, meta, created_at, updated_at)
-       VALUES (?, ?, 0, '{}', ?, ?);`,
-      [id, title, now, now] as Array<SqlArg>
+      `INSERT INTO conversations (id, title, agent_id, message_count, meta, created_at, updated_at)
+       VALUES (?, ?, ?, 0, '{}', ?, ?);`,
+      [id, title, agentId !== null && agentId.length > 0 ? agentId : null, now, now] as Array<SqlArg>
     );
     return id;
   }
 
   async listConversations(limit: number): Promise<ConversationSummary[]> {
-    // 排序：置顶优先 → 最近有消息的优先（新建但未发言的会话用 updated_at 兜底）
+    // 排序：置顶优先 → 最近有消息的优先（新建但未发言的会话用 updated_at 兜底）。
+    // LEFT JOIN agent_defs：绑定 Agent 的名字随行给出（Agent 被删后 JOIN 落空 → 缺席，不猜名字）。
     return this.rdb.queryRows<ConversationSummary>(
-      `SELECT id, title, message_count, updated_at, last_message_at, meta
-         FROM conversations
-        WHERE archived = 0
-        ORDER BY pinned DESC, COALESCE(last_message_at, updated_at) DESC
+      `SELECT c.id, c.title, c.message_count, c.updated_at, c.last_message_at, c.meta,
+              c.agent_id, a.name AS agent_name
+         FROM conversations c
+         LEFT JOIN agent_defs a ON a.id = c.agent_id
+        WHERE c.archived = 0
+        ORDER BY c.pinned DESC, COALESCE(c.last_message_at, c.updated_at) DESC
         LIMIT ?;`,
       [limit] as Array<SqlArg>,
       (rs: relationalStore.ResultSet): ConversationSummary => {
@@ -97,6 +113,14 @@ export class ChatRepository {
           messageCount: rs.getLong(rs.getColumnIndex('message_count')),
           lastProviderKind: kind === 'local' ? 'local' : (kind === 'remote' ? 'remote' : undefined)
         };
+        const agentIdx: number = rs.getColumnIndex('agent_id');
+        if (!rs.isColumnNull(agentIdx)) {
+          summary.agentId = rs.getString(agentIdx);
+          const nameIdx: number = rs.getColumnIndex('agent_name');
+          if (!rs.isColumnNull(nameIdx)) {
+            summary.agentName = rs.getString(nameIdx);
+          }
+        }
         return summary;
       }
     );
@@ -345,10 +369,32 @@ export class ChatRepository {
   // --- 旁路读取（Agent 定义 / Provider 标签） ---------------------------------
 
   /** 会话绑定 Agent 时取其 system_prompt（agent_defs 表；V0.9 只用这一个字段） */
-  async agentSystemPrompt(agentId: string): Promise<string | null> {
-    return this.rdb.queryScalarString(
-      `SELECT system_prompt FROM agent_defs WHERE id = ? AND enabled = 1;`,
-      [agentId] as Array<SqlArg>
+  /**
+   * 会话绑定 Agent 的发送要素（T0.9-16）：system prompt + 绑定的 providerId + 名字。
+   * 一次查询取齐——send 路径每轮都读，两次往返没有必要。
+   * enabled=0 / 已删除 → null（调用方回退默认 prompt + 默认 Provider，并在日志留痕）。
+   */
+  async agentBinding(agentId: string): Promise<AgentBindingRow | null> {
+    return this.rdb.queryOne<AgentBindingRow>(
+      `SELECT name, system_prompt, model FROM agent_defs WHERE id = ? AND enabled = 1;`,
+      [agentId] as Array<SqlArg>,
+      (rs: relationalStore.ResultSet): AgentBindingRow => {
+        let providerId: string = '';
+        try {
+          const model: AgentBindingModel = JSON.parse(rs.getString(rs.getColumnIndex('model'))) as AgentBindingModel;
+          if (typeof model.providerId === 'string') {
+            providerId = model.providerId;
+          }
+        } catch (e) {
+          // model 列损坏按"未绑定模型"处理（回退默认 Provider），不让脏数据挡住发送
+        }
+        const row: AgentBindingRow = {
+          name: rs.getString(rs.getColumnIndex('name')),
+          systemPrompt: rs.getString(rs.getColumnIndex('system_prompt')),
+          providerId: providerId
+        };
+        return row;
+      }
     );
   }
 

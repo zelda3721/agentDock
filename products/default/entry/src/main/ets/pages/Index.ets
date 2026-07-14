@@ -17,9 +17,12 @@
  * V0.9 各 Tab 内容由 feature HSP 提供：
  *   chat / models 已接入；TODO(T0.9-16/18/27): 依次接入 agents / knowledge / settings HSP 组件
  */
-import { AdColor, AdSpace, AdType } from 'design-system';
+import { AdColor, AdSpace, AdStroke, AdType } from 'design-system';
 import { ChatPage } from 'chat';
 import { ModelListPage } from 'models';
+import { AgentEditor, AgentListPage } from 'agents';
+import { AgentService, ChatService } from 'core-agent';
+import { Logger } from 'core-infra';
 import { Breakpoint, BREAKPOINT_KEY } from '../common/BreakpointSystem';
 
 /** 一级导航项 */
@@ -50,6 +53,14 @@ struct Index {
   /** sm 断点下的单栏导航栈：会话列表 ↔ 聊天详情（§8：sm 用 Navigation 跳转） */
   @Provide('chatPathStack') chatPathStack: NavPathStack = new NavPathStack();
 
+  // ---- agents Tab 的装配状态（T0.9-16：sm 列表↔编辑器切换；md/lg 主从双栏） ----
+  @State private agentSelectedId: string = '';
+  @State private agentEditorOpen: boolean = false;
+  /** 列表刷新信号：编辑器保存/删除后 +1，AgentListPage @Watch 重拉 */
+  @State private agentsRefreshTick: number = 0;
+  /** 跨 Tab 指令：用智能体新建的会话 id，ChatPage @Watch 收到即打开（T0.9-16） */
+  @State private chatOpenConvId: string = '';
+
   build() {
     // 三端同一形态：内容区 + 底部 Tab（见文件头的 V0.9 裁量记录）
     Tabs({ index: this.navIndex }) {
@@ -61,12 +72,15 @@ struct Index {
               // 底部 Tab 让 entry 有了真实的一级导航能力：聊天页的「下载模型」行动邀请
               // 从此真的能行动（此前 canOpenModels=false，只给文字不画按钮——不画点了没反应的按钮）
               canOpenModels: true,
+              openConversationId: this.chatOpenConvId,
               onOpenModels: (): void => {
                 this.navIndex = MODELS_TAB_INDEX;
               }
             })
           } else if (item.key === 'models') {
             ModelListPage()
+          } else if (item.key === 'agents') {
+            this.AgentsPane()
           } else {
             this.PlaceholderPane(item.label, '待接入对应 feature HSP')
           }
@@ -82,6 +96,138 @@ struct Index {
     .width('100%')
     .height('100%')
     .backgroundColor(AdColor.bg)
+  }
+
+  /**
+   * agents Tab（T0.9-16）：sm 列表↔编辑器整页切换；md/lg 主从双栏（列表 320 + 编辑器）。
+   * 「聊天」按钮 = 用该智能体新建绑定会话并切到会话 Tab（跨 HSP 路由只在 entry 做，
+   * features 之间不互相依赖）。
+   */
+  @Builder
+  AgentsPane() {
+    if (this.breakpoint === Breakpoint.SM) {
+      if (this.agentEditorOpen) {
+        AgentEditor({
+          breakpoint: 'sm',
+          agentId: this.agentSelectedId,
+          onSaved: (id: string): void => {
+            this.agentsRefreshTick++;
+            this.agentSelectedId = id;
+            this.agentEditorOpen = false;
+          },
+          onDeleted: (_id: string): void => {
+            this.agentsRefreshTick++;
+            this.agentSelectedId = '';
+            this.agentEditorOpen = false;
+          },
+          onCancel: (): void => {
+            this.agentEditorOpen = false;
+          }
+        })
+      } else {
+        AgentListPage({
+          breakpoint: 'sm',
+          selectedAgentId: this.agentSelectedId,
+          refreshTick: this.agentsRefreshTick,
+          onSelectAgent: (id: string): void => {
+            this.agentSelectedId = id;
+            this.agentEditorOpen = true;
+          },
+          onCreateAgent: (): void => {
+            this.agentSelectedId = '';
+            this.agentEditorOpen = true;
+          },
+          onChatWithAgent: (id: string): void => {
+            this.chatWithAgent(id);
+          }
+        })
+      }
+    } else {
+      Row() {
+        Column() {
+          AgentListPage({
+            breakpoint: this.breakpoint === Breakpoint.LG ? 'lg' : 'md',
+            selectedAgentId: this.agentSelectedId,
+            refreshTick: this.agentsRefreshTick,
+            onSelectAgent: (id: string): void => {
+              this.agentSelectedId = id;
+              this.agentEditorOpen = true;
+            },
+            onCreateAgent: (): void => {
+              this.agentSelectedId = '';
+              this.agentEditorOpen = true;
+            },
+            onChatWithAgent: (id: string): void => {
+              this.chatWithAgent(id);
+            }
+          })
+        }
+        .width(320)
+        .height('100%')
+
+        Divider()
+          .vertical(true)
+          .strokeWidth(AdStroke.hairline)
+          .color(AdColor.border)
+          .height('100%')
+
+        Column() {
+          if (this.agentEditorOpen) {
+            AgentEditor({
+              breakpoint: this.breakpoint === Breakpoint.LG ? 'lg' : 'md',
+              agentId: this.agentSelectedId,
+              onSaved: (id: string): void => {
+                this.agentsRefreshTick++;
+                this.agentSelectedId = id;
+              },
+              onDeleted: (_id: string): void => {
+                this.agentsRefreshTick++;
+                this.agentSelectedId = '';
+                this.agentEditorOpen = false;
+              },
+              onCancel: (): void => {
+                this.agentEditorOpen = false;
+              }
+            })
+          } else {
+            // 从栏空态：主从布局的右栏必须有内容（说明现状，而不是留白让人怀疑坏了）
+            Column({ space: AdSpace.s2 }) {
+              Text('选中左侧的智能体进行编辑')
+                .fontSize(AdType.bodyM.size)
+                .lineHeight(AdType.bodyM.lineHeight)
+                .fontColor(AdColor.inkSecondary)
+              Text('或点「新建」创建一个')
+                .fontSize(AdType.caption.size)
+                .lineHeight(AdType.caption.lineHeight)
+                .fontColor(AdColor.inkTertiary)
+            }
+            .width('100%')
+            .height('100%')
+            .justifyContent(FlexAlign.Center)
+            .alignItems(HorizontalAlign.Center)
+          }
+        }
+        .layoutWeight(1)
+        .height('100%')
+      }
+      .width('100%')
+      .height('100%')
+    }
+  }
+
+  /** 用智能体开聊（T0.9-16）：新建绑定会话 → 切到会话 Tab → ChatPage 打开它 */
+  private async chatWithAgent(agentId: string): Promise<void> {
+    try {
+      await ChatService.get().whenReady();
+      await AgentService.get().whenReady();
+      const name: string = (await AgentService.get().getAgent(agentId)).name;
+      const convId: string = await ChatService.get().createConversation(name, agentId);
+      this.chatOpenConvId = convId;
+      this.navIndex = 0;
+    } catch (e) {
+      // 建会话失败不切 Tab（切过去也没有那个会话）；原因记日志供诊断
+      Logger.error('Index', 'chatWithAgent failed', [{ key: 'err', value: (e as Error).message }]);
+    }
   }
 
   @Builder

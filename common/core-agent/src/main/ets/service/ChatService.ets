@@ -37,9 +37,13 @@ import { Logger, Metrics } from 'core-infra';
 import { AsyncEventQueue } from '../chat/AsyncEventQueue';
 import { ChatCompactor, CompactResult, dropCoveredHistory } from '../chat/ChatCompactor';
 import { ChatPromptBuilder, PromptResult } from '../chat/ChatPromptBuilder';
-import { ChatRepository, ConversationRow } from '../chat/ChatRepository';
+import { AgentBindingRow, ChatRepository, ConversationRow } from '../chat/ChatRepository';
 import { BudgetLedger, WaterlineStatus } from '../context/ContextGovernor';
 import { ChatBudgetSpec, computeChatBudget } from '../context/GovernorDefaults';
+import { DEFAULT_LOOP_CONFIG } from '../model/AgentDef';
+import { RunFinishReason } from '../runtime/AgentRun';
+import { adjudicateAfterStep, decideNext, GateDecision, RunBudgetSpec, runStateOf } from '../runtime/RunGate';
+import { RunRecorder } from '../runtime/RunRecorder';
 import {
   CHAT_DEFAULT_MAX_OUTPUT_TOKENS,
   ChatErrorCode,
@@ -121,13 +125,73 @@ function settleWaterline(compactor: ChatCompactor, budget: ChatBudgetSpec,
   return compactor.settle(ledger);
 }
 
-/** 【稳定前缀】的 system prompt：会话绑定 Agent 时用其 system_prompt，否则用默认值 */
-async function systemPromptOf(repo: ChatRepository, conv: ConversationRow): Promise<string> {
+/** 会话绑定 Agent 的读取（未绑定/已删/已禁用 → null，调用方回退默认值） */
+async function bindingOf(repo: ChatRepository, conv: ConversationRow): Promise<AgentBindingRow | null> {
   if (conv.agentId === null || conv.agentId.length === 0) {
+    return null;
+  }
+  return repo.agentBinding(conv.agentId);
+}
+
+/** 【稳定前缀】的 system prompt：Agent 的 system_prompt（空则默认值）——R2 顺序里 system+Agent 定义同段 */
+function systemPromptFrom(binding: AgentBindingRow | null): string {
+  if (binding === null || binding.systemPrompt.length === 0) {
     return DEFAULT_SYSTEM_PROMPT;
   }
-  const prompt: string | null = await repo.agentSystemPrompt(conv.agentId);
-  return prompt === null || prompt.length === 0 ? DEFAULT_SYSTEM_PROMPT : prompt;
+  return binding.systemPrompt;
+}
+
+/** Provider 解析的结论（send 与 ctxUsage 共用同一裁决，[R-18] 同源） */
+interface TurnProviderResolution {
+  provider: InferenceProvider | null;
+  providerId: string;
+  /** provider===null 时的人类可读原因（诚实失败的文案就是它） */
+  failDetail: string;
+}
+
+/**
+ * 轮次 Provider 裁决（§3.4 规则 1 的 V0.9 版）：显式指定 > Agent 绑定 > 注册表默认。
+ * Agent 绑定的模型不可用时**不静默降级**到别的模型——静默换模型会改变用户预期，
+ * 且溯源条会说谎；诚实失败并给出行动路径（去模型页启用 / 编辑智能体换绑）。
+ */
+function resolveTurnProvider(binding: AgentBindingRow | null, explicitProviderId?: string): TurnProviderResolution {
+  if (explicitProviderId !== undefined && explicitProviderId.length > 0) {
+    const explicit: InferenceProvider | null = resolveProvider(explicitProviderId);
+    const r: TurnProviderResolution = {
+      provider: explicit,
+      providerId: explicitProviderId,
+      failDetail: explicit === null ? `指定的模型不可用（${explicitProviderId}）` : ''
+    };
+    return r;
+  }
+  if (binding !== null && binding.providerId.length > 0) {
+    const bound: InferenceProvider | null = resolveProvider(binding.providerId);
+    const r: TurnProviderResolution = {
+      provider: bound,
+      providerId: binding.providerId,
+      failDetail: bound === null
+        ? `智能体「${binding.name}」绑定的模型不可用（${binding.providerId}）。去模型页启用它，或编辑智能体换一个模型。`
+        : ''
+    };
+    return r;
+  }
+  const fallback: InferenceProvider | null = resolveProvider();
+  const r: TurnProviderResolution = {
+    provider: fallback,
+    providerId: fallback === null ? '' : fallback.id,
+    failDetail: fallback === null ? '没有可用的模型：请先下载本地模型或配置远程 Provider' : ''
+  };
+  return r;
+}
+
+/** 一步 LLM 生成的结果（generate 的返回；Run 循环据此记步账本并做终局裁决） */
+interface StepResult {
+  finishReason: FinishReason;
+  promptTokens: number;
+  completionTokens: number;
+  firstTokenMs: number;
+  latencyMs: number;
+  errorMessage: string;
 }
 
 /** 溯源条的 modelLabel：providers.name；未登记则回退 providerId（不编造型号名） */
@@ -212,16 +276,20 @@ class ChatTurn implements ChatTurnHandle {
   readonly convId: string;
 
   private readonly repo: ChatRepository;
+  /** Run 轨迹落库器（agent_runs/run_steps）；null = 服务未装配（轨迹失败不拖垮聊天） */
+  private readonly recorder: RunRecorder | null;
   private readonly controller: AbortController = new AbortController();
   private readonly events: AsyncEventQueue<ChatTurnEvent> = new AsyncEventQueue<ChatTurnEvent>();
   /** 是否被用户中断/被抢占（区分 aborted 与 failed：落库状态与 UI 呈现都不同） */
   private aborted: boolean = false;
 
-  constructor(runId: string, assistantMessageId: string, convId: string, repo: ChatRepository) {
+  constructor(runId: string, assistantMessageId: string, convId: string,
+              repo: ChatRepository, recorder: RunRecorder | null) {
     this.runId = runId;
     this.assistantMessageId = assistantMessageId;
     this.convId = convId;
     this.repo = repo;
+    this.recorder = recorder;
   }
 
   // --- ChatTurnHandle ---------------------------------------------------------
@@ -241,10 +309,55 @@ class ChatTurn implements ChatTurnHandle {
 
   // --- 执行体 -----------------------------------------------------------------
 
-  /** 由 ChatService.send 调用；本方法不抛异常——所有失败都转成 error 事件 + 落库 */
-  async run(text: string, provider: InferenceProvider | null, providerId: string,
+  /**
+   * 由 ChatService.send 调用；本方法不抛异常——所有失败都转成 error 事件 + 落库。
+   *
+   * 【T0.9-16：本方法是 Run 循环的宿主】一次用户消息 = 一个 Run（§5.2），结构 =
+   *   turn 级前置（user 落库 / Run 开账 / Agent 绑定 / Provider 裁决）
+   *   → **Run 循环**（前置裁决 → gather context → 一步 LLM → 步账本 → 终局裁决）
+   *   → Run 收束（agent_runs 终态）。
+   * 轨迹落库（RunRecorder）是可观测性，不是主链路——任何落账失败只记日志，不拖垮聊天。
+   */
+  async run(text: string, explicitProviderId: string | undefined,
             onFinished: (runId: string) => void): Promise<void> {
     const startedAt: number = Date.now();
+
+    // ---- Run 账本状态（settle 用；stepSeq 是 llm+compaction 共用的单调步号） ----
+    let runBegun: boolean = false;
+    let runSettled: boolean = false;
+    let stepsUsed: number = 0;
+    let stepSeq: number = 0;
+    let tokensPromptTotal: number = 0;
+    let tokensOutputTotal: number = 0;
+    let ctxPeak: number = 0;
+    let compactionCount: number = 0;
+
+    /** Run 收束（幂等；未开账/落账失败都不拖垮聊天） */
+    const settleRun = async (reason: RunFinishReason, error: string | null): Promise<void> => {
+      if (!runBegun || runSettled || this.recorder === null) {
+        return;
+      }
+      runSettled = true;
+      try {
+        await this.recorder.settleRun(this.runId, {
+          state: runStateOf(reason),
+          stepsUsed: stepsUsed,
+          tokensPrompt: tokensPromptTotal,
+          tokensOutput: tokensOutputTotal,
+          ctxPeakTokens: ctxPeak,
+          compactionCount: compactionCount,
+          error: error
+        });
+        // 轨迹即日志（§10）：单行标量，绝不落用户内容（红线 20）
+        Logger.info(TAG,
+          `PERF|run id=${this.runId} state=${runStateOf(reason)} reason=${reason} steps=${stepsUsed}` +
+          ` tokens_prompt=${tokensPromptTotal} tokens_output=${tokensOutputTotal}` +
+          ` ctx_peak=${ctxPeak} compactions=${compactionCount}`);
+      } catch (e) {
+        Logger.error(TAG, 'run settle failed', [{ key: 'err', value: (e as Error).message }]);
+      }
+    };
+
     try {
       const conv: ConversationRow | null = await this.repo.getConversation(this.convId);
       if (conv === null) {
@@ -253,39 +366,99 @@ class ChatTurn implements ChatTurnHandle {
       }
 
       // ---- [1] user 消息先落库，再发请求（进程被杀不丢用户输入；合同硬要求） ----
-      await this.repo.insertUserMessage(this.convId, text, this.runId);
+      const userMessageId: string = await this.repo.insertUserMessage(this.convId, text, this.runId);
       // 立刻刷新会话计数/时间：哪怕这一轮后面全失败，用户的话也已经在会话列表里"存在"了
       await this.repo.touchCounts(this.convId);
+
+      // ---- [1b] Run 开账（§5.2：每次用户消息创建一个 Run；轨迹失败不拖垮聊天） ----
+      if (this.recorder !== null) {
+        try {
+          await this.recorder.beginRun(this.runId, conv.agentId, this.convId, userMessageId);
+          runBegun = true;
+        } catch (e) {
+          Logger.error(TAG, 'run begin failed', [{ key: 'err', value: (e as Error).message }]);
+        }
+      }
 
       // ---- [2] 首轮生成标题（V0.9 用截断，不调模型；TODO(T1.0) 换 Nano 模型，§3.4） ----
       if (conv.title.length === 0) {
         await this.repo.setTitleIfEmpty(this.convId, ChatPromptBuilder.titleFromFirstMessage(text, TITLE_MAX_CHARS));
       }
 
-      // ---- [3] Provider 校验（无可用模型：诚实失败，不假装在生成） ----
+      // ---- [2b] Agent 绑定（T0.9-16）：会话绑定的 Agent 决定 system prompt 与模型 ----
+      const binding: AgentBindingRow | null = await bindingOf(this.repo, conv);
+      if (conv.agentId !== null && conv.agentId.length > 0 && binding === null) {
+        // 绑定的 Agent 已删/已禁用：回退默认（对用户可见——顶栏不再显示该智能体），日志留痕
+        Logger.warn(TAG, 'agent binding missing or disabled, fallback to default', [
+          { key: 'agent', value: conv.agentId }
+        ]);
+      }
+
+      // ---- [3] Provider 裁决（显式 > Agent 绑定 > 默认；不可用即诚实失败，不静默降级） ----
+      const resolution: TurnProviderResolution = resolveTurnProvider(binding, explicitProviderId);
+      const provider: InferenceProvider | null = resolution.provider;
+      const providerId: string = resolution.providerId;
       if (provider === null) {
-        const detail: string = '没有可用的模型：请先下载本地模型或配置远程 Provider';
-        await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, detail);
+        await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, resolution.failDetail);
         await this.repo.touchCounts(this.convId);
-        this.fail(ChatErrorCode.NO_PROVIDER, detail);
+        await settleRun('error', resolution.failDetail);
+        this.fail(ChatErrorCode.NO_PROVIDER, resolution.failDetail);
         return;
       }
 
       // ---- [4] 按 R2 顺序组 prompt（稳定前缀 → 摘要段（若有）→ 会话历史 → 易变尾部） ----
-      const systemPrompt: string = await systemPromptOf(this.repo, conv);
+      const systemPrompt: string = systemPromptFrom(binding);
       // loadHistoryForPrompt 已包含刚落库的本轮 user 消息：它属于【易变尾部】，
       // 不能同时出现在【半稳定】历史区，否则重复 → 剔除末尾那条 user。
       const history: ChatMessageRecord[] = dropTrailingUser(await this.repo.loadHistoryForPrompt(this.convId));
       // L3 摘要状态从 conversations.meta 恢复（T0.9-17）：seq ≤ coveredUpToSeq 的原文已在摘要段里
       let summaryState: ChatSummaryState | null = await this.repo.loadSummaryState(this.convId);
-      let assembly: PromptResult = assembleWithSummary(systemPrompt, history, summaryState, text, provider.kind);
 
-      // ---- [5] 预算结算：用 provider.countTokens **真算**，不估（§23.2） ----
+      // ================= Run 循环（loop 工程骨架，T0.9-16） =================
+      // 每一圈 = ①前置裁决（预算/取消在 LLM 调用**之前**检查——后置检查等于先烧钱再认账）
+      //         → ②gather context（装配 + 真算预算 + 水位压缩）→ ③一步 LLM（流式直出）
+      //         → ④步账本（append-only）→ ⑤终局裁决。
+      // V0.9 无工具循环（开发计划 §5.1 Won't）：⑤对每种生成结局都是终态——循环体真实、
+      // 继续分支诚实缺席；T1.0-01 在 ⑤ 接 tool_calls 的「回到①」，本骨架不动。
+      // verify 相（环境真值验证）V0.9 显式缺席：宁缺毋假（假 verifier 会让 loop 自信地发散）。
+      let stopReason: RunFinishReason = 'error';
+      let stopError: string | null = null;
+      // V0.9 循环预算取出厂 Interactive 档（8 步/120s，§24.1）；按 Agent 配置放宽随 T1.0-10 编辑器
+      const loopBudget: RunBudgetSpec = {
+        maxSteps: DEFAULT_LOOP_CONFIG.maxSteps,
+        timeoutMs: DEFAULT_LOOP_CONFIG.timeoutMs
+      };
+
+      while (true) {
+      // ---- ① 前置裁决 ----
+      const gate: GateDecision = decideNext(loopBudget, {
+        stepsUsed: stepsUsed,
+        elapsedMs: Date.now() - startedAt,
+        cancelled: this.aborted
+      });
+      if (!gate.proceed) {
+        stopReason = gate.stopReason ?? 'error';
+        if (stopReason === 'user_cancelled') {
+          await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, '已取消');
+          await this.repo.touchCounts(this.convId);
+          this.events.push({ type: 'done', finishReason: 'aborted' });
+        } else {
+          // V0.9 单步现实下预算类前置停止不可达（8 步/120s 对一步绰绰有余）——
+          // 这不是死代码，是 T1.0 多步循环的承重护栏，其数学由 tools/eval/agent-run 全覆盖。
+          stopError = stopReason === 'budget_steps' ? '本轮已达步数预算上限' : '本轮已超时';
+          await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, stopError);
+          await this.repo.touchCounts(this.convId);
+          this.fail(ChatErrorCode.PROVIDER_FAILED, stopError);
+        }
+        break;
+      }
+
+      // ---- ② gather context：装配 + 真算预算（§23.2）+ 水位压缩（T0.9-17） ----
+      let assembly: PromptResult = assembleWithSummary(systemPrompt, history, summaryState, text, provider.kind);
       const devCtxOverride: number = await this.repo.devCtxOverride();   // 仅开发用，见方法注释
       const budget: ChatBudgetSpec = budgetOf(provider.capabilities(), devCtxOverride);
       let promptTokens: number = await provider.countTokens(assembly.messages);
 
-      // ---- [5b] 水位线（§23.2）：working >70% → 本轮**先压缩再发送**（T0.9-17） ----
       const compactor: ChatCompactor = new ChatCompactor(provider);
       const anchorTokens: number = await anchorTokensOf(provider, assembly);
       const waterline: WaterlineStatus = settleWaterline(compactor, budget, anchorTokens, promptTokens);
@@ -330,6 +503,18 @@ class ChatTurn implements ChatTurnHandle {
               ` cost_ms=${costMs}`);
             Metrics.recordCtxPeakTokens(this.runId, tokensBefore);
             Metrics.recordCompaction(this.runId, 'L3', costMs);
+
+            // 压缩事件进 Run 轨迹（run_steps type='compaction'：压缩是显式操作，轨迹即日志 §10）
+            compactionCount++;
+            ctxPeak = Math.max(ctxPeak, tokensBefore);
+            if (runBegun && this.recorder !== null) {
+              stepSeq++;
+              try {
+                await this.recorder.recordCompactionStep(this.runId, stepSeq, tokensBefore, promptTokens, costMs);
+              } catch (e) {
+                Logger.error(TAG, 'record compaction step failed', [{ key: 'err', value: (e as Error).message }]);
+              }
+            }
           } else {
             // 近窗之外无可折叠消息（历史本就短，超预算的是 anchor/近窗本身）：压缩帮不上忙，
             // 走下方的容量硬判定——该失败就诚实失败，绝不静默截断。
@@ -343,6 +528,8 @@ class ChatTurn implements ChatTurnHandle {
           this.events.push({ type: 'compressing', compressing: false });
         }
       }
+
+      ctxPeak = Math.max(ctxPeak, promptTokens);
 
       if (promptTokens > budget.promptCapacity) {
         // §23.3：压缩已尽力（或无可压缩）仍装不下——**宁可诚实失败，不做静默掐头截尾**。
@@ -359,36 +546,76 @@ class ChatTurn implements ChatTurnHandle {
           { key: 'compacted', value: didCompact }
         ]);
         this.fail(ChatErrorCode.CTX_EXHAUSTED, detail);
-        return;
+        stopReason = 'context_exhausted';   // Run 终态 = budget_exceeded（§23.3 上下文预算耗尽）
+        stopError = detail;
+        break;
       }
 
-      // 用户在组 prompt 期间就点了停止：不发请求，也不留一条永远 streaming 的空壳
+      // 用户在组 prompt 期间就点了停止（①的采样此刻可能已过时——发前再看一眼）：
+      // 不发请求，也不留一条永远 streaming 的空壳
       if (this.aborted) {
         await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, '已取消');
         await this.repo.touchCounts(this.convId);
         this.events.push({ type: 'done', finishReason: 'aborted' });
-        return;
+        stopReason = 'user_cancelled';
+        break;
       }
 
-      // ---- [6] assistant 消息以 status='streaming' 落库（流开始时） ----
+      // assistant 消息以 status='streaming' 落库（流开始时）
       await this.repo.insertAssistantStreaming(this.assistantMessageId, this.convId, this.runId);
 
-      // ---- [7] 流式生成 ----
-      await this.generate(provider, providerId, assembly, promptTokens, budget, startedAt);
+      // ---- ③ 一步 LLM（流式直出） ----
+      const step: StepResult = await this.generate(provider, providerId, assembly, promptTokens, budget, startedAt);
+      stepsUsed++;
+      tokensPromptTotal += step.promptTokens;
+      tokensOutputTotal += step.completionTokens;
+
+      // ---- ④ 步账本（append-only；落账失败不拖垮聊天） ----
+      if (runBegun && this.recorder !== null) {
+        stepSeq++;
+        try {
+          await this.recorder.recordLlmStep({
+            runId: this.runId,
+            seq: stepSeq,
+            providerId: providerId,
+            tokensPrompt: step.promptTokens,
+            tokensOutput: step.completionTokens,
+            firstTokenMs: step.firstTokenMs > 0 ? step.firstTokenMs : null,
+            latencyMs: step.latencyMs,
+            state: step.finishReason === 'aborted' ? 'cancelled'
+              : (step.finishReason === 'error' ? 'failed' : 'done'),
+            error: step.errorMessage.length > 0 ? step.errorMessage : null,
+            resultRef: `message:${this.assistantMessageId}`
+          });
+        } catch (e) {
+          Logger.error(TAG, 'record llm step failed', [{ key: 'err', value: (e as Error).message }]);
+        }
+      }
+
+      // ---- ⑤ 终局裁决：V0.9 每种生成结局都是终态（无工具 → 无「回到①」的分支） ----
+      // TODO(T1.0-01): finishReason==='tool_calls' 时执行工具、回填 tool 消息并 continue。
+      stopReason = adjudicateAfterStep(step.finishReason);
+      stopError = step.errorMessage.length > 0 ? step.errorMessage : null;
+      break;
+      }
+      // ================= Run 循环结束 =================
+
+      await settleRun(stopReason, stopError);
     } catch (e) {
       const err: Error = e as Error;
       // 未预期的异常（多半是 RDB 写入失败，含安全模式只读）。用户内容禁止进日志（红线 20）。
       Logger.error(TAG, 'chat turn failed', [{ key: 'err', value: err.message }]);
       this.fail(ChatErrorCode.PERSIST_FAILED, `本轮对话失败：${err.message}`);
+      await settleRun('error', err.message);
     } finally {
       this.events.close();
       onFinished(this.runId);
     }
   }
 
-  /** 流式主循环：消费 StreamDelta → 回吐 ChatTurnEvent → 结束时按 done/aborted/failed 落库 */
+  /** 一步 LLM 生成：消费 StreamDelta → 回吐 ChatTurnEvent → 结束时按 done/aborted/failed 落库；返回步结果供 Run 账本 */
   private async generate(provider: InferenceProvider, providerId: string, assembly: PromptResult,
-                         promptTokens: number, budget: ChatBudgetSpec, startedAt: number): Promise<void> {
+                         promptTokens: number, budget: ChatBudgetSpec, startedAt: number): Promise<StepResult> {
     const options: GenerateOptions = {
       maxTokens: budget.maxOutputTokens,
       signal: this.controller.signal
@@ -490,9 +717,19 @@ class ChatTurn implements ChatTurnHandle {
         message: `生成失败：${errorMessage}`,
         finishReason: 'error'
       });
-      return;
+    } else {
+      this.events.push({ type: 'done', finishReason: finishReason });
     }
-    this.events.push({ type: 'done', finishReason: finishReason });
+
+    const step: StepResult = {
+      finishReason: finishReason,
+      promptTokens: promptTokensFinal,
+      completionTokens: completionTokens,
+      firstTokenMs: firstTokenMs,
+      latencyMs: latencyMs,
+      errorMessage: errorMessage
+    };
+    return step;
   }
 
   /** 失败出口：只发 error 事件（不再发 done）。UI 据 code 决定行动按钮（如 CTX_EXHAUSTED → "新建会话"）。 */
@@ -538,9 +775,13 @@ export class ChatService {
     return ChatService.instance;
   }
 
+  /** Run 轨迹落库器（agent_runs/run_steps，T0.9-16）；null = 尚未装配 */
+  private recorder: RunRecorder | null = null;
+
   /** entry 启动时装配一次：注入**已打开**的 RDB（开库与迁移是 core-data 的事，本层不碰） */
   async init(rdb: AppRdbStore): Promise<void> {
     this.repo = new ChatRepository(rdb);
+    this.recorder = new RunRecorder(rdb);
     this.ready = true;
     if (this.readyResolve !== null) {
       this.readyResolve();
@@ -570,8 +811,9 @@ export class ChatService {
     return this.requireRepo().listConversations(limit);
   }
 
-  createConversation(title: string): Promise<string> {
-    return this.requireRepo().createConversation(title);
+  /** 新建会话；agentId 非空即绑定智能体（发送用其 system prompt 与绑定模型，T0.9-16） */
+  createConversation(title: string, agentId?: string): Promise<string> {
+    return this.requireRepo().createConversation(title, agentId !== undefined && agentId.length > 0 ? agentId : null);
   }
 
   async deleteConversation(convId: string): Promise<void> {
@@ -633,16 +875,14 @@ export class ChatService {
     const runId: string = util.generateRandomUUID(true);
     const assistantMessageId: string = util.generateRandomUUID(true);
 
-    // Provider 解析放在同步段，但**解析失败不抛异常**：失败也要走完整的"user 落库 + error 事件"流程
-    // （在 turn.run 里）。若在这里抛，UI 拿不到句柄，用户输入就没人负责落库了。
-    const provider: InferenceProvider | null = resolveProvider(providerId);
-    const effectiveId: string = provider === null ? (providerId ?? '') : provider.id;
-
-    const turn: ChatTurn = new ChatTurn(runId, assistantMessageId, convId, repo);
+    // Provider 裁决在 run() 内完成（显式 > Agent 绑定 > 默认，见 resolveTurnProvider）：
+    // Agent 绑定要先读会话行，是异步的——send 只负责同步造句柄，解析失败也走完整的
+    // "user 落库 + error 事件"流程。若在这里抛，UI 拿不到句柄，用户输入就没人负责落库了。
+    const turn: ChatTurn = new ChatTurn(runId, assistantMessageId, convId, repo, this.recorder);
     this.turns.set(runId, turn);
 
     // 不 await：send 必须同步返回句柄。run() 内部吞掉所有异常并转成 error 事件，故无未处理的 rejection。
-    turn.run(text, provider, effectiveId, (finishedRunId: string): void => {
+    turn.run(text, providerId, (finishedRunId: string): void => {
       this.turns.delete(finishedRunId);
     });
 
@@ -669,15 +909,20 @@ export class ChatService {
    */
   async ctxUsage(convId: string, providerId?: string): Promise<CtxUsage> {
     const repo: ChatRepository = this.requireRepo();
-    const provider: InferenceProvider | null = resolveProvider(providerId);
-    if (provider === null) {
-      // 没有 Provider 就没有 tokenizer，也就没有诚实的水位可报——不编造一个 0%
-      throw new Error('ctxUsage: 没有可用的 Provider（请先下载本地模型或配置远程 Provider）');
-    }
-
     const conv: ConversationRow | null = await repo.getConversation(convId);
     if (conv === null) {
       throw new Error(`ctxUsage: 会话不存在：${convId}`);
+    }
+
+    // Provider 裁决与 send() 完全同一函数（显式 > Agent 绑定 > 默认）：
+    // 绑定 Agent 的会话按**它绑定的模型**算水位——tokenizer 和 ctx 上限都随模型变，
+    // 用别的模型算出来的水位对这个会话就是假读数。
+    const binding: AgentBindingRow | null = await bindingOf(repo, conv);
+    const resolution: TurnProviderResolution = resolveTurnProvider(binding, providerId);
+    const provider: InferenceProvider | null = resolution.provider;
+    if (provider === null) {
+      // 没有 Provider 就没有 tokenizer，也就没有诚实的水位可报——不编造一个 0%
+      throw new Error(`ctxUsage: ${resolution.failDetail}`);
     }
 
     const history: ChatMessageRecord[] = await repo.loadHistoryForPrompt(convId);
@@ -685,7 +930,7 @@ export class ChatService {
     // 口径分叉 = "水位显示 60% 却发送失败"，那是最伤信任的 bug（[R-18]）。
     const summaryState: ChatSummaryState | null = await repo.loadSummaryState(convId);
     const assembly: PromptResult = assembleWithSummary(
-      await systemPromptOf(repo, conv), history, summaryState,
+      systemPromptFrom(binding), history, summaryState,
       '',   // 尚未输入的本轮消息不计入水位（它还不存在）
       provider.kind
     );

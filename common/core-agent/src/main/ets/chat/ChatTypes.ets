@@ -167,6 +167,10 @@ export interface ConversationSummary {
   messageCount: number;
   /** 会话列表行的 local/remote 芯片；取自 conversations.meta 的 lastProviderKind */
   lastProviderKind?: 'local' | 'remote';
+  /** 绑定的 Agent（conversations.agent_id，T0.9-16）；未绑定则两项都缺席 */
+  agentId?: string;
+  /** 绑定 Agent 的名字（LEFT JOIN agent_defs；Agent 已删则缺席——绑定随删除解除） */
+  agentName?: string;
 }
 
 /** 一轮对话的句柄（send 的返回值） */

@@ -9,8 +9,22 @@
  * 完整编辑器（工具/记忆策略/loop 预算/anchor 告警）与 Run 轨迹回放见 T1.0-10。
  */
 
+import {
+  AgentDef,
+  AgentKnowledgeConfig,
+  AgentModelConfig,
+  AgentService,
+  AgentSummary,
+  BrainOption,
+  DEFAULT_KNOWLEDGE_TOP_K,
+  DEFAULT_LOOP_CONFIG
+} from 'core-agent';
+
 /** 断点标识（设计文档 §8）。 */
 export type BreakpointKey = 'sm' | 'md' | 'lg';
+
+/** 新建 Agent 的默认头像（emoji；V0.9 编辑器不暴露 avatar 字段，T1.0-10 编辑器补） */
+export const DEFAULT_AGENT_AVATAR: string = '🤖';
 
 /** 列表页展示的智能体条目。 */
 export interface AgentListItem {
@@ -20,8 +34,10 @@ export interface AgentListItem {
   avatar: string;
   /** 绑定的 Provider id，如 'local:qwen4b'（§5.1 model.providerId）。 */
   providerId: string;
-  /** 最近使用时间（§5.4 列表展示最近使用）。 */
+  /** 最近使用时间（agent_runs 真值，§5.4）；从未用过为 0（UI 显示"未使用过"，不编时间）。 */
   lastUsedAt: number;
+  /** 绑定的模型当前是否可用（不可用 ⇒ 用它发送会诚实失败，列表必须可见这一事实）。 */
+  providerAvailable: boolean;
 }
 
 /**
@@ -59,39 +75,101 @@ export interface ProviderOption {
 }
 
 /**
- * agents 的 UI 侧门面。V0.9 接 core-agent 的 AgentService 薄层（无工具循环，T0.9-16）。
- * 红线：禁止伪实现——未实现方法一律抛错。
+ * agents 的 UI 侧门面（T0.9-16）：core-agent AgentService 的 UI 侧适配。
+ * features/agents 只依赖 core-agent 与 design-system——**不得直连 core-llm / core-data**。
  */
 export class AgentFacade {
-  public listAgents(): Promise<AgentListItem[]> {
-    // TODO(T0.9-16): 按设计文档 §5.1/§7 从 core-agent + core-data 读取 Agent 定义表（裁剪版）
-    throw new Error('Not implemented: T0.9-16');
+  public async listAgents(): Promise<AgentListItem[]> {
+    await AgentService.get().whenReady();
+    const summaries: AgentSummary[] = await AgentService.get().listAgentSummaries();
+    return summaries.map((s: AgentSummary): AgentListItem => {
+      const item: AgentListItem = {
+        id: s.def.id,
+        name: s.def.name,
+        avatar: s.def.avatar ?? DEFAULT_AGENT_AVATAR,
+        providerId: s.def.model.providerId,
+        lastUsedAt: s.lastRunAt,
+        providerAvailable: s.providerAvailable
+      };
+      return item;
+    });
   }
 
-  public loadDraft(agentId: string): Promise<AgentDraftV09> {
-    // TODO(T0.9-16): 按设计文档 §5.1 读取单个 Agent，映射为四字段草稿
-    throw new Error('Not implemented: T0.9-16');
+  public async loadDraft(agentId: string): Promise<AgentDraftV09> {
+    await AgentService.get().whenReady();
+    const def: AgentDef = await AgentService.get().getAgent(agentId);
+    const draft: AgentDraftV09 = {
+      id: def.id,
+      name: def.name,
+      systemPrompt: def.systemPrompt,
+      providerId: def.model.providerId,
+      libIds: def.knowledge !== undefined ? def.knowledge.libIds : []
+    };
+    return draft;
   }
 
-  public saveDraft(draft: AgentDraftV09): Promise<string> {
-    // TODO(T0.9-16): 按设计文档 §5.1 校验并落库（新建返回新 id），其余字段取出厂默认值
-    throw new Error('Not implemented: T0.9-16');
+  /**
+   * 校验并落库（新建返回新 id）。V0.9 未暴露字段取出厂默认值（loop=8步/120s 等，
+   * 见 AgentDef 的 DEFAULT_*；已有 Agent 的高级字段由 AgentRepo 保证不被冲掉）。
+   */
+  public async saveDraft(draft: AgentDraftV09): Promise<string> {
+    const name: string = draft.name.trim();
+    if (name.length === 0) {
+      throw new Error('名称不能为空');
+    }
+    if (draft.providerId.length === 0) {
+      throw new Error('请选择一个模型');
+    }
+    await AgentService.get().whenReady();
+    const now: number = Date.now();
+    const id: string = draft.id.length > 0 ? draft.id : AgentService.get().newAgentId();
+    const model: AgentModelConfig = { providerId: draft.providerId };
+    const knowledge: AgentKnowledgeConfig = {
+      libIds: draft.libIds,
+      topK: DEFAULT_KNOWLEDGE_TOP_K,
+      requireCitation: false
+    };
+    const def: AgentDef = {
+      id: id,
+      name: name,
+      avatar: DEFAULT_AGENT_AVATAR,
+      systemPrompt: draft.systemPrompt,
+      model: model,
+      knowledge: knowledge,
+      tools: [],   // V0.9 无工具循环（开发计划 §5.1 Won't）
+      loop: DEFAULT_LOOP_CONFIG,
+      createdAt: now,
+      updatedAt: now
+    };
+    await AgentService.get().saveAgent(def);
+    return id;
   }
 
-  public deleteAgent(agentId: string): Promise<void> {
-    // TODO(T0.9-16): 按设计文档 §7 删除 Agent 定义（会话不级联删除，仅解绑）
-    throw new Error('Not implemented: T0.9-16');
+  /** 删除（内置不可删；会话解绑不删除——语义见 core-agent AgentRepo.remove）。 */
+  public async deleteAgent(agentId: string): Promise<void> {
+    await AgentService.get().whenReady();
+    await AgentService.get().removeAgent(agentId);
   }
 
-  /** 可选模型列表（core-llm）。 */
-  public listProviders(): Promise<ProviderOption[]> {
-    // TODO(T0.9-16): 按设计文档 §3.1/§3.4 从 core-llm 取已配置且可用的 Provider
-    throw new Error('Not implemented: T0.9-16');
+  /** 可选模型列表（经 core-agent 中转，features 不直连 core-llm）。 */
+  public async listProviders(): Promise<ProviderOption[]> {
+    await AgentService.get().whenReady();
+    const brains: BrainOption[] = await AgentService.get().listBrainOptions();
+    return brains.map((b: BrainOption): ProviderOption => {
+      const option: ProviderOption = {
+        providerId: b.providerId,
+        displayName: b.label,
+        kind: b.kind
+      };
+      return option;
+    });
   }
 
-  /** 可选知识库列表（core-rag）。 */
+  /**
+   * 可选知识库列表。V0.9 恒为空数组——core-rag 随 T0.9-18 交付，此刻**确实没有任何库**
+   * （空数组是事实，不是占位）；编辑器据空列表显示"知识库功能随 T0.9-18 交付"说明。
+   */
   public listKnowledgeBases(): Promise<KbOption[]> {
-    // TODO(T0.9-16): 按设计文档 §4.1 从 core-rag 取库列表（含隐私级别，供 §9.2 围栏提示）
-    throw new Error('Not implemented: T0.9-16');
+    return Promise.resolve([] as KbOption[]);
   }
 }

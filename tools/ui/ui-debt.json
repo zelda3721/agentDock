@@ -15,8 +15,6 @@
     "features/chat/src/main/ets/components/ChatPage.ets",
     "features/knowledge/src/main/ets/components/KbListPage.ets",
     "features/knowledge/src/main/ets/components/KbDocumentList.ets",
-    "features/agents/src/main/ets/components/AgentListPage.ets",
-    "features/agents/src/main/ets/components/AgentEditor.ets",
     "features/settings/src/main/ets/components/SettingsPage.ets",
     "features/settings/src/main/ets/components/LicensePage.ets",
     "features/memory/src/main/ets/components/MemoryPage.ets"

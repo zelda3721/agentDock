@@ -107,3 +107,8 @@ jobs:
       # 全仓 PR 恒跑（套件秒级，不做路径过滤——过滤条件本身也会腐烂）。
       - name: 压缩回归（跑真实源码）
         run: node tools/eval/compression-regression/run-regression.mjs
+
+      # §10：core 层单元测试全覆盖 AgentRun 状态机（T0.9-16）。
+      # 同一方法论：转译直跑 runtime/AgentRun.ets 与 RunGate.ets——迁移表/裁决器改动即时反映。
+      - name: AgentRun 状态机 + RunGate 回归（跑真实源码）
+        run: node tools/eval/agent-run/run-tests.mjs

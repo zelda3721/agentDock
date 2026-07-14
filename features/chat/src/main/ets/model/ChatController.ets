@@ -178,10 +178,10 @@ export class ChatController {
     }
   }
 
-  /** 新建会话并选中它。返回新会话 id；失败返回空串。 */
-  async createConversation(title: string): Promise<string> {
+  /** 新建会话并选中它（agentId 非空即绑定智能体）。返回新会话 id；失败返回空串。 */
+  async createConversation(title: string, agentId?: string): Promise<string> {
     try {
-      const id: string = await this.service.createConversation(title);
+      const id: string = await this.service.createConversation(title, agentId);
       await this.loadConversations(50);
       await this.selectConversation(id);
       return id;
@@ -455,6 +455,7 @@ export class ChatController {
     vm.timestamp = formatClock(s.updatedAt);
     vm.brainKnown = s.lastProviderKind !== undefined;
     vm.local = s.lastProviderKind !== 'remote';
+    vm.agentName = s.agentName !== undefined ? s.agentName : '';
     return vm;
   }
 

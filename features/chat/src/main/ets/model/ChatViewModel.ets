@@ -62,6 +62,8 @@ export class ConversationVM {
   /** 该会话最后一次回答的来源；unknown = 还没有回答过，不渲染 local/remote 芯片（不猜） */
   brainKnown: boolean = false;
   local: boolean = true;
+  /** 绑定的智能体名字（T0.9-16）；空串 = 未绑定（顶栏与列表都不显示智能体位） */
+  agentName: string = '';
 
   constructor(id: string, title: string) {
     this.id = id;

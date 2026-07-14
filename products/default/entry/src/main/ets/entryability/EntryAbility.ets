@@ -22,7 +22,7 @@ import {
 } from 'core-data';
 import { EventBus, Logger } from 'core-infra';
 import { LocalProvider, ProviderRegistry } from 'core-llm';
-import { ChatService } from 'core-agent';
+import { AgentService, ChatService } from 'core-agent';
 import { BreakpointSystem } from '../common/BreakpointSystem';
 
 const DOMAIN: number = 0x1001;
@@ -78,8 +78,9 @@ export default class EntryAbility extends UIAbility {
         this.onActiveModelChanged(ev);
       });
 
-      // 4) 聊天服务
+      // 4) 聊天服务 + 智能体服务（T0.9-16：Agent CRUD 与 Run 轨迹共用同一 RDB）
       await ChatService.get().init(rdb);
+      AgentService.get().init(rdb);
       hilog.info(DOMAIN, TAG, 'core stack ready');
     } catch (e) {
       const err = e as BusinessError;
@@ -88,6 +89,7 @@ export default class EntryAbility extends UIAbility {
       hilog.error(DOMAIN, TAG, 'initCoreStack failed: code=%{public}d %{public}s', err.code, err.message);
       Logger.error(TAG, 'initCoreStack failed', [{ key: 'code', value: err.code }]);
       ChatService.get().initFailed(err);
+      AgentService.get().initFailed(err);
     }
   }
 
