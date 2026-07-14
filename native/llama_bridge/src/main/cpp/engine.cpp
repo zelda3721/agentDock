@@ -282,10 +282,18 @@ ErrorCode Engine::CreateSession(const SessionConfig& config, SessionHandle* outH
   if (config.embeddingOnly) {
     // embedding 会话（bge-small / bge-m3 量化档）：整条文本必须落在**同一个 ubatch** 里，
     // pooling 才能算出序列级向量——因此 n_batch/n_ubatch 拉到 n_ctx。
+    //
+    // 【真机崩溃修复 2026-07-14】n_ctx 必须钳到模型训练上下文：调用方若把聊天模型的
+    // contextSize（如 32768）原样传给 bge（n_ctx_train=512），n_ubatch=32768 的计算
+    // 缓冲分配会直接把进程打死（冒烟④实录：session created 后 1 秒 cppcrash）。
+    const int32_t trainCtx = llama_model_n_ctx_train(model);
+    if (trainCtx > 0 && cparams.n_ctx > static_cast<uint32_t>(trainCtx)) {
+      cparams.n_ctx = static_cast<uint32_t>(trainCtx);
+    }
     cparams.embeddings = true;
     cparams.pooling_type = LLAMA_POOLING_TYPE_MEAN;
-    cparams.n_batch = config.contextSize;
-    cparams.n_ubatch = config.contextSize;
+    cparams.n_batch = cparams.n_ctx;
+    cparams.n_ubatch = cparams.n_ctx;
   } else {
     // 生成会话：n_batch 限流以压住预填阶段的计算缓冲峰值（手机内存预算紧，§3.2-3），
     // 超长 prompt 由 Generate 分块预填。

@@ -346,18 +346,24 @@ export class IngestPipeline {
    * 能力存在：T0.9-11 接入时**必须**经此函数选 Provider，不得绕过。
    */
   selectEmbedProvider(lib: KbLibrary, candidates: InferenceProvider[]): InferenceProvider {
+    // 两遍扫描：本地优先必须与注册顺序无关（真机实证：注册表里远程排前时，
+    // 单遍循环会让 allow_remote 库选中不支持 embedding 的远程端——2026-07-14 冒烟④抓获）
     for (const candidate of candidates) {
-      if (candidate.kind === 'local') {
+      if (candidate.kind === 'local' && candidate.capabilities().supportsEmbedding) {
         return candidate;   // 本地永远合规且优先（数据不出端）
       }
-      if (IngestPipeline.allowsRemoteEmbedding(lib.privacyLevel)) {
-        return candidate;   // allow_remote 的库才允许远程 /embeddings
-      }
-      // local_only + remote 候选：跳过（绝不静默降级为远程）
     }
+    if (IngestPipeline.allowsRemoteEmbedding(lib.privacyLevel)) {
+      for (const candidate of candidates) {
+        if (candidate.kind === 'remote' && candidate.capabilities().supportsEmbedding) {
+          return candidate;   // allow_remote 的库才允许远程 /embeddings，且必须真支持
+        }
+      }
+    }
+    // local_only + 仅远程候选：不静默降级为远程
     throw new Error(lib.privacyLevel === 'local_only'
       ? '该知识库为「仅本地」：需要本地 embedding 模型（请先在模型页下载）'
-      : '没有可用的 embedding Provider');
+      : '没有支持 embedding 的 Provider');
   }
 
   /** 围栏纯判定：该隐私级别是否允许使用远程 embedding（与 ContextBuilder 共用同一语义） */

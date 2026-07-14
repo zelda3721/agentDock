@@ -49,6 +49,12 @@ import { messageContentToText } from './InferenceProvider';
 
 const TAG: string = 'LocalProvider';
 
+/**
+ * embedding 会话的 ctx 上限：片段预算 512 token（ChunkPolicy）的两倍裕量。
+ * 不继承聊天 ctx——embeddingOnly 会话 n_ubatch=n_ctx，32768 的计算缓冲真机直接崩。
+ */
+const EMBED_SESSION_CTX: number = 1024;
+
 /** embedding 分批大小（§4.2-[4]：摄取流水线按 32 条/批调用） */
 const EMBED_BATCH_SIZE: number = 32;
 
@@ -478,7 +484,11 @@ export class LocalProvider implements InferenceProvider {
       : this.config.embeddingModelPath;
     const cfg: LlamaSessionConfig = {
       modelPath: path,
-      contextSize: this.contextSize(),
+      // embedding 会话**不继承**聊天 ctx（32768 的 n_ubatch 计算缓冲在真机直接打死进程，
+      // 2026-07-14 冒烟④实录）：片段预算 512 token（ChunkPolicy），1024 已是两倍裕量；
+      // engine 侧还会按模型训练上下文（bge=512）二次钳制。超预算的整表片段 embed 会
+      // 如实报 CONTEXT_OVERFLOW → 该文档诚实降级 FTS 单路（IngestPipeline 既有路径）。
+      contextSize: Math.min(this.contextSize(), EMBED_SESSION_CTX),
       threadCount: this.config.threadCount,
       useMmap: true,
       // 关键：pooling 只在 embeddingOnly 会话里开启（engine.cpp:246）
