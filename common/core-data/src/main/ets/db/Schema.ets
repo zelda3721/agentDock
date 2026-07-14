@@ -59,9 +59,9 @@ export enum FtsRoute {
 }
 
 /**
- * 当前生效路线。
- * TODO(T0.9-05): 按设计文档 §4.4 完成中文分词双路线 spike（native 扩展加载可行性验证），W3 末定案后修改此常量，
- * 并把结论写入 kv_config(ConfigKeys.RAG_FTS_ROUTE)；若定案为 A，新增一条迁移重建 kb_chunk_fts。
+ * 当前生效路线。**已定案**（T0.9-05/S2，docs/spikes/S2-fts-tokenization.md）：
+ * 路线 B（预分词影子列）+ CJK bigram——零平台依赖，金标集 30/30=100%@top6 实证。
+ * 切换到 jieba-wasm/路线 A 的条件与纪律见 S2 存档 §5（同批切换 + KB_REINDEX_LIB 整库重建）。
  */
 export const FTS_ROUTE: FtsRoute = FtsRoute.SHADOW_COLUMN;
 
