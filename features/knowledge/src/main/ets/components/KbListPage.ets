@@ -165,7 +165,7 @@ export struct KbListPage {
                 }
               })
             }
-          }, (item: KbItem) => `${item.libId}|${item.docCount}|${item.chunkCount}`)
+          }, (item: KbItem) => `${item.libId}|${item.docCount}|${item.chunkCount}|${item.privacyLevel}`)
         }
         .layoutWeight(1)
         .width('100%')
@@ -176,14 +176,55 @@ export struct KbListPage {
     .backgroundColor(AdColor.bg)
   }
 
+  /**
+   * 隐私级别切换（§4.5 / [R-98]）。放宽（仅本地 → 可出端）必须具名确认：写清库名、
+   * 文档数、"今后允许被发送到远程模型，影响将来所有对话"；图标由实心坞形变空心云弧
+   * （视觉可验证）。收紧（可出端 → 仅本地）是安全方向，直接生效。
+   * 为什么开关在**库**上而不是模型上：隐私是数据的属性，不是通道的属性（红线 17 的
+   * 数据源头就是 kb_library.privacy_level）——按库授权，围栏与 embedding 选择自动跟随。
+   */
+  private togglePrivacy(item: KbItem): void {
+    if (item.privacyLevel === 'local_only') {
+      this.getUIContext().showAlertDialog({
+        title: `允许知识库「${item.name}」发送到远程模型？`,
+        message: `该库的 ${item.docCount} 篇文档（${item.chunkCount} 个片段）今后允许随对话发送到远程模型，` +
+          `影响将来所有对话。远程服务商将能看到被引用的内容。可随时改回「仅本地」。`,
+        primaryButton: {
+          value: '保持仅本地',
+          action: () => {
+          }
+        },
+        secondaryButton: {
+          value: '允许发送',
+          fontColor: AdColor.remoteFg,
+          action: () => {
+            this.facade.setLibraryPrivacy(item.libId, 'normal').then((): void => {
+              this.reload();
+            });
+          }
+        }
+      });
+    } else {
+      // 收紧：安全方向，直接生效
+      this.facade.setLibraryPrivacy(item.libId, 'local_only').then((): void => {
+        this.reload();
+      });
+    }
+  }
+
   @Builder
   trailingSlot(item: KbItem) {
     Row({ space: AdSpace.s2 }) {
-      // 隐私级别徽标：仅本地 = LOCAL 轴（实心坞形）；可出端 = REMOTE 轴（空心云弧）——[R-98] 视觉可验证
+      // 隐私级别徽标：仅本地 = LOCAL 轴（实心坞形）；可出端 = REMOTE 轴（空心云弧）——
+      // [R-98] 视觉可验证；**可点切换**（放宽走具名确认，见 togglePrivacy）
       AdTag({
         kind: item.privacyLevel === 'local_only' ? AdTagKind.LOCAL : AdTagKind.REMOTE,
         text: item.privacyLevel === 'local_only' ? '仅本地' : '可出端',
-        inline: true
+        inline: true,
+        interactive: true,
+        onAction: () => {
+          this.togglePrivacy(item);
+        }
       })
       AdButton({
         label: '删除',

@@ -174,6 +174,17 @@ export class KbRepo {
     });
   }
 
+  /**
+   * 改隐私级别（§4.5 / [R-98]）。放宽（local_only → allow_remote）的具名确认在 UI 侧；
+   * 数据层只负责真值落库——围栏（ContextBuilder/embedding 选择）读的就是这一列。
+   */
+  async setPrivacyLevel(libId: string, level: PrivacyLevel): Promise<void> {
+    await this.rdb.exec(
+      `UPDATE kb_library SET privacy_level = ?, updated_at = ? WHERE id = ?;`,
+      [level === 'allow_remote' ? 'allow_remote' : 'local_only', Date.now(), libId] as Array<SqlArg>
+    );
+  }
+
   /** 重算并落库 stats（导入/删除后调用；重算永远自洽，+1 式增量在并发下会漂移） */
   async refreshStats(libId: string): Promise<KbStats> {
     const docCount: number = (await this.rdb.queryScalarInt(

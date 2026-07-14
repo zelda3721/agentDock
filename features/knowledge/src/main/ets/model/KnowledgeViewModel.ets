@@ -127,6 +127,13 @@ export class KnowledgeFacade {
     await KnowledgeService.get().deleteDocument(docId);
   }
 
+  /** 改隐私级别（UI 侧完成 [R-98] 具名确认后调用） */
+  public async setLibraryPrivacy(libId: string, privacyLevel: PrivacyLevel): Promise<void> {
+    await KnowledgeService.get().whenReady();
+    await KnowledgeService.get().setPrivacyLevel(
+      libId, privacyLevel === 'normal' ? 'allow_remote' : 'local_only');
+  }
+
   /** 原文预览（§4.5）：片段按 seq 升序返回（渲染层拼接展示；focusChunkId 供定位高亮） */
   public async previewDocument(docId: string, focusChunkId: string): Promise<DocPreviewBlock[]> {
     await KnowledgeService.get().whenReady();

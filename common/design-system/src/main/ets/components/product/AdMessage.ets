@@ -192,12 +192,15 @@ export struct AdMessage {
         // 状态行
         if (this.status === AdMessageStatus.STREAMING) {
           Row({ space: AdSpace.s2 }) {
+            // §5.2 动词表：按钮用动词「停止」（与输入区同词）——曾用名词性的「中断」，
+            // 真机反馈把它读成了状态"已中断"（生成中的消息看起来像断了），体验事故
             AdButton({
-              label: '中断',
+              label: '停止',
               variant: AdButtonVariant.SECONDARY,
               btnSize: AdButtonSize.SM,
               showGlyph: true,
               glyph: AdGlyphKind.CROSS,
+              a11yText: '停止生成',
               onAction: () => {
                 this.onAbort();
               }
@@ -274,11 +277,15 @@ export struct AdMessage {
         // 附加槽（工具卡片 / 附件）
         this.extra()
 
-      // 溯源条：与正文列**左对齐同一基线**（[R-72]）——它是正文的仪表脚注
-      if (this.showRail && this.role === AdMessageRole.ASSISTANT) {
+      // 溯源条：与正文列**左对齐同一基线**（[R-72]）——它是正文的仪表脚注。
+      // 流式中**不渲染**：溯源在落定时才成立，提前画一条 0.00s/0.0 tok/s 的零值仪表是假数字
+      // （真机反馈：零值条 + 停止按钮让生成中的消息看起来像已中断）。[R-37] 的"中断后
+      // 溯源条照常渲染"指 ABORTED 落定后——那时数据是真的。模型名为空同理不画（无可断言）。
+      if (this.showRail && this.role === AdMessageRole.ASSISTANT
+        && this.status !== AdMessageStatus.STREAMING && this.provenance.modelName.length > 0) {
         AdProvenanceRail({
           data: this.provenance,
-          settled: this.status !== AdMessageStatus.STREAMING,
+          settled: true,
           onSegmentTap: (segment: number): void => {
             this.onRailSegment(segment);
           }

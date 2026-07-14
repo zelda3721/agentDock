@@ -233,10 +233,14 @@ async function completionTokensOf(provider: InferenceProvider, usage: TokenUsage
   }
 }
 
-/** 解码速度（tok/s）：只算首 token 之后的解码时间，不把 prefill 摊进去（否则长 prompt 会把速度算得极低） */
+/**
+ * 解码速度（tok/s）：只算首 token 之后的解码时间，不把 prefill 摊进去（否则长 prompt 会把速度算得极低）。
+ * 解码窗口 <100ms 时如实报 0（未测得）——远程流常一次性到达大块文本，首字时间≈结束时间，
+ * 除以近零毫秒会算出十万级 tok/s 的荒谬数字（真机实证 109500.0 tok/s）。仪表宁缺毋假。
+ */
 function decodeSpeed(completionTokens: number, firstTokenMs: number, latencyMs: number): number {
   const decodeMs: number = latencyMs - firstTokenMs;
-  if (completionTokens <= 0 || decodeMs <= 0) {
+  if (completionTokens <= 0 || decodeMs < 100) {
     return 0;
   }
   return (completionTokens / decodeMs) * 1000;

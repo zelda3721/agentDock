@@ -160,6 +160,11 @@ export class KnowledgeService {
     return this.requireRepo().listDocuments(libId);
   }
 
+  /** 改隐私级别（放宽的 [R-98] 具名确认在 UI 侧） */
+  setPrivacyLevel(libId: string, level: PrivacyLevel): Promise<void> {
+    return this.requireRepo().setPrivacyLevel(libId, level);
+  }
+
   /** 文档全部片段（原文预览，§4.5） */
   listChunks(docId: string): Promise<KbChunk[]> {
     return this.requireRepo().listChunks(docId);
