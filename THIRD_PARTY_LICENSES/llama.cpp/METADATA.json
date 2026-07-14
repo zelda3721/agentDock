@@ -1,0 +1,8 @@
+{
+  "name": "llama.cpp",
+  "version": "b9982 (submodule 99f3dc32296f825fec94f202da1e9fede1e78cf9)",
+  "spdxId": "MIT",
+  "sourceUrl": "https://github.com/ggml-org/llama.cpp",
+  "usedBy": "native/llama_bridge（git submodule，本地推理引擎）",
+  "auditedAt": "2026-07-14"
+}

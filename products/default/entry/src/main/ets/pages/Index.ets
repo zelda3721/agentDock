@@ -15,13 +15,14 @@
  * hex 不随主题切换，深色模式下会白底浅灰字）。
  *
  * V0.9 各 Tab 内容由 feature HSP 提供：
- *   chat / models 已接入；TODO(T0.9-16/18/27): 依次接入 agents / knowledge / settings HSP 组件
+ *   chat / models / agents / knowledge / settings 已接入；memory 随 V1.0（T1.0-04）接入
  */
 import { AdButton, AdButtonSize, AdButtonVariant, AdColor, AdSpace, AdStroke, AdType } from 'design-system';
 import { ChatPage } from 'chat';
 import { ModelFacade, ModelListPage, ProviderConfigPage } from 'models';
 import { AgentEditor, AgentListPage } from 'agents';
 import { KbDocumentList, KbListPage } from 'knowledge';
+import { LicensePage, SettingsPage } from 'settings';
 import { AgentService, ChatService } from 'core-agent';
 import { Logger } from 'core-infra';
 import { Breakpoint, BREAKPOINT_KEY } from '../common/BreakpointSystem';
@@ -71,6 +72,9 @@ struct Index {
   @State private kbShowDocs: boolean = false;
   @State private kbRefreshTick: number = 0;
 
+  // ---- settings Tab 的装配状态（T0.9-27：设置页↔许可页整页切换，三端同一形态） ----
+  @State private licensePageOpen: boolean = false;
+
   build() {
     // 三端同一形态：内容区 + 底部 Tab（见文件头的 V0.9 裁量记录）
     Tabs({ index: this.navIndex }) {
@@ -93,6 +97,8 @@ struct Index {
             this.AgentsPane()
           } else if (item.key === 'knowledge') {
             this.KnowledgePane()
+          } else if (item.key === 'settings') {
+            this.SettingsPane()
           } else {
             this.PlaceholderPane(item.label, '待接入对应 feature HSP')
           }
@@ -355,6 +361,45 @@ struct Index {
       }
       .width('100%')
       .height('100%')
+    }
+  }
+
+  /**
+   * settings Tab（T0.9-27）：设置页 ↔ 许可页整页切换，三端同一形态
+   * （许可页是长文阅读页，md/lg 也不值得为它开双栏——全宽阅读比塞进从栏舒服）。
+   */
+  @Builder
+  SettingsPane() {
+    if (this.licensePageOpen) {
+      Column() {
+        Row() {
+          AdButton({
+            label: '返回',
+            variant: AdButtonVariant.GHOST,
+            btnSize: AdButtonSize.SM,
+            a11yText: '返回设置',
+            onAction: (): void => {
+              this.licensePageOpen = false;
+            }
+          })
+        }
+        .width('100%')
+        .padding({ left: AdSpace.s2, top: AdSpace.s2 })
+
+        LicensePage({
+          breakpoint: this.breakpoint === Breakpoint.LG ? 'lg' : (this.breakpoint === Breakpoint.MD ? 'md' : 'sm')
+        })
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .height('100%')
+    } else {
+      SettingsPage({
+        breakpoint: this.breakpoint === Breakpoint.LG ? 'lg' : (this.breakpoint === Breakpoint.MD ? 'md' : 'sm'),
+        onOpenLicensePage: (): void => {
+          this.licensePageOpen = true;
+        }
+      })
     }
   }
 

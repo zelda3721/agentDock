@@ -86,6 +86,10 @@ jobs:
       - name: 文案纪律
         run: node tools/ui/check-copy.mjs
 
+      # §22.4 应用内许可展示防漂移：rawfile 产物必须与 THIRD_PARTY_LICENSES/ 一致
+      - name: 许可展示产物核对
+        run: node tools/license/gen-rawfile.mjs --check
+
   compression-regression:
     name: 压缩回归 V0.9 最小子集（红线 27）
     runs-on: ubuntu-latest

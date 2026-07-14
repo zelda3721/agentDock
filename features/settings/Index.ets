@@ -7,5 +7,5 @@
  */
 export { SettingsPage } from './src/main/ets/components/SettingsPage';
 export { LicensePage } from './src/main/ets/components/LicensePage';
-export { AppSettings, BreakpointKey, SettingsFacade,
+export { AppSettings, BreakpointKey, ImportPreview, SettingsFacade,
   ThirdPartyLicense } from './src/main/ets/model/SettingsViewModel';

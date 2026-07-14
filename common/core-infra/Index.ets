@@ -45,6 +45,15 @@ export {
 
 export { KvConfig, ConfigKeys, ConfigEntry, ConfigStore, ConfigValueType } from './src/main/ets/config/KvConfig';
 
+// 全局 KvConfig 单例（EntryAbility 装配；设置页与各 core 模块共用同一缓存，T0.9-27）。
+export { AppConfig } from './src/main/ets/config/AppConfig';
+
+// 进程级运行时旗标：设置页开关对底层即时生效的热镜像（持久化真值在 kv_config）。
+export { RuntimeFlags } from './src/main/ets/config/RuntimeFlags';
+
+// 崩溃记录（仅本机，零上传；开关默认关闭，§9.5）。
+export { CrashWatcher } from './src/main/ets/log/CrashWatcher';
+
 // preferences 版 ConfigStore：承载"打开 RDB 之前就要读到"的引导期配置（db.safe_mode 等，§7）。
 export { PreferencesConfigStore } from './src/main/ets/config/PreferencesConfigStore';
 

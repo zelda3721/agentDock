@@ -17,10 +17,13 @@ import { BusinessError } from '@ohos.base';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { MotionPreference, AD_REDUCE_MOTION_KEY } from 'design-system';
 import {
-  AppRdbStore, FileRepo, ModelRepo, LocalModelRow, RdbTaskStore,
+  AppRdbStore, FileRepo, ModelRepo, LocalModelRow, RdbTaskStore, RdbConfigStore,
   MODEL_ACTIVE_CHANGED, ActiveModelChanged, localProviderIdOf
 } from 'core-data';
-import { EventBus, Logger, NoopBackgroundScheduler, TaskQueue } from 'core-infra';
+import {
+  AppConfig, ConfigKeys, CrashWatcher, EventBus, KvConfig, Logger,
+  NoopBackgroundScheduler, RuntimeFlags, TaskQueue
+} from 'core-infra';
 import { KnowledgeService } from 'core-rag';
 import { ModelFacade } from 'models';
 import { LocalProvider, ProviderRegistry } from 'core-llm';
@@ -68,6 +71,13 @@ export default class EntryAbility extends UIAbility {
       // 2) 沙箱目录布局（files/models、files/kb/... §7）
       const fileRepo: FileRepo = new FileRepo(ctx);
       await fileRepo.ensureLayout();
+
+      // 2b) 全局配置（T0.9-27）：kv_config 单例装配 + 全量预热，并把两个隐私/网络开关
+      //     灌进进程内热镜像——RemoteProvider 每次发请求前读 RuntimeFlags（同步零 IO），
+      //     CrashWatcher 在启动早期注册才能收到系统在上次崩溃后补投的 APP_CRASH 事件。
+      const kv: KvConfig = await AppConfig.init(new RdbConfigStore(rdb));
+      RuntimeFlags.setRemoteWifiOnly(await kv.getBoolean(ConfigKeys.NETWORK_REMOTE_WIFI_ONLY, true));
+      CrashWatcher.setEnabled(await kv.getBoolean(ConfigKeys.PRIVACY_CRASH_REPORT_ENABLED, false));
 
       // 3) 本地 Provider：模型由 models 页管理（档位表 + 下载 + sha256 校验 + 切换，T0.9-10）。
       //    这里只负责"把当前选中的模型注册成 Provider"——**不猜路径、不写死文件名**。

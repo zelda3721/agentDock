@@ -31,7 +31,7 @@
 import rcp from '@hms.collaboration.rcp';
 import { util } from '@kit.ArkTS';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { Logger, Metrics, SecretStore } from 'core-infra';
+import { Logger, Metrics, RuntimeFlags, SecretStore } from 'core-infra';
 import { AsyncPushQueue } from '../stream/AsyncPushQueue';
 import { SseDecoder } from '../stream/SseDecoder';
 import { NetworkGuard, NetworkType } from '../net/NetworkGuard';
@@ -272,7 +272,15 @@ export class RemoteProvider implements InferenceProvider {
     return this.config.modelLabel === undefined ? this.config.modelId : this.config.modelLabel;
   }
 
+  /**
+   * 生效的网络策略 = 全局开关（设置页"仅 Wi-Fi 使用远程"，RuntimeFlags 热镜像）
+   * 与本 Provider 自身配置的**取严**：任一为 wifi_only 即 wifi_only。
+   * 单点合并——generate/healthCheck 等所有检查点都经由本 getter，不各自判旗标。
+   */
   get networkPolicy(): NetworkPolicy {
+    if (RuntimeFlags.remoteWifiOnly()) {
+      return 'wifi_only';
+    }
     return this.config.networkPolicy === undefined ? 'any' : this.config.networkPolicy;
   }
 

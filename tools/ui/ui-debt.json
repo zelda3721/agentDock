@@ -13,8 +13,6 @@
   ],
   "files": [
     "features/chat/src/main/ets/components/ChatPage.ets",
-    "features/settings/src/main/ets/components/SettingsPage.ets",
-    "features/settings/src/main/ets/components/LicensePage.ets",
     "features/memory/src/main/ets/components/MemoryPage.ets"
   ]
 }
