@@ -19,7 +19,7 @@
  * 并对存量库触发整库 fts_text 重建（KB_REINDEX_LIB 任务）。替换时**入库与 query 必须同批切换**
  * ——两侧分词器不一致等于索引与查询说两种语言。
  *
- * 本文件为纯函数（无平台依赖），tools/eval/rag-regression 的 Node 回归直接考核。
+ * 本文件为纯函数（无平台依赖），tools/eval/rag-gold 的金标集回归直接考核。
  */
 
 /** 判定 CJK 表意文字（含扩展 A；假名/谚文按"外文词"整词处理即可，不参与 bigram） */
