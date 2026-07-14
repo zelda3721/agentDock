@@ -29,6 +29,7 @@
  * ========================================================================
  */
 
+import { fileIo } from '@kit.CoreFileKit';
 import type { ChunkProvenance } from '../model/Types';
 
 /** 解析产出的一个结构化块（进入切片流水线的原料） */
@@ -223,9 +224,8 @@ export class TextParser implements DocumentParser {
   readonly mimeTypes: string[] = ['text/plain', 'text/markdown'];
 
   async parse(uri: string): Promise<ParseResult> {
-    const fs = await import('@kit.CoreFileKit');
     // txt/md 属小文件（知识文档量级），整读可接受；GB 级流式纪律针对模型权重（FileRepo 注释）
-    const content: string = await fs.fileIo.readText(uri);
+    const content: string = await fileIo.readText(uri);
     const blocks: ParsedBlock[] = parseMarkdownBlocks(content);
     const result: ParseResult = {
       blocks: blocks,
