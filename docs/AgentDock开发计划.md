@@ -256,7 +256,7 @@ doc_parsers(PDFium) + vec_index ──→ 摄取流水线 ──→ 检索流水
 | T1.0-07 | 整理调度：workScheduler（充电∧空闲∧电量>40%）+ continuousTask + 游标续跑 + 手动触发 | ADR-4/§6.3 | 0.5 | T1.0-06 | A |
 | T1.0-08 | memory_oplog 逐条撤销 + RecallService（L3 直注 + L2 top5 召回，R2 尾部注入，access_count 反哺） | §6.3/§6.4/R2 | 1 | T1.0-06 | A |
 | T1.0-09 | Agent-as-Tool：agent.call:<id>、子代理独立上下文 + 512/512 合同、深度/并发控制 | §5.3/§24.4/§27.2-M6 | 1 | T1.0-01/02 | A |
-| T1.0-10 | agents UI 完整版：编辑器（工具/记忆策略/loop 预算/anchor>25% 告警）+ Run 轨迹回放（每步 prompt/工具入出参/token）；uiHints/建议问题等高级项后移 V1.5 | §5.4/§27.4 | 1.5 | T1.0-01/02 | B |
+| T1.0-10 | agents UI 完整版：编辑器（工具/记忆策略/loop 预算/anchor>25% 告警）+ Run 轨迹回放（每步 prompt/工具入出参/token）；**预置常用智能体模板**（builtin=1 种子数据：翻译/写作/代码助手等出厂内置，首启即可用——agent_defs.builtin 列与不可删护栏 T0.9-16 已备好）；uiHints/建议问题等高级项后移 V1.5 | §5.4/§27.4 | 1.5 | T1.0-01/02 | B |
 | T1.0-11 | memory UI：浏览/整理报告时间线/冲突红点/逐条撤销/L3 画像 diff/手动整理 | §6.3 | 1 | T1.0-06/08 | B |
 | T1.0-12 | 压缩回归套件 v1（在 V0.9 子集上扩展）：合成多轮 Run 植入实体/约束，L1/L2/L3 压缩后核对——**约束召回 100%（v1 范围：L3 摘要链路，依托 §23.3 摘要 prompt "用户明确约束"强制项考核，F1 零容忍不留真空）**、实体召回 ≥95%、trace.read 补救后 100%，入 CI 合并门禁 | §27.3/§27.1-F1/§23.3 | 0.5 | T1.0-04/V0.9 T0.9-22 子集 | A |
 | T1.0-13 | Should 项（**已移出基线，机动**：仅线上响应余量允许时做）：bge-reranker、检索调试器完整版、诊断包（入口挂 T0.9-27 settings 页）、Agent 导入导出 | §4.3/§4.5/§10 | 1（机动，不计基线） | 机动 | B |
@@ -264,6 +264,15 @@ doc_parsers(PDFium) + vec_index ──→ 摄取流水线 ──→ 检索流水
 | T1.0-15 | PC 专项第一批（自 V0.9 移入）：最小窗口 840×600、Ctrl+Enter/N、拖拽导入、hover | §8 | 0.5 | T0.9-02 | B |
 
 **工作量说明**：基线任务合计约 **14.5 人周**（T1.0-13 为机动项不计入；Phase B 聚类合并为 Should，视余量推进），仅作相对参考。个人开发不做容量核算；进度吃紧时按 §6.1 裁剪顺序收缩（先 Could、再 Phase B、再 T1.0-15），不动 Must。
+
+> **TODO（2026-07-14 用户指示，随 T1.0-01/02/10 落地）：智能体生态三件套**
+> ① **预置常用智能体模板**：出厂内置一组 builtin Agent（翻译、写作、代码助手、文档问答等），
+>    首启即可用、不可删可禁用（agent_defs.builtin/enabled 列 T0.9-16 已备）；新建 Agent 时可从模板起步。
+> ② **Skills 机制**：可复用的指令/能力包（Markdown 指令 + 可选资源），Agent 可挂多个 skill，
+>    装配时并入稳定前缀——参考 WorkBuddy / OpenClaw / Hermes Agent 的 skill 形态；
+>    与 §5.1 的 uiHints/tools 正交：skill 是"怎么做事"的知识包，tool 是"能做什么"的执行器。
+>    需补设计文档章节（§5.1 扩展：skills 字段 + skill 定义表/目录约定 + anchor 预算入账）。
+> ③ **Tools 对齐**：T1.0-02 ToolBus 落地时预置工具集按模板 Agent 的需要配齐（kb.search/calc/datetime 起步）。
 
 ### 6.3 周级排期（双泳道）
 

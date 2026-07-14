@@ -65,7 +65,15 @@ export interface AgentUiHints {
   suggestedQuestions?: string[];
 }
 
-/** §5.1 Agent 定义主体 */
+/**
+ * §5.1 Agent 定义主体。
+ *
+ * TODO(T1.0-10 · 2026-07-14 用户指示): 智能体生态三件套（详见开发计划 §6.2 表下 TODO）——
+ *   ① 预置常用智能体模板：builtin=1 种子数据（翻译/写作/代码助手等），AgentRepo 首启播种；
+ *   ② skills 字段：可复用指令/能力包（参考 WorkBuddy / OpenClaw / Hermes Agent 形态），
+ *      与 tools 正交（skill=怎么做事的知识包，tool=能做什么的执行器），装配入稳定前缀并计入 anchor 预算；
+ *   ③ tools 白名单随 T1.0-02 ToolBus 生效，预置工具集按模板 Agent 需要配齐。
+ */
 export interface AgentDef {
   id: string;
   name: string;

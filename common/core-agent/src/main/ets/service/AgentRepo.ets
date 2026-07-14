@@ -114,6 +114,9 @@ function rowToDef(rs: relationalStore.ResultSet): AgentDef {
 const SELECT_COLUMNS: string =
   `id, name, avatar, system_prompt, model, knowledge, loop, builtin, enabled, def_version, created_at, updated_at`;
 
+// TODO(T1.0-10): 预置智能体模板播种——首启（或版本升级）时检测 builtin Agent 缺失则 INSERT
+//   种子集（翻译/写作/代码助手/文档问答等），builtin=1 不可删、可禁用；用户编辑 builtin 走
+//   copy-on-write（另存为新 Agent）或版本化覆盖，种子升级不得冲掉用户改动。详见开发计划 §6.2 TODO。
 export class AgentRepo implements AgentRepositoryPort {
   private readonly rdb: AppRdbStore;
 
