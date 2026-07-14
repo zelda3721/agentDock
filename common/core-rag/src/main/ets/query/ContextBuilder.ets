@@ -261,32 +261,94 @@ export const MAX_MEMORY_ITEMS: number = 5;
  */
 export class ContextBuilder {
   /**
-   * 按 R2 顺序装配上下文，并在装配前强制执行隐私围栏。
-   * TODO(T0.9-14): 实现上述 0–4 步。
+   * 按 R2 顺序装配上下文，并在装配前强制执行隐私围栏（类注释 0–4 步的落地）。
    */
   async build(req: ContextBuildRequest): Promise<ContextBuildResult> {
-    throw new Error('Not implemented: T0.9-14');
+    // 0. 先过围栏——被过滤内容根本不进入后续步骤（附录 B 末行）
+    const fence: FenceResult = applyPrivacyFence(req.ragChunks, req.memories, req.provider.kind);
+
+    // RAG 贪心填充（预算内取分数最高者；injected 供 UI 可点击引用）
+    const injectedChunks: ScoredChunk[] = ContextBuilder.pickChunksByBudget(
+      fence.allowedChunks, req.ragTokenBudget);
+    const injectedMemories: FencedMemoryItem[] = fence.allowedMemories.slice(0, MAX_MEMORY_ITEMS);
+
+    const messages: ChatMessage[] = [];
+    // 1. [稳定前缀] 一条 system 消息（字节级稳定）
+    messages.push({
+      role: 'system',
+      content: ContextBuilder.buildStablePrefix(req.systemPrompt, req.agentDefinition, req.profile)
+    } as ChatMessage);
+    // 2. [半稳定] 会话历史原样追加（压缩在进入本函数之前由 ContextGovernor 完成）
+    for (const msg of req.history) {
+      messages.push(msg);
+    }
+    // 3. [易变尾部] <memory> + <knowledge> + 用户消息合成一条 user 消息
+    messages.push({
+      role: 'user',
+      content: ContextBuilder.buildVolatileTail(
+        injectedMemories, injectedChunks, req.userMessage, req.ragTokenBudget)
+    } as ChatMessage);
+
+    let estimated: number = 0;
+    for (const m of messages) {
+      const content = m.content;
+      estimated += typeof content === 'string' ? estimateTokensLocal(content) : 0;
+    }
+    const result: ContextBuildResult = {
+      messages: messages,
+      fence: fence,
+      injectedChunks: injectedChunks,
+      injectedMemories: injectedMemories,
+      estimatedTokens: estimated
+    };
+    return result;
   }
 
   /**
    * 组装稳定前缀（system + Agent 定义 + L3 画像）。
-   * 输出必须是**确定性**的：同样的入参必须产生字节级相同的字符串，
-   * 禁止在其中插入时间戳、随机 ID、"当前时间"等任何每轮变化的内容——
-   * 那会让 KV 前缀每轮失效，等价于把易变内容前置（红线 11）。
-   *
-   * TODO(T0.9-14): 实现拼接。
+   * 确定性拼接：同样入参 → 字节级相同输出；空段不产生空行（省 token 且稳定）。
+   * 禁止在此插入时间戳/随机 ID/每轮变化的内容（红线 11，理由见原合同注释）。
    */
   static buildStablePrefix(systemPrompt: string, agentDefinition: string, profile: string): string {
-    throw new Error('Not implemented: T0.9-14');
+    const parts: string[] = [];
+    if (systemPrompt.length > 0) {
+      parts.push(systemPrompt);
+    }
+    if (agentDefinition.length > 0) {
+      parts.push(agentDefinition);
+    }
+    if (profile.length > 0) {
+      parts.push(profile);
+    }
+    return parts.join('\n\n');
+  }
+
+  /** RAG 贪心填充：分数降序（入参已按分数排序）取块，直到 token 预算耗尽 */
+  static pickChunksByBudget(chunks: ScoredChunk[], budget: number): ScoredChunk[] {
+    const picked: ScoredChunk[] = [];
+    let used: number = 0;
+    for (const c of chunks) {
+      const cost: number = c.chunk.tokenCount > 0 ? c.chunk.tokenCount : estimateTokensLocal(c.chunk.text);
+      if (used + cost > budget && picked.length > 0) {
+        break;
+      }
+      if (cost > budget && picked.length === 0) {
+        // 单块即超预算：仍注入首块（宁可只给一块也不给零块——零块等于检索白做），
+        // 超预算的裁决由上层水位/诚实失败兜底
+        picked.push(c);
+        break;
+      }
+      picked.push(c);
+      used += cost;
+    }
+    return picked;
   }
 
   /**
-   * 组装易变尾部（<memory> + <knowledge> + 用户消息），合成为一条 user 消息。
-   *
-   * TODO(T0.9-14): 按 §4.3 实现：
-   *   - RAG 按 ragTokenBudget 贪心填充（分数降序取，直到预算耗尽）；
-   *   - 同文档相邻块（docId 相同且 seq 连续）合并为一段，减少重复引用头；
-   *   - 每段附引用元数据 [doc#page]，供 UI 渲染可点击引用并定位原文块。
+   * 组装易变尾部（<memory> + <knowledge> + 用户消息）。
+   * 同文档相邻块（docId 相同且 seq 连续）合并为一段减少重复引用头；
+   * 每段附 [标题路径末级#页码] 引用头——UI 的可点击引用按 injectedChunks 渲染，
+   * 文本内引用头供模型在回答中转述来源（§4.3）。
    */
   static buildVolatileTail(
     memories: FencedMemoryItem[],
@@ -294,6 +356,75 @@ export class ContextBuilder {
     userMessage: string,
     ragTokenBudget: number
   ): string {
-    throw new Error('Not implemented: T0.9-14');
+    const parts: string[] = [];
+
+    if (memories.length > 0) {
+      const memLines: string[] = ['<memory>'];
+      for (const m of memories) {
+        memLines.push(`- ${m.text}`);
+      }
+      memLines.push('</memory>');
+      parts.push(memLines.join('\n'));
+    }
+
+    if (chunks.length > 0) {
+      // 按 docId+seq 排序后合并相邻块（注入顺序按文档序而非分数序——同文档内容连贯优先）
+      const sorted: ScoredChunk[] = chunks.slice();
+      sorted.sort((a: ScoredChunk, b: ScoredChunk): number =>
+        a.chunk.docId === b.chunk.docId ? a.chunk.seq - b.chunk.seq
+          : (a.chunk.docId < b.chunk.docId ? -1 : 1));
+      const kLines: string[] = ['<knowledge>'];
+      let i: number = 0;
+      while (i < sorted.length) {
+        let j: number = i;
+        while (j + 1 < sorted.length
+          && sorted[j + 1].chunk.docId === sorted[j].chunk.docId
+          && sorted[j + 1].chunk.seq === sorted[j].chunk.seq + 1) {
+          j++;
+        }
+        const head: ScoredChunk = sorted[i];
+        const headingTail: string = head.chunk.meta.headingPath.length > 0
+          ? head.chunk.meta.headingPath[head.chunk.meta.headingPath.length - 1]
+          : '';
+        const cite: string = head.chunk.meta.page > 0
+          ? `[${headingTail}#p${head.chunk.meta.page}]`
+          : (headingTail.length > 0 ? `[${headingTail}]` : '');
+        const bodies: string[] = [];
+        for (let p = i; p <= j; p++) {
+          bodies.push(sorted[p].chunk.text);
+        }
+        kLines.push(cite.length > 0 ? `${cite}\n${bodies.join('\n')}` : bodies.join('\n'));
+        i = j + 1;
+      }
+      kLines.push('</knowledge>');
+      parts.push(kLines.join('\n'));
+    }
+
+    parts.push(userMessage);
+    return parts.join('\n\n');
   }
+}
+
+/**
+ * 本地 token 估算（CJK≈1 字 / 其余≈4 字符）。**明示的估算**，只用于装配预算预筛——
+ * 精确结算在 ChatService 用 provider.countTokens 真算（[R-18] 同源）。
+ * 与 core-agent GovernorDefaults.estimateTokens 同一算法；core-rag 不得依赖 core-agent
+ * （依赖方向：core-agent → core-rag），故此处独立实现并以注释锚定同源性。
+ */
+function estimateTokensLocal(text: string): number {
+  if (text.length === 0) {
+    return 0;
+  }
+  let cjk: number = 0;
+  let other: number = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code: number = text.charCodeAt(i);
+    if ((code >= 0x3000 && code <= 0x9fff) || (code >= 0xac00 && code <= 0xd7af) ||
+      (code >= 0xf900 && code <= 0xfaff) || (code >= 0xff00 && code <= 0xffef)) {
+      cjk++;
+    } else {
+      other++;
+    }
+  }
+  return cjk + Math.ceil(other / 4);
 }

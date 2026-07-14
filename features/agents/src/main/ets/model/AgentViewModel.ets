@@ -9,6 +9,7 @@
  * 完整编辑器（工具/记忆策略/loop 预算/anchor 告警）与 Run 轨迹回放见 T1.0-10。
  */
 
+import { KbLibrary, KnowledgeService } from 'core-rag';
 import {
   AgentDef,
   AgentKnowledgeConfig,
@@ -165,11 +166,17 @@ export class AgentFacade {
     });
   }
 
-  /**
-   * 可选知识库列表。V0.9 恒为空数组——core-rag 随 T0.9-18 交付，此刻**确实没有任何库**
-   * （空数组是事实，不是占位）；编辑器据空列表显示"知识库功能随 T0.9-18 交付"说明。
-   */
-  public listKnowledgeBases(): Promise<KbOption[]> {
-    return Promise.resolve([] as KbOption[]);
+  /** 可选知识库列表（T0.9-18 已交付：core-rag KnowledgeService 真值） */
+  public async listKnowledgeBases(): Promise<KbOption[]> {
+    await KnowledgeService.get().whenReady();
+    const libs: KbLibrary[] = await KnowledgeService.get().listLibraries();
+    return libs.map((lib: KbLibrary): KbOption => {
+      const option: KbOption = {
+        libId: lib.id,
+        name: lib.name,
+        privacyLevel: lib.privacyLevel
+      };
+      return option;
+    });
   }
 }

@@ -34,6 +34,14 @@ import {
 } from 'core-llm';
 import { AppRdbStore } from 'core-data';
 import { Logger, Metrics } from 'core-infra';
+import {
+  applyPrivacyFence,
+  ContextBuilder,
+  DEFAULT_RAG_TOKEN_BUDGET,
+  FenceResult,
+  KnowledgeService,
+  ScoredChunk
+} from 'core-rag';
 import { AsyncEventQueue } from '../chat/AsyncEventQueue';
 import { ChatCompactor, CompactResult, dropCoveredHistory } from '../chat/ChatCompactor';
 import { ChatPromptBuilder, PromptResult } from '../chat/ChatPromptBuilder';
@@ -282,6 +290,9 @@ class ChatTurn implements ChatTurnHandle {
   private readonly events: AsyncEventQueue<ChatTurnEvent> = new AsyncEventQueue<ChatTurnEvent>();
   /** 是否被用户中断/被抢占（区分 aborted 与 failed：落库状态与 UI 呈现都不同） */
   private aborted: boolean = false;
+  /** 本轮实际注入的 RAG 引用数 / 被围栏拦截数（溯源真值，T0.9-14；未走检索恒 0） */
+  private ragCitations: number = 0;
+  private ragBlocked: number = 0;
 
   constructor(runId: string, assistantMessageId: string, convId: string,
               repo: ChatRepository, recorder: RunRecorder | null) {
@@ -406,6 +417,42 @@ class ChatTurn implements ChatTurnHandle {
         return;
       }
 
+      // ---- [3b] RAG 检索注入（T0.9-14）：Agent 绑定知识库时，本轮 query 检索 → 围栏 → 合成易变尾部 ----
+      // 注入位置 = 用户消息同一条（<knowledge> + 原文），属【易变尾部】（红线 11：绝不前置）。
+      // 围栏（applyPrivacyFence）在装配前按 provider.kind 过滤（红线 17 数据层强制执行点）；
+      // 拦截计数进溯源条（[R-17]：remote 时 0 也要显示"未拦截"）。
+      // 检索故障不杀聊天：警告日志 + 本轮无知识回答（引用计 0 是真值）。
+      // 口径注：knowledge 段计入 anchor（anchorTokensOf 取末条 user 消息）——把水位推向保守侧
+      // （更早触发压缩），方向安全；精确拆分随 T1.0-04 的 L1 外置一并处理。
+      let effectiveText: string = text;
+      if (binding !== null && binding.libIds.length > 0) {
+        try {
+          const hits: ScoredChunk[] = await KnowledgeService.get().search(
+            binding.libIds, text, { topK: binding.topK });
+          const fenceResult: FenceResult = applyPrivacyFence(hits, [], provider.kind);
+          const injected: ScoredChunk[] = ContextBuilder.pickChunksByBudget(
+            fenceResult.allowedChunks, DEFAULT_RAG_TOKEN_BUDGET);
+          this.ragCitations = injected.length;
+          this.ragBlocked = fenceResult.filteredChunkCount;
+          if (injected.length > 0) {
+            const userPart: string = binding.requireCitation
+              ? `请在回答中为引用的资料标注来源。\n${text}`
+              : text;
+            effectiveText = ContextBuilder.buildVolatileTail([], injected, userPart, DEFAULT_RAG_TOKEN_BUDGET);
+          }
+          if (fenceResult.fenceTriggered) {
+            Logger.info(TAG, 'privacy fence filtered rag content', [
+              { key: 'filtered', value: fenceResult.filteredChunkCount },
+              { key: 'provider_kind', value: provider.kind }
+            ]);
+          }
+        } catch (e) {
+          Logger.warn(TAG, 'rag search failed, answering without knowledge', [
+            { key: 'err', value: (e as Error).message }
+          ]);
+        }
+      }
+
       // ---- [4] 按 R2 顺序组 prompt（稳定前缀 → 摘要段（若有）→ 会话历史 → 易变尾部） ----
       const systemPrompt: string = systemPromptFrom(binding);
       // loadHistoryForPrompt 已包含刚落库的本轮 user 消息：它属于【易变尾部】，
@@ -454,7 +501,7 @@ class ChatTurn implements ChatTurnHandle {
       }
 
       // ---- ② gather context：装配 + 真算预算（§23.2）+ 水位压缩（T0.9-17） ----
-      let assembly: PromptResult = assembleWithSummary(systemPrompt, history, summaryState, text, provider.kind);
+      let assembly: PromptResult = assembleWithSummary(systemPrompt, history, summaryState, effectiveText, provider.kind);
       const devCtxOverride: number = await this.repo.devCtxOverride();   // 仅开发用，见方法注释
       const budget: ChatBudgetSpec = budgetOf(provider.capabilities(), devCtxOverride);
       let promptTokens: number = await provider.countTokens(assembly.messages);
@@ -475,7 +522,7 @@ class ChatTurn implements ChatTurnHandle {
             convId: this.convId,
             systemPrompt: systemPrompt,
             history: history,
-            userText: text,
+            userText: effectiveText,
             prev: summaryState,
             targetProviderKind: provider.kind,
             targetTokens: anchorTokens + waterline.compactionTargetTokens
@@ -692,9 +739,9 @@ class ChatTurn implements ChatTurnHandle {
       providerId: providerId,
       providerKind: provider.kind,
       modelLabel: await modelLabelOf(this.repo, providerId),
-      citations: 0,        // V0.9 无 RAG
-      memories: 0,         // V0.9 无记忆
-      blockedByFence: assembly.blockedByFence,  // V0.9 恒 0；remote 时 UI 仍要渲染"未拦截"（[R-17]）
+      citations: this.ragCitations,             // 本轮实际注入的 RAG 切片数（T0.9-14 真值）
+      memories: 0,                               // 记忆随 T1.0
+      blockedByFence: assembly.blockedByFence + this.ragBlocked,  // 围栏拦截真值（[R-17]：remote 时 0 也要渲染"未拦截"）
       latencyMs: latencyMs,
       firstTokenMs: firstTokenMs,
       tokensPerSec: decodeSpeed(completionTokens, firstTokenMs, latencyMs)

@@ -287,15 +287,48 @@ export struct AgentEditor {
   knowledgePicker() {
     Column({ space: AdSpace.s1 }) {
       if (this.knowledgeBases.length === 0) {
-        // V0.9 事实：知识库功能随 T0.9-18 交付，此刻没有库可绑——如实说明，不画假复选框
-        Text('知识库功能随后续版本提供，届时可在这里绑定文档库并要求回答带引用。')
+        Text('还没有知识库。去「知识库」页新建并导入文档，回来即可绑定。')
           .editorNote(AdColor.inkSecondary)
           .width('100%')
       }
-      // TODO(T0.9-18): core-rag 交付后渲染多选绑定；选中 local_only 库且模型为远程时，
-      //                按 §9.2 显式提示"该库内容不会发送至远程模型"（围栏在数据层强制）。
+      ForEach(this.knowledgeBases, (kb: KbOption) => {
+        AdListItem({
+          title: kb.name,
+          subtitle: kb.privacyLevel === 'local_only' ? '仅本地' : '可发送至远程模型',
+          selected: this.draft.libIds.includes(kb.libId),
+          a11yText: `知识库 ${kb.name}，` +
+            (this.draft.libIds.includes(kb.libId) ? '已绑定。双击解绑。' : '未绑定。双击绑定。'),
+          onAction: () => {
+            const idx: number = this.draft.libIds.indexOf(kb.libId);
+            const next: string[] = this.draft.libIds.slice();
+            if (idx >= 0) {
+              next.splice(idx, 1);
+            } else {
+              next.push(kb.libId);
+            }
+            this.draft.libIds = next;
+          }
+        })
+      }, (kb: KbOption) => `${kb.libId}|${this.draft.libIds.includes(kb.libId)}`)
+      // §9.2 提示：绑了 local_only 库 + 远程模型 → 内容会被围栏拦下（数据层强制，这里是知情提示）
+      if (this.fenceHintVisible()) {
+        Text('提示：所选模型是远程模型，标记「仅本地」的库内容不会被发送，回答将不含这些资料。')
+          .editorNote(AdColor.warningFg)
+          .width('100%')
+      }
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
+  }
+
+  /** 围栏知情提示的显隐（§9.2）：远程模型 + 至少一个已绑定的 local_only 库 */
+  private fenceHintVisible(): boolean {
+    const provider: ProviderOption | undefined =
+      this.providers.find((p: ProviderOption): boolean => p.providerId === this.draft.providerId);
+    if (provider === undefined || provider.kind !== 'remote') {
+      return false;
+    }
+    return this.knowledgeBases.some((kb: KbOption): boolean =>
+      kb.privacyLevel === 'local_only' && this.draft.libIds.includes(kb.libId));
   }
 }

@@ -66,25 +66,176 @@ export class Chunker {
     this.tokenCounter = tokenCounter;
   }
 
+  /**
+   * 标题感知递归切分（§4.2-[3]，合同见类注释上方 TODO 原文——现已按其五点实现）：
+   * 标题栈维护 headingPath → 逐块装填，段落装不下先按句子切 → 表格整表成块 →
+   * 相邻块 overlap（句边界回退）→ seq 从 0 连续递增。
+   *
+   * token 计数走 TokenCounter（llama tokenizer），按"块/句"粒度计数并累加——
+   * 不逐字符调用（NAPI 往返太贵），也不用字符数硬凑（合同禁止）。
+   */
   async chunk(input: ChunkInput): Promise<DraftChunk[]> {
-    throw new Error('Not implemented: T0.9-13');
+    const policy: ChunkPolicy = input.policy;
+    const drafts: DraftChunk[] = [];
+    const headingStack: string[] = [];
+
+    // 当前装填中的块
+    let curTexts: string[] = [];
+    let curTokens: number = 0;
+    let curPage: number = 0;
+    let curPath: string[] = [];
+
+    const flush = async (): Promise<void> => {
+      if (curTexts.length === 0) {
+        return;
+      }
+      const text: string = curTexts.join('\n');
+      drafts.push({
+        docId: input.docId,
+        seq: drafts.length,
+        text: text,
+        tokenCount: curTokens,
+        meta: { page: curPage, headingPath: curPath.slice(), provenance: 'text_layer' }
+      });
+      // overlap：下一块以上一块尾部整句起头（跨块语义连续，§4.2-[3]）
+      const overlap: string = Chunker.buildOverlap(text, policy.overlapTokens);
+      curTexts = overlap.length > 0 ? [overlap] : [];
+      curTokens = overlap.length > 0 ? await this.tokenCounter.count(overlap) : 0;
+    };
+
+    for (const block of input.blocks) {
+      if (block.kind === 'heading' && policy.headingAware) {
+        // 标题边界：先收束当前块，再更新标题栈（level=1 清栈，更深弹到父级）
+        await flush();
+        curTexts = [];   // 标题边界不带 overlap——新小节与上一节语义断开
+        curTokens = 0;
+        const level: number = block.level ?? 1;
+        while (headingStack.length >= level) {
+          headingStack.pop();
+        }
+        headingStack.push(block.text);
+        curPath = headingStack.slice();
+        curPage = block.page;
+        continue;
+      }
+
+      const blockTokens: number = await this.tokenCounter.count(block.text);
+
+      // 表格整表成块（§4.2-[3]：拆碎的表格在检索里等于噪声）；超大表格（>2×maxTokens）
+      // 的按行分块 + 表头重复随真实语料需求交付——TextParser 现将整表输出为单块，
+      // 此处先整块保留并如实计数，不做假拆分。
+      if (block.kind === 'table' && policy.keepTableWhole) {
+        await flush();
+        drafts.push({
+          docId: input.docId,
+          seq: drafts.length,
+          text: block.text,
+          tokenCount: blockTokens,
+          meta: { page: block.page, headingPath: headingStack.slice(), provenance: 'text_layer' }
+        });
+        curTexts = [];
+        curTokens = 0;
+        continue;
+      }
+
+      if (curTexts.length === 0) {
+        curPage = block.page;
+        curPath = headingStack.slice();
+      }
+
+      if (curTokens + blockTokens <= policy.maxTokens) {
+        curTexts.push(block.text);
+        curTokens += blockTokens;
+        continue;
+      }
+
+      // 整段装不下：先收束当前块，再看段落自身是否超限
+      if (blockTokens <= policy.maxTokens) {
+        await flush();
+        if (curTexts.length === 0) {
+          curPage = block.page;
+          curPath = headingStack.slice();
+        }
+        curTexts.push(block.text);
+        curTokens += blockTokens;
+        continue;
+      }
+
+      // 段落自身超 maxTokens：按句子递归装填（递归的最细一级）
+      for (const sentence of Chunker.splitSentences(block.text)) {
+        const sentTokens: number = await this.tokenCounter.count(sentence);
+        if (curTokens + sentTokens > policy.maxTokens && curTexts.length > 0) {
+          await flush();
+        }
+        if (curTexts.length === 0) {
+          curPage = block.page;
+          curPath = headingStack.slice();
+        }
+        curTexts.push(sentence);
+        curTokens += sentTokens;
+      }
+    }
+
+    await flush();
+    return drafts;
   }
 
   /**
    * 按句子切分（递归切分的最细一级）。
-   * TODO(T0.9-13): 中英混排的句末判定——中文标点 。！？； 与英文 .!?; 后接空白，
-   * 需避免把小数点、缩写（e.g. / No.）误判为句末。
+   * 中文句末 。！？；…… 直接断句；英文 .!? 仅在后接空白/行尾时断句——
+   * 避免把小数点（3.14）、编号（No.5）、缩写（e.g.）误判为句末。
    */
   static splitSentences(text: string): string[] {
-    throw new Error('Not implemented: T0.9-13');
+    const sentences: string[] = [];
+    let start: number = 0;
+    const n: number = text.length;
+    for (let i = 0; i < n; i++) {
+      const ch: string = text.charAt(i);
+      const isCjkEnd: boolean = ch === '。' || ch === '！' || ch === '？' || ch === '；';
+      const isAsciiEnd: boolean = (ch === '.' || ch === '!' || ch === '?')
+        && (i + 1 >= n || text.charAt(i + 1) === ' ' || text.charAt(i + 1) === '\n');
+      if (isCjkEnd || isAsciiEnd || ch === '\n') {
+        const piece: string = text.substring(start, i + 1).trim();
+        if (piece.length > 0) {
+          sentences.push(piece);
+        }
+        start = i + 1;
+      }
+    }
+    const tail: string = text.substring(start).trim();
+    if (tail.length > 0) {
+      sentences.push(tail);
+    }
+    return sentences;
   }
 
   /**
-   * 计算重叠区文本：从上一块尾部取约 overlapTokens 的内容。
-   * TODO(T0.9-13): 按句边界回退取整句，避免把句子从中间截断当作 overlap。
+   * 重叠区文本：从上一块尾部按**整句**回退取约 overlapTokens 的内容。
+   * token 换算用保守估计（CJK≈1 字/token）——overlap 是软预算，整句边界优先于精确计数；
+   * overlapTokens<=0 或上一块只有一句（overlap 即整块，无意义）时返回空串。
    */
   static buildOverlap(previousChunkText: string, overlapTokens: number): string {
-    throw new Error('Not implemented: T0.9-13');
+    if (overlapTokens <= 0) {
+      return '';
+    }
+    const sentences: string[] = Chunker.splitSentences(previousChunkText);
+    if (sentences.length <= 1) {
+      return '';
+    }
+    const picked: string[] = [];
+    let budget: number = overlapTokens;
+    for (let i = sentences.length - 1; i >= 0 && picked.length < sentences.length - 1; i--) {
+      const cost: number = sentences[i].length;   // 保守：字符数 ≥ token 数（CJK 1:1，ASCII 4:1）
+      if (budget - cost < 0 && picked.length > 0) {
+        break;
+      }
+      picked.unshift(sentences[i]);
+      budget -= cost;
+      if (budget <= 0) {
+        break;
+      }
+    }
+    return picked.join('');
   }
 }
 

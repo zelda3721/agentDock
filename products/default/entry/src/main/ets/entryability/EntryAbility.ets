@@ -17,10 +17,11 @@ import { BusinessError } from '@ohos.base';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { MotionPreference, AD_REDUCE_MOTION_KEY } from 'design-system';
 import {
-  AppRdbStore, FileRepo, ModelRepo, LocalModelRow,
+  AppRdbStore, FileRepo, ModelRepo, LocalModelRow, RdbTaskStore,
   MODEL_ACTIVE_CHANGED, ActiveModelChanged, localProviderIdOf
 } from 'core-data';
-import { EventBus, Logger } from 'core-infra';
+import { EventBus, Logger, NoopBackgroundScheduler, TaskQueue } from 'core-infra';
+import { KnowledgeService } from 'core-rag';
 import { LocalProvider, ProviderRegistry } from 'core-llm';
 import { AgentService, ChatService } from 'core-agent';
 import { BreakpointSystem } from '../common/BreakpointSystem';
@@ -64,7 +65,8 @@ export default class EntryAbility extends UIAbility {
       }
 
       // 2) 沙箱目录布局（files/models、files/kb/... §7）
-      await new FileRepo(ctx).ensureLayout();
+      const fileRepo: FileRepo = new FileRepo(ctx);
+      await fileRepo.ensureLayout();
 
       // 3) 本地 Provider：模型由 models 页管理（档位表 + 下载 + sha256 校验 + 切换，T0.9-10）。
       //    这里只负责"把当前选中的模型注册成 Provider"——**不猜路径、不写死文件名**。
@@ -81,6 +83,15 @@ export default class EntryAbility extends UIAbility {
       // 4) 聊天服务 + 智能体服务（T0.9-16：Agent CRUD 与 Run 轨迹共用同一 RDB）
       await ChatService.get().init(rdb);
       AgentService.get().init(rdb);
+
+      // 5) 任务队列 + 知识库服务（T0.9-13/14/18）：
+      //    handler 必须在 start() 前注册（KnowledgeService.init 内注册 KB_INGEST_DOC）；
+      //    start() 会回收上个进程的租约并续跑未完成的摄取（§4.2：被杀重启自动续跑）。
+      //    TODO(T0.9-13 余项): NoopBackgroundScheduler → workScheduler/continuousTask 承载
+      //    大批量导入的后台执行（ADR-4）；前台路径先真实可用。
+      const queue: TaskQueue = new TaskQueue(new RdbTaskStore(rdb), new NoopBackgroundScheduler());
+      KnowledgeService.get().init(rdb, fileRepo, queue);
+      await queue.start();
       hilog.info(DOMAIN, TAG, 'core stack ready');
     } catch (e) {
       const err = e as BusinessError;
@@ -90,6 +101,7 @@ export default class EntryAbility extends UIAbility {
       Logger.error(TAG, 'initCoreStack failed', [{ key: 'code', value: err.code }]);
       ChatService.get().initFailed(err);
       AgentService.get().initFailed(err);
+      KnowledgeService.get().initFailed(err);
     }
   }
 

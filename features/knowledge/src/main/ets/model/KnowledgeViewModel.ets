@@ -8,6 +8,8 @@
  * 检索调试器（§4.5 第 3 条）移入 V1.0 机动项 T1.0-13。
  */
 
+import { KbDocument, KbLibrary, KnowledgeService } from 'core-rag';
+
 /** 断点标识（设计文档 §8）。 */
 export type BreakpointKey = 'sm' | 'md' | 'lg';
 
@@ -61,59 +63,82 @@ export interface DocPreviewBlock {
  * 红线：禁止伪实现——未实现方法一律抛错。
  */
 export class KnowledgeFacade {
-  public listLibraries(): Promise<KbItem[]> {
-    // TODO(T0.9-18): 按设计文档 §4.1/§4.5 从 core-rag 读取库列表与统计面板数据
-    throw new Error('Not implemented: T0.9-18');
+  public async listLibraries(): Promise<KbItem[]> {
+    await KnowledgeService.get().whenReady();
+    const libs: KbLibrary[] = await KnowledgeService.get().listLibraries();
+    return libs.map((lib: KbLibrary): KbItem => {
+      const item: KbItem = {
+        libId: lib.id,
+        name: lib.name,
+        // 语义映射：core 的 allow_remote ↔ UI 的 normal（“允许随上下文发给远程模型”）
+        privacyLevel: lib.privacyLevel === 'allow_remote' ? 'normal' : 'local_only',
+        embeddingModelId: lib.embedModelId,
+        docCount: lib.stats.docCount,
+        chunkCount: lib.stats.chunkCount,
+        sizeBytes: lib.stats.bytesUsed
+      };
+      return item;
+    });
   }
 
-  public createLibrary(name: string, privacyLevel: PrivacyLevel, embeddingModelId: string): Promise<string> {
-    // TODO(T0.9-18): 按设计文档 §4.5 建库（库级：建库/改名/删除/选 embedding 模型/隐私级别）
-    throw new Error('Not implemented: T0.9-18');
+  public async createLibrary(name: string, privacyLevel: PrivacyLevel, embeddingModelId: string): Promise<string> {
+    await KnowledgeService.get().whenReady();
+    return KnowledgeService.get().createLibrary(
+      name, privacyLevel === 'normal' ? 'allow_remote' : 'local_only', embeddingModelId);
   }
 
-  public deleteLibrary(libId: string): Promise<void> {
-    // TODO(T0.9-18): 按设计文档 §4.5 删库并级联清 chunk + 向量 + 索引文件
-    throw new Error('Not implemented: T0.9-18');
+  public async deleteLibrary(libId: string): Promise<void> {
+    await KnowledgeService.get().whenReady();
+    await KnowledgeService.get().deleteLibrary(libId);
   }
 
-  public listDocuments(libId: string): Promise<KbDocItem[]> {
-    // TODO(T0.9-18): 按设计文档 §4.5 读取文档列表（含状态/进度/错误）
-    throw new Error('Not implemented: T0.9-18');
+  public async listDocuments(libId: string): Promise<KbDocItem[]> {
+    await KnowledgeService.get().whenReady();
+    const docs: KbDocument[] = await KnowledgeService.get().listDocuments(libId);
+    return docs.map((doc: KbDocument): KbDocItem => {
+      const item: KbDocItem = {
+        docId: doc.id,
+        libId: doc.libId,
+        title: doc.title,
+        mimeType: doc.mime,
+        status: doc.needsOcr && doc.status === 'failed' ? 'scan_unsupported' : doc.status as DocStatus,
+        // 步内进度上报随 TaskQueue reportProgress 接线（T0.9-13 余项）；未接线不编造百分比
+        progress: 0,
+        errorMessage: doc.error,
+        chunkCount: 0   // 列表不逐文档查 chunk 数（N+1）；库级总数在 KbItem.chunkCount
+      };
+      return item;
+    });
   }
 
-  /** 导入文件（走 core-rag 摄取流水线的 TaskQueue，进度由事件总线回推）。 */
-  public importDocuments(libId: string, fileUris: string[]): Promise<void> {
-    // TODO(T0.9-18): 按设计文档 §4.2 提交摄取任务（TaskQueue 驱动 + continuousTask），
-    //                UI 订阅 core-infra 事件总线刷新进度；拖拽批量导入见 T1.0-15（§8 PC 专项）。
-    throw new Error('Not implemented: T0.9-18');
+  /** 导入（附录 A importFiles）：STAGE 同步完成，解析/切片/写入由 TaskQueue 异步驱动 */
+  public async importDocuments(libId: string, fileUris: string[]): Promise<void> {
+    await KnowledgeService.get().whenReady();
+    await KnowledgeService.get().importFiles(libId, fileUris);
   }
 
-  public reparseDocument(docId: string): Promise<void> {
-    // TODO(T0.9-18): 按设计文档 §4.5 重新解析（失败文档的恢复路径）
-    throw new Error('Not implemented: T0.9-18');
+  public async reparseDocument(docId: string): Promise<void> {
+    await KnowledgeService.get().whenReady();
+    await KnowledgeService.get().reparseDocument(docId);
   }
 
-  public deleteDocument(docId: string): Promise<void> {
-    // TODO(T0.9-18): 按设计文档 §4.5 删除文档并级联清 chunk + 向量
-    throw new Error('Not implemented: T0.9-18');
+  public async deleteDocument(docId: string): Promise<void> {
+    await KnowledgeService.get().whenReady();
+    await KnowledgeService.get().deleteDocument(docId);
   }
 
-  /** 原文预览（chat 的可点击引用最终定位到这里，§4.3/§4.5）。 */
   public previewDocument(docId: string, focusChunkId: string): Promise<DocPreviewBlock[]> {
-    // TODO(T0.9-18): 按设计文档 §4.5 返回原文分块内容，focusChunkId 用于滚动定位与高亮
-    throw new Error('Not implemented: T0.9-18');
+    // TODO(T0.9-18 打磨项，裁剪顺序第 2 位): 原文预览——chunk 按 seq 拼接 + 定位高亮
+    throw new Error('Not implemented: T0.9-18（原文预览属打磨项，本版先交付库/文档管理与导入）');
   }
 
-  /** 整库导出为 .adkb（ZIP：raw 文件 + chunks.jsonl + 向量二进制 + manifest，§4.5）。 */
   public exportAdkb(libId: string, targetUri: string): Promise<void> {
-    // TODO(T0.9-18): 按设计文档 §4.5 打包 .adkb，用于设备间迁移与备份
-    throw new Error('Not implemented: T0.9-18');
+    // TODO(T0.9-18 打磨项): .adkb 打包（ZIP：raw + chunks.jsonl + manifest；[R-99] 仅本地文件）
+    throw new Error('Not implemented: T0.9-18（.adkb 导出属打磨项）');
   }
 
-  /** 从 .adkb 导入整库（§4.5）。 */
   public importAdkb(sourceUri: string): Promise<string> {
-    // TODO(T0.9-18): 按设计文档 §4.5 校验 manifest（embedding 模型一致性）后导入，
-    //                模型不一致时提示"需重建向量"并转后台任务。
-    throw new Error('Not implemented: T0.9-18');
+    // TODO(T0.9-18 打磨项): .adkb 导入
+    throw new Error('Not implemented: T0.9-18（.adkb 导入属打磨项）');
   }
 }

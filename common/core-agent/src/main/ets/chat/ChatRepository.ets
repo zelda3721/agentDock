@@ -48,11 +48,24 @@ export interface AgentBindingRow {
   name: string;
   systemPrompt: string;
   providerId: string;
+  /** 绑定的知识库（§5.1 knowledge.libIds；空数组 = 未绑定，发送不走检索） */
+  libIds: string[];
+  /** 检索注入条数（§5.1 knowledge.topK，出厂 6） */
+  topK: number;
+  /** 要求回答带引用标记（§4.3） */
+  requireCitation: boolean;
 }
 
 /** agent_defs.model 列 JSON 的最小读形（只取 send 路径需要的 providerId） */
 interface AgentBindingModel {
   providerId?: string;
+}
+
+/** agent_defs.knowledge 列 JSON 的最小读形 */
+interface AgentBindingKnowledge {
+  libIds?: string[];
+  topK?: number;
+  requireCitation?: boolean;
 }
 
 /**
@@ -376,7 +389,7 @@ export class ChatRepository {
    */
   async agentBinding(agentId: string): Promise<AgentBindingRow | null> {
     return this.rdb.queryOne<AgentBindingRow>(
-      `SELECT name, system_prompt, model FROM agent_defs WHERE id = ? AND enabled = 1;`,
+      `SELECT name, system_prompt, model, knowledge FROM agent_defs WHERE id = ? AND enabled = 1;`,
       [agentId] as Array<SqlArg>,
       (rs: relationalStore.ResultSet): AgentBindingRow => {
         let providerId: string = '';
@@ -388,10 +401,29 @@ export class ChatRepository {
         } catch (e) {
           // model 列损坏按"未绑定模型"处理（回退默认 Provider），不让脏数据挡住发送
         }
+        let libIds: string[] = [];
+        let topK: number = 6;
+        let requireCitation: boolean = false;
+        try {
+          const knowledge: AgentBindingKnowledge =
+            JSON.parse(rs.getString(rs.getColumnIndex('knowledge'))) as AgentBindingKnowledge;
+          if (Array.isArray(knowledge.libIds)) {
+            libIds = knowledge.libIds;
+          }
+          if (typeof knowledge.topK === 'number' && knowledge.topK > 0) {
+            topK = knowledge.topK;
+          }
+          requireCitation = knowledge.requireCitation === true;
+        } catch (e) {
+          // knowledge 列损坏按"未绑定知识库"处理，不让脏数据挡住发送
+        }
         const row: AgentBindingRow = {
           name: rs.getString(rs.getColumnIndex('name')),
           systemPrompt: rs.getString(rs.getColumnIndex('system_prompt')),
-          providerId: providerId
+          providerId: providerId,
+          libIds: libIds,
+          topK: topK,
+          requireCitation: requireCitation
         };
         return row;
       }

@@ -101,14 +101,112 @@ export class ParserRegistry {
     return Array.from(this.parsers.keys());
   }
 
-  /**
-   * 按 mime 分发解析。
-   * TODO(T0.9-13): 按 §4.2-[2] 接线；未注册 mime 抛出可读错误（文档 status=failed，
-   * error 写"暂不支持的格式：{mime}"）。
-   */
+  /** 按 mime 分发解析；未注册 mime 抛可读错误（文档 status=failed，error 用户可见）。 */
   async parse(uri: string, mime: string): Promise<ParseResult> {
-    throw new Error('Not implemented: T0.9-13');
+    const parser: DocumentParser | undefined = this.parsers.get(mime);
+    if (parser === undefined) {
+      throw new Error(`暂不支持的格式：${mime}`);
+    }
+    return parser.parse(uri);
   }
+}
+
+// ============================================================================
+// Markdown 块解析（纯函数——tools/eval/rag-regression 的 Node 回归直接考核）
+// ============================================================================
+
+/**
+ * 把 Markdown/纯文本解析为结构化块（§4.2-[2]）。
+ *  - ATX 标题（# ~ ######）→ heading（level=井号数）；
+ *  - 连续的 | 开头行 → table（整表一块，交给 Chunker 的 keepTableWhole）；
+ *  - 围栏代码块 ``` … ``` → code（整块保留，不当正文断句）；
+ *  - 其余按空行分段 → paragraph。
+ * Setext 标题（下划线式）不支持——ATX 覆盖现代 Markdown 的绝对主流，如实取舍。
+ */
+export function parseMarkdownBlocks(content: string): ParsedBlock[] {
+  const blocks: ParsedBlock[] = [];
+  const lines: string[] = content.split('\n');
+  let para: string[] = [];
+  let table: string[] = [];
+  let code: string[] = [];
+  let inCode: boolean = false;
+
+  const flushPara = (): void => {
+    if (para.length > 0) {
+      blocks.push({ kind: 'paragraph', text: para.join('\n'), page: 0, provenance: 'text_layer' });
+      para = [];
+    }
+  };
+  const flushTable = (): void => {
+    if (table.length > 0) {
+      blocks.push({ kind: 'table', text: table.join('\n'), page: 0, provenance: 'text_layer' });
+      table = [];
+    }
+  };
+
+  for (const rawLine of lines) {
+    const line: string = rawLine;
+    const trimmed: string = line.trim();
+
+    if (inCode) {
+      if (trimmed.startsWith('```')) {
+        inCode = false;
+        blocks.push({ kind: 'code', text: code.join('\n'), page: 0, provenance: 'text_layer' });
+        code = [];
+      } else {
+        code.push(line);
+      }
+      continue;
+    }
+
+    if (trimmed.startsWith('```')) {
+      flushPara();
+      flushTable();
+      inCode = true;
+      continue;
+    }
+
+    if (trimmed.startsWith('|')) {
+      flushPara();
+      table.push(trimmed);
+      continue;
+    }
+    flushTable();
+
+    const heading: RegExpMatchArray | null = trimmed.match(/^(#{1,6})\s+(.+)$/);
+    if (heading !== null) {
+      flushPara();
+      blocks.push({
+        kind: 'heading', text: heading[2].trim(), level: heading[1].length,
+        page: 0, provenance: 'text_layer'
+      });
+      continue;
+    }
+
+    if (trimmed.length === 0) {
+      flushPara();
+      continue;
+    }
+    para.push(trimmed);
+  }
+
+  // 未闭合的围栏代码块按代码块收束（内容不丢——静默丢内容比格式瑕疵严重）
+  if (inCode && code.length > 0) {
+    blocks.push({ kind: 'code', text: code.join('\n'), page: 0, provenance: 'text_layer' });
+  }
+  flushPara();
+  flushTable();
+  return blocks;
+}
+
+/** 文档标题推断：首个 H1；无则空串（上层回退文件名——不编标题） */
+export function inferTitle(blocks: ParsedBlock[]): string {
+  for (const b of blocks) {
+    if (b.kind === 'heading' && (b.level ?? 1) === 1) {
+      return b.text;
+    }
+  }
+  return '';
 }
 
 // ============================================================================
@@ -125,7 +223,17 @@ export class TextParser implements DocumentParser {
   readonly mimeTypes: string[] = ['text/plain', 'text/markdown'];
 
   async parse(uri: string): Promise<ParseResult> {
-    throw new Error('Not implemented: T0.9-13');
+    const fs = await import('@kit.CoreFileKit');
+    // txt/md 属小文件（知识文档量级），整读可接受；GB 级流式纪律针对模型权重（FileRepo 注释）
+    const content: string = await fs.fileIo.readText(uri);
+    const blocks: ParsedBlock[] = parseMarkdownBlocks(content);
+    const result: ParseResult = {
+      blocks: blocks,
+      needsOcr: false,
+      ocrPendingPages: [],
+      title: inferTitle(blocks)
+    };
+    return result;
   }
 }
 

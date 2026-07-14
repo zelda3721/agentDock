@@ -17,10 +17,11 @@
  * V0.9 各 Tab 内容由 feature HSP 提供：
  *   chat / models 已接入；TODO(T0.9-16/18/27): 依次接入 agents / knowledge / settings HSP 组件
  */
-import { AdColor, AdSpace, AdStroke, AdType } from 'design-system';
+import { AdButton, AdButtonSize, AdButtonVariant, AdColor, AdSpace, AdStroke, AdType } from 'design-system';
 import { ChatPage } from 'chat';
 import { ModelListPage } from 'models';
 import { AgentEditor, AgentListPage } from 'agents';
+import { KbDocumentList, KbListPage } from 'knowledge';
 import { AgentService, ChatService } from 'core-agent';
 import { Logger } from 'core-infra';
 import { Breakpoint, BREAKPOINT_KEY } from '../common/BreakpointSystem';
@@ -61,6 +62,11 @@ struct Index {
   /** 跨 Tab 指令：用智能体新建的会话 id，ChatPage @Watch 收到即打开（T0.9-16） */
   @State private chatOpenConvId: string = '';
 
+  // ---- knowledge Tab 的装配状态（T0.9-18：sm 列表↔文档页切换；md/lg 主从双栏） ----
+  @State private kbSelectedLibId: string = '';
+  @State private kbShowDocs: boolean = false;
+  @State private kbRefreshTick: number = 0;
+
   build() {
     // 三端同一形态：内容区 + 底部 Tab（见文件头的 V0.9 裁量记录）
     Tabs({ index: this.navIndex }) {
@@ -81,6 +87,8 @@ struct Index {
             ModelListPage()
           } else if (item.key === 'agents') {
             this.AgentsPane()
+          } else if (item.key === 'knowledge') {
+            this.KnowledgePane()
           } else {
             this.PlaceholderPane(item.label, '待接入对应 feature HSP')
           }
@@ -206,6 +214,89 @@ struct Index {
             .justifyContent(FlexAlign.Center)
             .alignItems(HorizontalAlign.Center)
           }
+        }
+        .layoutWeight(1)
+        .height('100%')
+      }
+      .width('100%')
+      .height('100%')
+    }
+  }
+
+  /**
+   * knowledge Tab（T0.9-18）：sm 列表↔文档页切换；md/lg 主从双栏（库 320 + 文档）。
+   */
+  @Builder
+  KnowledgePane() {
+    if (this.breakpoint === Breakpoint.SM) {
+      if (this.kbShowDocs) {
+        Column() {
+          Row() {
+            AdButton({
+              label: '返回',
+              variant: AdButtonVariant.GHOST,
+              btnSize: AdButtonSize.SM,
+              a11yText: '返回知识库列表',
+              onAction: (): void => {
+                this.kbShowDocs = false;
+                this.kbRefreshTick++;
+              }
+            })
+          }
+          .width('100%')
+          .padding({ left: AdSpace.s2, top: AdSpace.s2 })
+
+          KbDocumentList({
+            breakpoint: 'sm',
+            libId: this.kbSelectedLibId,
+            onDocsChanged: (): void => {
+              this.kbRefreshTick++;
+            }
+          })
+            .layoutWeight(1)
+        }
+        .width('100%')
+        .height('100%')
+      } else {
+        KbListPage({
+          breakpoint: 'sm',
+          selectedLibId: this.kbSelectedLibId,
+          refreshTick: this.kbRefreshTick,
+          onSelectLibrary: (libId: string): void => {
+            this.kbSelectedLibId = libId;
+            this.kbShowDocs = true;
+          }
+        })
+      }
+    } else {
+      Row() {
+        Column() {
+          KbListPage({
+            breakpoint: this.breakpoint === Breakpoint.LG ? 'lg' : 'md',
+            selectedLibId: this.kbSelectedLibId,
+            refreshTick: this.kbRefreshTick,
+            onSelectLibrary: (libId: string): void => {
+              this.kbSelectedLibId = libId;
+            }
+          })
+        }
+        .width(320)
+        .height('100%')
+
+        Divider()
+          .vertical(true)
+          .strokeWidth(AdStroke.hairline)
+          .color(AdColor.border)
+          .height('100%')
+
+        Column() {
+          KbDocumentList({
+            breakpoint: this.breakpoint === Breakpoint.LG ? 'lg' : 'md',
+            libId: this.kbSelectedLibId,
+            onDocsChanged: (): void => {
+              this.kbRefreshTick++;
+            }
+          })
         }
         .layoutWeight(1)
         .height('100%')

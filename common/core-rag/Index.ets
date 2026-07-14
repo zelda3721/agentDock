@@ -16,3 +16,6 @@ export * from './src/main/ets/ingest/Chunker';
 export * from './src/main/ets/ingest/IngestPipeline';
 export * from './src/main/ets/query/Retriever';
 export * from './src/main/ets/query/ContextBuilder';
+export * from './src/main/ets/store/KbRepo';
+export * from './src/main/ets/service/KnowledgeService';
+export * from './src/main/ets/ingest/Tokenize';

@@ -29,13 +29,29 @@
  *   该判定在 selectEmbedProvider() 中强制执行，不依赖调用方自觉。
  */
 
+import { fileIo } from '@kit.CoreFileKit';
+import { util } from '@kit.ArkTS';
 import type { InferenceProvider } from 'core-llm';
+import { FileRepo } from 'core-data';
+import { Logger, TaskKind, TaskQueue } from 'core-infra';
 import type {
   ImportTicket,
-  IngestStep,
   KbLibrary,
   PrivacyLevel
 } from '../model/Types';
+import { IngestStep } from '../model/Types';
+import { KbRepo } from '../store/KbRepo';
+import { ParseResult, ParserRegistry } from './Parser';
+import { Chunker, DraftChunk } from './Chunker';
+import { ftsTokenize } from './Tokenize';
+
+const TAG: string = 'IngestPipeline';
+
+/** KB_INGEST_DOC 任务的 payload（JSON；禁止密钥，红线 16） */
+export interface IngestTaskPayload {
+  docId: string;
+  libId: string;
+}
 
 /** 单文档摄取任务的进度（UI 通知栏与 knowledge 页展示） */
 export interface IngestProgress {
@@ -94,56 +110,216 @@ export const EMBED_BATCH_SIZE: number = 32;
  *       T0.9-11（vec_index）、T0.9-12（doc_parsers PDFium）。
  */
 export class IngestPipeline {
+  private readonly repo: KbRepo;
+  private readonly parsers: ParserRegistry;
+  private readonly chunker: Chunker;
+  private readonly files: FileRepo;
+  /** null = 无队列（同步直跑，测试/降级路径）；正常装配下由 KnowledgeService 注入 */
+  private readonly queue: TaskQueue | null;
+
+  constructor(repo: KbRepo, parsers: ParserRegistry, chunker: Chunker,
+              files: FileRepo, queue: TaskQueue | null) {
+    this.repo = repo;
+    this.parsers = parsers;
+    this.chunker = chunker;
+    this.files = files;
+    this.queue = queue;
+  }
+
   /**
-   * 导入一批文件（附录 A：KnowledgeService.importFiles）。
-   * 返回 ImportTicket 后立即返回——实际摄取由 TaskQueue 异步驱动，
-   * UI 通过 IngestProgress 事件订阅进度（§4.5 导入进度）。
-   *
-   * TODO(T0.9-13): 完成 [1] STAGE 与任务入队；后续步骤由 TaskQueue 调度。
+   * 导入一批文件（附录 A）：[1] STAGE（拷沙箱 + sha256 去重 + 文档落库）同步完成，
+   * 解析/切片/写入经 TaskQueue 异步驱动（App 被杀重启续跑，§4.2 末段）。
    */
   async importFiles(libId: string, uris: string[]): Promise<ImportTicket> {
-    throw new Error('Not implemented: T0.9-13');
+    const lib: KbLibrary | null = await this.repo.getLibrary(libId);
+    if (lib === null) {
+      throw new Error(`知识库不存在：${libId}`);
+    }
+    await this.files.ensureDir(this.files.kbRawDir(libId));
+
+    const docIds: string[] = [];
+    let duplicateCount: number = 0;
+
+    for (const uri of uris) {
+      // 流式 sha256（picker URI 可直接 open 读取；红线 18：只碰用户显式授权的文件）
+      const sha: string = await this.files.computeSha256(uri);
+      const existing: string | null = await this.repo.findBySha(libId, sha);
+      if (existing !== null) {
+        duplicateCount++;
+        continue;
+      }
+      const name: string = IngestPipeline.fileNameOf(uri);
+      const ext: string = IngestPipeline.extOf(name);
+      const target: string = await this.files.importToKbRaw(libId, uri, ext, sha);
+      const size: number = fileIo.statSync(target).size;
+      const title: string = ext.length > 0 ? name.substring(0, name.length - ext.length - 1) : name;
+      const docId: string = await this.repo.insertDocument(
+        libId, target, title, IngestPipeline.mimeOf(ext), sha, size);
+      docIds.push(docId);
+
+      if (this.queue !== null) {
+        const payload: IngestTaskPayload = { docId: docId, libId: libId };
+        await this.queue.enqueue({
+          kind: TaskKind.KB_INGEST_DOC,
+          idempotencyKey: `${libId}:${sha}`,   // §4.2：sha256 为幂等键（同库同文件唯一任务）
+          payload: JSON.stringify(payload),
+          maxAttempts: 3
+        });
+      } else {
+        await this.processDocument(docId);
+      }
+    }
+
+    await this.repo.refreshStats(libId);
+    const ticket: ImportTicket = {
+      ticketId: util.generateRandomUUID(true),
+      libId: libId,
+      docIds: docIds,
+      duplicateCount: duplicateCount,
+      createdAt: Date.now()
+    };
+    return ticket;
   }
 
   /**
-   * 执行单个文档的某一步（TaskQueue 的任务执行体）。
-   * 每步以 ingestIdempotencyKey(sha256, step) 为幂等键，重复执行必须无副作用。
+   * 单文档全步执行（KB_INGEST_DOC 的任务体）：PARSE → CHUNK → COMMIT。
    *
-   * TODO(T0.9-13): 按 step 分发到 [1]–[5] 的具体实现。
+   * 幂等（契约 C3）：status==='ready' 直接返回；commitChunks 先清后写——
+   * 重复执行/中途被杀后重跑均无副作用。
+   *
+   * 【EMBED 步（§4.2-[4]）诚实缺席】vec_index NAPI（T0.9-11 hnswlib 交叉编译）与
+   * 本地 embedding 模型链路未交付：vec_ref 落 NULL、检索走 FTS 单路（Retriever 同源说明）。
+   * TODO(T0.9-11): 交付后在 CHUNK 与 COMMIT 之间插入 32 条/批 embed + R3 批边界抢占检查，
+   * status 经 'embedding' 态——**在那之前本流水线不进入 embedding 态**（状态不说谎）。
    */
-  async runStep(docId: string, step: IngestStep): Promise<void> {
-    throw new Error('Not implemented: T0.9-13');
+  async processDocument(docId: string): Promise<void> {
+    const doc = await this.repo.getDocument(docId);
+    if (doc === null) {
+      Logger.warn(TAG, 'ingest: doc missing (deleted before processing)', [{ key: 'doc', value: docId }]);
+      return;
+    }
+    if (doc.status === 'ready') {
+      return;   // 幂等：已完成的文档重复执行无副作用
+    }
+    await this.repo.setDocStatus(docId, 'parsing', null);
+    try {
+      const parsed: ParseResult = await this.parsers.parse(doc.uri, doc.mime);
+      if (parsed.needsOcr) {
+        await this.repo.markNeedsOcr(docId);
+      }
+      if (parsed.blocks.length === 0) {
+        const reason: string = parsed.needsOcr
+          ? '扫描件，暂不支持（V2 将支持 OCR）'
+          : '解析结果为空：文件里没有可索引的文本';
+        await this.repo.setDocStatus(docId, 'failed', reason);
+        return;
+      }
+      if (parsed.title.length > 0) {
+        await this.repo.setDocTitle(docId, parsed.title);
+      }
+
+      const lib: KbLibrary | null = await this.repo.getLibrary(doc.libId);
+      const policy = lib !== null ? lib.chunkPolicy : null;
+      const drafts: DraftChunk[] = await this.chunker.chunk({
+        docId: docId,
+        blocks: parsed.blocks,
+        policy: policy !== null ? policy : { maxTokens: 512, overlapTokens: 64, keepTableWhole: true, headingAware: true }
+      });
+      if (drafts.length === 0) {
+        await this.repo.setDocStatus(docId, 'failed', '切片结果为空：文档内容过短或无法切分');
+        return;
+      }
+
+      const ftsTexts: string[] = [];
+      for (const d of drafts) {
+        ftsTexts.push(ftsTokenize(d.text));
+      }
+      await this.repo.commitChunks(docId, doc.libId, drafts, ftsTexts);
+      await this.repo.refreshStats(doc.libId);
+      Logger.info(TAG, 'PERF|ingest doc committed', [
+        { key: 'doc', value: docId },
+        { key: 'chunks', value: drafts.length }
+      ]);
+    } catch (e) {
+      // 失败原因用户可见：可读文案，不塞异常栈（栈进日志）
+      const msg: string = (e as Error).message;
+      Logger.error(TAG, 'ingest failed', [{ key: 'doc', value: docId }, { key: 'err', value: msg }]);
+      await this.repo.setDocStatus(docId, 'failed', msg);
+      throw new Error(msg);   // 抛给 TaskQueue 按 maxAttempts 重试（瞬时 IO 失败可自愈）
+    }
   }
 
-  /** 重新解析文档（§4.5 文档级操作）：version++ 后从 PARSE 步重跑 */
+  /** 重新解析（§4.5）：doc_version+1 后从 PARSE 重跑（commitChunks 先清后写，天然覆盖旧版） */
   async reparse(docId: string): Promise<void> {
-    throw new Error('Not implemented: T0.9-13');
+    await this.repo.bumpDocVersion(docId);
+    await this.repo.setDocStatus(docId, 'pending', null);
+    await this.processDocument(docId);
   }
 
-  /** 删除文档：级联清 chunk + FTS + 向量（§4.5） */
+  /** 删除文档：级联清 chunk + FTS（触发器同步）；向量清理随 T0.9-11（现无向量可清） */
   async deleteDocument(docId: string): Promise<void> {
-    throw new Error('Not implemented: T0.9-13');
+    const doc = await this.repo.getDocument(docId);
+    if (doc === null) {
+      return;
+    }
+    await this.repo.deleteDocument(docId);
+    await this.repo.refreshStats(doc.libId);
   }
 
   /**
-   * 选择 embedding Provider —— **隐私围栏在摄取侧的强制执行点**（§9.2 / 红线 17）。
-   *
-   * local_only 的库禁止把内容发到远程 /embeddings：
-   * 围栏不只管"问答时不发出去"，也管"建索引时不发出去"——
-   * 否则用户以为数据在端，实际建库那一刻全文就已经出端了。
-   *
-   * TODO(T0.9-13): 实现：
-   *   - lib.privacyLevel==='local_only' 且候选 Provider.kind==='remote' → 直接拒绝，
-   *     回退到本地 embedding 模型；本地模型不可用则整个导入失败并提示用户下载模型，
-   *     **绝不静默降级为远程**。
-   *   - lib.privacyLevel==='allow_remote' → 允许按 lib.embedModelId 选择远程 Provider。
+   * 选择 embedding Provider —— 隐私围栏在摄取侧的强制执行点（§9.2 / 红线 17，
+   * 语义见原合同注释）。V0.9 无 embed 调用方（EMBED 步随 T0.9-11），但围栏判定先于
+   * 能力存在：T0.9-11 接入时**必须**经此函数选 Provider，不得绕过。
    */
   selectEmbedProvider(lib: KbLibrary, candidates: InferenceProvider[]): InferenceProvider {
-    throw new Error('Not implemented: T0.9-13');
+    for (const candidate of candidates) {
+      if (candidate.kind === 'local') {
+        return candidate;   // 本地永远合规且优先（数据不出端）
+      }
+      if (IngestPipeline.allowsRemoteEmbedding(lib.privacyLevel)) {
+        return candidate;   // allow_remote 的库才允许远程 /embeddings
+      }
+      // local_only + remote 候选：跳过（绝不静默降级为远程）
+    }
+    throw new Error(lib.privacyLevel === 'local_only'
+      ? '该知识库为「仅本地」：需要本地 embedding 模型（请先在模型页下载）'
+      : '没有可用的 embedding Provider');
   }
 
   /** 围栏纯判定：该隐私级别是否允许使用远程 embedding（与 ContextBuilder 共用同一语义） */
   static allowsRemoteEmbedding(privacyLevel: PrivacyLevel): boolean {
     return privacyLevel === 'allow_remote';
+  }
+
+  private static fileNameOf(uri: string): string {
+    const slash: number = uri.lastIndexOf('/');
+    const raw: string = slash >= 0 ? uri.substring(slash + 1) : uri;
+    try {
+      return decodeURIComponent(raw);
+    } catch (e) {
+      return raw;
+    }
+  }
+
+  private static extOf(name: string): string {
+    const dot: number = name.lastIndexOf('.');
+    return dot > 0 ? name.substring(dot + 1).toLowerCase() : '';
+  }
+
+  /** 扩展名 → mime（只映射已注册解析器覆盖的格式；未知交给注册表报"暂不支持"） */
+  private static mimeOf(ext: string): string {
+    if (ext === 'md' || ext === 'markdown') {
+      return 'text/markdown';
+    }
+    if (ext === 'txt') {
+      return 'text/plain';
+    }
+    if (ext === 'pdf') {
+      return 'application/pdf';
+    }
+    if (ext === 'docx') {
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    }
+    return `application/octet-stream`;
   }
 }
