@@ -137,6 +137,8 @@ export interface ChatMessageRecord {
   status: ChatMessageStatus;
   /** assistant 消息才有（存 messages.citations 的 JSON 信封，见 ProvenanceCodec） */
   provenance?: ChatProvenance;
+  /** RAG 引用明细（与 provenance 同一信封；老消息/无引用为缺席） */
+  citations?: ChatCitation[];
   errorMessage?: string;
 }
 
@@ -272,12 +274,16 @@ export function fromDbStatus(dbStatus: string): ChatMessageStatus {
  */
 export const PROVENANCE_ENVELOPE_SCHEMA: string = 'chat_provenance@1';
 
-/** RAG 引用（V0.9 不产生，仅为信封占位，保证 T1.0 接 RAG 时列语义不变） */
+/** RAG 引用明细（T0.9-14 起真实产生；存 messages.citations 信封，检视 Sheet 渲染） */
 export interface ChatCitation {
   docId: string;
   chunkId: string;
   page?: number;
   score?: number;
+  /** 文档标题（kb_document.title 快照——文档删除后引用仍可读，[R-37] 证据不消失） */
+  title?: string;
+  /** 标题路径末级（如 "3.2 材料要求"，定位串展示用） */
+  heading?: string;
 }
 
 interface ProvenanceEnvelope {
@@ -295,6 +301,23 @@ export class ProvenanceCodec {
       citations: citations
     };
     return JSON.stringify(envelope);
+  }
+
+  /** 从列值解码引用明细；缺席/损坏返回空数组（读路径绝不抛异常） */
+  static decodeCitations(columnValue: string | null): ChatCitation[] {
+    if (columnValue === null || columnValue.length === 0) {
+      return [];
+    }
+    const trimmed: string = columnValue.trim();
+    if (!trimmed.startsWith('{')) {
+      return [];
+    }
+    try {
+      const envelope: ProvenanceEnvelope = JSON.parse(trimmed) as ProvenanceEnvelope;
+      return Array.isArray(envelope.citations) ? envelope.citations : [];
+    } catch (e) {
+      return [];
+    }
   }
 
   /** 从列值解码 provenance；列为空/裸数组/损坏 JSON 时返回 undefined（读路径绝不抛异常，历史消息必须能渲染） */

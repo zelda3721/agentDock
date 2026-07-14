@@ -159,6 +159,11 @@ export class KnowledgeService {
     return this.requireRepo().listDocuments(libId);
   }
 
+  /** 文档标题批查（chat 侧构造引用明细用；一次取齐避免 N+1） */
+  docTitles(docIds: string[]): Promise<Map<string, string>> {
+    return this.requireRepo().docTitles(docIds);
+  }
+
   reparseDocument(docId: string): Promise<void> {
     return this.requirePipeline().reparse(docId);
   }

@@ -19,7 +19,7 @@
  */
 import { AdButton, AdButtonSize, AdButtonVariant, AdColor, AdSpace, AdStroke, AdType } from 'design-system';
 import { ChatPage } from 'chat';
-import { ModelListPage } from 'models';
+import { ModelFacade, ModelListPage, ProviderConfigPage } from 'models';
 import { AgentEditor, AgentListPage } from 'agents';
 import { KbDocumentList, KbListPage } from 'knowledge';
 import { AgentService, ChatService } from 'core-agent';
@@ -62,6 +62,10 @@ struct Index {
   /** 跨 Tab 指令：用智能体新建的会话 id，ChatPage @Watch 收到即打开（T0.9-16） */
   @State private chatOpenConvId: string = '';
 
+  // ---- models Tab 的装配状态（T0.9-08 接线补全：远程 Provider 配置页） ----
+  @State private providerConfigOpen: boolean = false;
+  @State private editingProviderId: string = '';
+
   // ---- knowledge Tab 的装配状态（T0.9-18：sm 列表↔文档页切换；md/lg 主从双栏） ----
   @State private kbSelectedLibId: string = '';
   @State private kbShowDocs: boolean = false;
@@ -84,7 +88,7 @@ struct Index {
               }
             })
           } else if (item.key === 'models') {
-            ModelListPage()
+            this.ModelsPane()
           } else if (item.key === 'agents') {
             this.AgentsPane()
           } else if (item.key === 'knowledge') {
@@ -220,6 +224,54 @@ struct Index {
       }
       .width('100%')
       .height('100%')
+    }
+  }
+
+  /**
+   * models Tab：列表页 ↔ 远程 Provider 配置页整页切换（T0.9-08 接线补全——
+   * 此前 ModelListPage 裸挂载，「添加 Provider」的回调没人接，点了没反应）。
+   * 关闭配置页时 ModelListPage 重新挂载（aboutToAppear 重拉），列表即时反映新 Provider。
+   */
+  @Builder
+  ModelsPane() {
+    if (this.providerConfigOpen) {
+      Column() {
+        Row() {
+          AdButton({
+            label: '返回',
+            variant: AdButtonVariant.GHOST,
+            btnSize: AdButtonSize.SM,
+            a11yText: '返回模型页',
+            onAction: (): void => {
+              this.providerConfigOpen = false;
+            }
+          })
+        }
+        .width('100%')
+        .padding({ left: AdSpace.s2, top: AdSpace.s2 })
+
+        ProviderConfigPage({
+          breakpoint: this.breakpoint === Breakpoint.LG ? 'lg' : (this.breakpoint === Breakpoint.MD ? 'md' : 'sm'),
+          providerId: this.editingProviderId,
+          onSaved: (_providerId: string): void => {
+            // 保存即注册进运行时（同一份同步逻辑，启动时也走它）——立刻可在智能体编辑器选到
+            ModelFacade.get().syncRemoteProvidersIntoRegistry().then((): void => {
+              this.providerConfigOpen = false;
+            });
+          }
+        })
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .height('100%')
+    } else {
+      ModelListPage({
+        breakpoint: this.breakpoint === Breakpoint.LG ? 'lg' : (this.breakpoint === Breakpoint.MD ? 'md' : 'sm'),
+        onOpenProviderConfig: (providerId: string): void => {
+          this.editingProviderId = providerId;
+          this.providerConfigOpen = true;
+        }
+      })
     }
   }
 

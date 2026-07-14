@@ -3,6 +3,7 @@
 
 import {
   AdBrainKind,
+  AdCitation,
   AdBreakpoint,
   AdColor,
   AdDivider,
@@ -117,6 +118,10 @@ export struct InspectorPane {
               Text('本次回答没有引用知识库里的片段。')
                 .inspectorBody(AdColor.inkTertiary)
                 .width('100%')
+            } else {
+              ForEach(this.provenance.citations, (item: AdCitation) => {
+                this.citationRow(item)
+              }, (item: AdCitation, index: number) => `c${index}`)
             }
 
             // [R-17] 出端时拦截段**恒渲染**：0 条也要说「未拦截」——
@@ -153,6 +158,44 @@ export struct InspectorPane {
     .alignItems(HorizontalAlign.Start)
     .padding(AdSpace.s4)
     .backgroundColor(AdColor.surface)
+  }
+
+  /** 引用行：编号（仪表体）+ 文档标题 + 定位串 + 相似度 + 在端徽标（§4.5 可点击引用的静态版；
+   *  点击定位原文随「原文预览」打磨项交付——在那之前不画点了没反应的跳转） */
+  @Builder
+  citationRow(item: AdCitation) {
+    Row({ space: AdSpace.s2 }) {
+      Text(`[${item.index}]`)
+        .inspectorNum(AdType.instrumentSOf(this.bp).size, AdColor.brandFg)
+      Column({ space: AdSpace.hairline }) {
+        Text(item.docTitle.length > 0 ? item.docTitle : '（文档）')
+          .inspectorBody(AdColor.ink)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+        if (item.locator.length > 0) {
+          Text(item.locator)
+            .inspectorBody(AdColor.inkTertiary)
+            .maxLines(1)
+            .width('100%')
+        }
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+
+      if (item.score > 0) {
+        Text(item.score.toFixed(2))
+          .inspectorNum(AdType.instrumentSOf(this.bp).size, AdColor.inkTertiary)
+      }
+      AdTag({ kind: item.local ? AdTagKind.LOCAL : AdTagKind.REMOTE, text: '', inline: true })
+    }
+    .width('100%')
+    .alignItems(VerticalAlign.Top)
+    .accessibilityGroup(true)
+    .accessibilityText(`引用 ${item.index}，来自 ${item.docTitle}` +
+      (item.locator.length > 0 ? `，${item.locator}` : '') +
+      (item.score > 0 ? `，相似度 ${item.score.toFixed(2)}` : '') +
+      `，${item.local ? '本地文档' : '远程文档'}`)
   }
 
   /** 被拦截项：数量与去向，**不自我表扬、不含糊**（§5.5 隐私文案纪律） */

@@ -3,6 +3,7 @@
 
 import { AdBrainKind, AdCitation, AdFencedItem, AdMessageRole, AdMessageStatus, AdProvenance } from 'design-system';
 import {
+  ChatCitation,
   ChatMessageRecord,
   ChatProvenance,
   ChatService,
@@ -469,7 +470,7 @@ export class ChatController {
     vm.errorText = r.errorMessage !== undefined ? r.errorMessage : '';
     vm.showRail = role === AdMessageRole.ASSISTANT && r.provenance !== undefined;
     if (r.provenance !== undefined) {
-      vm.provenance = ChatController.toProvenance(r.provenance);
+      vm.provenance = ChatController.toProvenance(r.provenance, r.citations ?? []);
     }
     return vm;
   }
@@ -497,7 +498,7 @@ export class ChatController {
    * TODO(T1.0-13)：引用/记忆的明细（文档名、页码、相似度、命中片段）需 ChatService 扩展一个
    *                「取某条消息的溯源明细」的接口——ChatProvenance 目前只给计数，UI **不编造**明细。
    */
-  static toProvenance(p: ChatProvenance): AdProvenance {
+  static toProvenance(p: ChatProvenance, details: ChatCitation[] = []): AdProvenance {
     const brain: AdBrainKind = p.providerKind === 'remote' ? AdBrainKind.REMOTE : AdBrainKind.LOCAL;
     const out: AdProvenance = new AdProvenance(brain, p.modelLabel);
     // TODO(T0.9-15 · 合同缺口)：[R-14] 要求远程态朗读「已发送至 <域名>」，而 ChatProvenance 未提供
@@ -506,9 +507,27 @@ export class ChatController {
     out.elapsedSec = p.latencyMs / 1000;
     out.tokensPerSec = p.tokensPerSec;
 
+    // 引用：有明细用明细（标题/定位串/得分——检视 Sheet 的渲染源，T0.9-14）；
+    // 老消息只有计数 → 按数量建占位条目，计数与条目数恒等（数字不撒谎）
     const citations: AdCitation[] = [];
-    for (let i = 0; i < p.citations; i++) {
-      citations.push(new AdCitation(i + 1, '', '', 0, brain === AdBrainKind.LOCAL));
+    if (details.length > 0) {
+      for (let i = 0; i < details.length; i++) {
+        const d: ChatCitation = details[i];
+        const locator: string = d.page !== undefined && d.page > 0
+          ? `p.${d.page}`
+          : (d.heading !== undefined && d.heading.length > 0 ? d.heading : '');
+        citations.push(new AdCitation(
+          i + 1,
+          d.title !== undefined && d.title.length > 0 ? d.title : '（文档）',
+          locator,
+          d.score ?? 0,
+          true   // V0.9 知识库均在端（远程文档源随共享库特性交付）
+        ));
+      }
+    } else {
+      for (let i = 0; i < p.citations; i++) {
+        citations.push(new AdCitation(i + 1, '', '', 0, brain === AdBrainKind.LOCAL));
+      }
     }
     out.citations = citations;
 

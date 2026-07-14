@@ -44,7 +44,7 @@ import {
   SecretAlias,
   SecretStore
 } from 'core-infra';
-import { ProviderHealth, RemoteProvider, RemoteProviderConfig as LlmRemoteConfig } from 'core-llm';
+import { ProviderHealth, ProviderRegistry, RemoteProvider, RemoteProviderConfig as LlmRemoteConfig } from 'core-llm';
 import { DeviceBudget, isDownloadable, ModelCatalog, ModelManifestItem, Runnability } from './ModelManifest';
 
 const TAG: string = 'ModelFacade';
@@ -398,6 +398,44 @@ export class ModelFacade {
     await this.providerRepo().remove(providerId);
     await SecretStore.get().remove(SecretAlias.forProvider(providerId));
     Logger.info(TAG, 'remote provider removed', [{ key: 'provider_id', value: providerId }]);
+    await this.syncRemoteProvidersIntoRegistry();
+  }
+
+  /**
+   * 把 providers 表里 enabled 的远程 Provider 同步进运行时注册表（T0.9-08 接线补全）。
+   * 调用时机：entry 启动（重启后远程模型仍可用）+ 保存/删除/启停之后。
+   * 纪律：只动 kind==='remote' 的注册项，本地 Provider 归 MODEL_ACTIVE_CHANGED 链路管；
+   * 不 setDefault——默认大脑保持本地优先，远程由 Agent 显式绑定或切换菜单选用（§3.4）。
+   */
+  async syncRemoteProvidersIntoRegistry(): Promise<void> {
+    const registry: ProviderRegistry = ProviderRegistry.get();
+    const rows: ProviderRow[] = await this.providerRepo().listRemote();
+    const wanted: Set<string> = new Set<string>();
+    for (const row of rows) {
+      if (row.enabled) {
+        wanted.add(row.id);
+      }
+    }
+    for (const existing of registry.list()) {
+      if (existing.kind === 'remote' && !wanted.has(existing.id)) {
+        registry.unregister(existing.id);
+      }
+    }
+    for (const row of rows) {
+      if (!row.enabled) {
+        continue;
+      }
+      const config: LlmRemoteConfig = {
+        id: row.id,
+        baseUrl: row.baseUrl ?? '',
+        modelId: row.modelId ?? '',
+        modelLabel: row.name,
+        secretAlias: row.secretAlias ?? SecretAlias.forProvider(row.id),
+        networkPolicy: row.networkPolicy === 'wifi_only' ? 'wifi_only' : 'any'
+      };
+      registry.register(new RemoteProvider(config));
+    }
+    Logger.info(TAG, 'remote providers synced into registry', [{ key: 'count', value: wanted.size }]);
   }
 
   /**

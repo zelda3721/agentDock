@@ -319,9 +319,10 @@ export class ChatRepository {
    * **绝不清空 content**（[R-37]）：中断与失败都可能已产出部分文本，那是用户的资产。
    */
   async finishAssistant(id: string, content: string, status: ChatMessageStatus, tokenCount: number,
-                        provenance: ChatProvenance | null, errorMessage: string | null): Promise<void> {
+                        provenance: ChatProvenance | null, errorMessage: string | null,
+                        citationDetails: ChatCitation[] = []): Promise<void> {
     const citations: string | null =
-      provenance === null ? null : ProvenanceCodec.encode(provenance, [] as ChatCitation[]);
+      provenance === null ? null : ProvenanceCodec.encode(provenance, citationDetails);
     await this.rdb.exec(
       `UPDATE messages
           SET content = ?, status = ?, token_count = ?, citations = ?, error = ?, updated_at = ?
@@ -463,6 +464,7 @@ export class ChatRepository {
       createdAt: rs.getLong(rs.getColumnIndex('created_at')),
       status: status,
       provenance: ProvenanceCodec.decode(rs.isColumnNull(citeIdx) ? null : rs.getString(citeIdx)),
+      citations: ProvenanceCodec.decodeCitations(rs.isColumnNull(citeIdx) ? null : rs.getString(citeIdx)),
       errorMessage: rs.isColumnNull(errIdx) ? undefined : rs.getString(errIdx)
     };
     return record;

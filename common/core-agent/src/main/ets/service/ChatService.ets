@@ -54,6 +54,7 @@ import { adjudicateAfterStep, decideNext, GateDecision, RunBudgetSpec, runStateO
 import { RunRecorder } from '../runtime/RunRecorder';
 import {
   CHAT_DEFAULT_MAX_OUTPUT_TOKENS,
+  ChatCitation,
   ChatErrorCode,
   ChatMessageRecord,
   ChatMessageStatus,
@@ -293,6 +294,8 @@ class ChatTurn implements ChatTurnHandle {
   /** 本轮实际注入的 RAG 引用数 / 被围栏拦截数（溯源真值，T0.9-14；未走检索恒 0） */
   private ragCitations: number = 0;
   private ragBlocked: number = 0;
+  /** 引用明细（标题/页码/得分快照，随消息入信封——检视 Sheet 的数据源） */
+  private ragCitationDetails: ChatCitation[] = [];
 
   constructor(runId: string, assistantMessageId: string, convId: string,
               repo: ChatRepository, recorder: RunRecorder | null) {
@@ -434,6 +437,29 @@ class ChatTurn implements ChatTurnHandle {
             fenceResult.allowedChunks, DEFAULT_RAG_TOKEN_BUDGET);
           this.ragCitations = injected.length;
           this.ragBlocked = fenceResult.filteredChunkCount;
+          if (injected.length > 0) {
+            // 引用明细：标题快照 + 页码/标题路径 + RRF 得分（检视 Sheet 渲染；文档删了引用仍可读）
+            const docIds: string[] = [];
+            for (const c of injected) {
+              if (docIds.indexOf(c.chunk.docId) < 0) {
+                docIds.push(c.chunk.docId);
+              }
+            }
+            const titles: Map<string, string> = await KnowledgeService.get().docTitles(docIds);
+            this.ragCitationDetails = injected.map((c: ScoredChunk): ChatCitation => {
+              const cite: ChatCitation = {
+                docId: c.chunk.docId,
+                chunkId: c.chunk.id,
+                page: c.chunk.meta.page,
+                score: c.score,
+                title: titles.get(c.chunk.docId) ?? '',
+                heading: c.chunk.meta.headingPath.length > 0
+                  ? c.chunk.meta.headingPath[c.chunk.meta.headingPath.length - 1]
+                  : ''
+              };
+              return cite;
+            });
+          }
           if (injected.length > 0) {
             const userPart: string = binding.requireCitation
               ? `请在回答中为引用的资料标注来源。\n${text}`
@@ -752,7 +778,8 @@ class ChatTurn implements ChatTurnHandle {
 
     await this.repo.finishAssistant(
       this.assistantMessageId, content, status, completionTokens, provenance,
-      errorMessage.length > 0 ? errorMessage : null
+      errorMessage.length > 0 ? errorMessage : null,
+      this.ragCitationDetails
     );
     await this.repo.touchConversation(this.convId, providerId, provider.kind);
 

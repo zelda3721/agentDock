@@ -22,6 +22,7 @@ import {
 } from 'core-data';
 import { EventBus, Logger, NoopBackgroundScheduler, TaskQueue } from 'core-infra';
 import { KnowledgeService } from 'core-rag';
+import { ModelFacade } from 'models';
 import { LocalProvider, ProviderRegistry } from 'core-llm';
 import { AgentService, ChatService } from 'core-agent';
 import { BreakpointSystem } from '../common/BreakpointSystem';
@@ -79,6 +80,11 @@ export default class EntryAbility extends UIAbility {
       EventBus.get().subscribe(MODEL_ACTIVE_CHANGED, (ev: ActiveModelChanged): void => {
         this.onActiveModelChanged(ev);
       });
+
+      // 3c) 远程 Provider：providers 表里 enabled 的注册进运行时（重启后远程模型仍可用；
+      //     保存/删除后的即时同步由 models 页经同一方法完成——两处同一份逻辑）
+      await ModelFacade.get().init(ctx);
+      await ModelFacade.get().syncRemoteProvidersIntoRegistry();
 
       // 4) 聊天服务 + 智能体服务（T0.9-16：Agent CRUD 与 Run 轨迹共用同一 RDB）
       await ChatService.get().init(rdb);
