@@ -86,9 +86,6 @@ jobs:
       - name: 文案纪律
         run: node tools/ui/check-copy.mjs
 
-      # TODO(T0.9-22): 待金标集建成（W7）后接入——涉及 core-rag 的 PR 必跑 recall@6 ≥85%。
-      #                当前检索链路未通，仅做金标集格式校验（金标文件尚未创建时跳过）。
-
   compression-regression:
     name: 压缩回归 V0.9 最小子集（红线 27）
     runs-on: ubuntu-latest
@@ -112,3 +109,10 @@ jobs:
       # 同一方法论：转译直跑 runtime/AgentRun.ets 与 RunGate.ets——迁移表/裁决器改动即时反映。
       - name: AgentRun 状态机 + RunGate 回归（跑真实源码）
         run: node tools/eval/agent-run/run-tests.mjs
+
+      # T0.9-22 / §12-M2：RAG 金标集 30 组，recall@6 ≥85% 为 V0.9 发布门禁。
+      # 同一方法论：转译直跑 Parser/Chunker/Tokenize/Retriever 真实源码 + Schema 真 DDL，
+      # node:sqlite 建 FTS5 影子表；KbRepo.searchFts 的 SQL 逐字镜像并在 runner 里核对防漂移。
+      # 全仓 PR 恒跑（秒级；分词/切块/检索口径任一改坏即时报警）。
+      - name: RAG 金标集 recall@6（跑真实源码）
+        run: node tools/eval/rag-gold/run-gold.mjs

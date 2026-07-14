@@ -1,0 +1,41 @@
+{
+  "_comment": [
+    "RAG 金标集 V0.9（T0.9-22 / 设计文档 §10 / §12-M2）：30 组 query→期望命中，",
+    "覆盖三类语料——长文档（bridge-manual）/ 表格（pump-specs）/ 术语密集（standards-glossary）。",
+    "判中标准：top6 结果中存在「来自期望文档且正文含 expectSubstring」的片段。",
+    "发布门禁：召回率 ≥85%@top6（≥26/30）。涉及 core-rag 的 PR 必跑（compliance.yml）。",
+    "query 刻意口语化/换说法——考检索，不考复读。"
+  ],
+  "cases": [
+    { "id": "L01", "kind": "long", "query": "桥梁多久做一次定期检查", "expectDoc": "bridge-manual.md", "expectSubstring": "定期检查每年不少于一次" },
+    { "id": "L02", "kind": "long", "query": "船撞了桥之后多长时间内要启动特殊检查", "expectDoc": "bridge-manual.md", "expectSubstring": "四十八小时内启动" },
+    { "id": "L03", "kind": "long", "query": "评定为四类的桥要在多少天内论证大修方案", "expectDoc": "bridge-manual.md", "expectSubstring": "九十天内完成大修方案论证" },
+    { "id": "L04", "kind": "long", "query": "主缆除湿系统露点要求多少度", "expectDoc": "bridge-manual.md", "expectSubstring": "零下二十摄氏度" },
+    { "id": "L05", "kind": "long", "query": "缆内湿度超过多少要加密监测", "expectDoc": "bridge-manual.md", "expectSubstring": "相对湿度超过百分之四十" },
+    { "id": "L06", "kind": "long", "query": "斜拉索索力多久测一次", "expectDoc": "bridge-manual.md", "expectSubstring": "每两年进行一次全面测试" },
+    { "id": "L07", "kind": "long", "query": "索力偏差超过多少需要专项评估", "expectDoc": "bridge-manual.md", "expectSubstring": "偏离设计值超过百分之十" },
+    { "id": "L08", "kind": "long", "query": "伸缩缝橡胶密封带能用几年", "expectDoc": "bridge-manual.md", "expectSubstring": "使用寿命为八年" },
+    { "id": "L09", "kind": "long", "query": "支座四氟滑板磨损到什么程度要换", "expectDoc": "bridge-manual.md", "expectSubstring": "磨耗超过三毫米" },
+    { "id": "L10", "kind": "long", "query": "环氧沥青修补要求什么气温条件", "expectDoc": "bridge-manual.md", "expectSubstring": "气温十摄氏度以上" },
+    { "id": "L11", "kind": "long", "query": "发现新增裂缝养护单位多久要到场", "expectDoc": "bridge-manual.md", "expectSubstring": "两小时内到场核查" },
+    { "id": "L12", "kind": "long", "query": "桥墩冲刷多深要启动应急加固", "expectDoc": "bridge-manual.md", "expectSubstring": "超过基础埋深三分之一" },
+    { "id": "T01", "kind": "table", "query": "P-103 泵的功率是多少", "expectDoc": "pump-specs.md", "expectSubstring": "355 kW" },
+    { "id": "T02", "kind": "table", "query": "QZB-900-A 的额定流量", "expectDoc": "pump-specs.md", "expectSubstring": "3200" },
+    { "id": "T03", "kind": "table", "query": "一号泵房主泵的转速", "expectDoc": "pump-specs.md", "expectSubstring": "980 r/min" },
+    { "id": "T04", "kind": "table", "query": "HW-650 混流泵的叶轮直径", "expectDoc": "pump-specs.md", "expectSubstring": "650 mm" },
+    { "id": "T05", "kind": "table", "query": "液控蝶阀是什么型号", "expectDoc": "pump-specs.md", "expectSubstring": "D743H-10" },
+    { "id": "T06", "kind": "table", "query": "备用柴油发电机多大容量", "expectDoc": "pump-specs.md", "expectSubstring": "500 kW" },
+    { "id": "T07", "kind": "table", "query": "泵站接地电阻要求是多少", "expectDoc": "pump-specs.md", "expectSubstring": "不大于零点五欧姆" },
+    { "id": "T08", "kind": "table", "query": "水泵大修几年做一次", "expectDoc": "pump-specs.md", "expectSubstring": "每六年一次" },
+    { "id": "T09", "kind": "table", "query": "叶轮和导叶体的间隙标准", "expectDoc": "pump-specs.md", "expectSubstring": "一点二毫米至二点零毫米" },
+    { "id": "G01", "kind": "glossary", "query": "GB/T 50283 是什么标准", "expectDoc": "standards-glossary.md", "expectSubstring": "公路工程结构可靠性设计统一标准" },
+    { "id": "G02", "kind": "glossary", "query": "车道荷载取值依据哪本规范", "expectDoc": "standards-glossary.md", "expectSubstring": "JTG D60" },
+    { "id": "G03", "kind": "glossary", "query": "桥梁技术状况评定用什么标准", "expectDoc": "standards-glossary.md", "expectSubstring": "JTG/T H21" },
+    { "id": "G04", "kind": "glossary", "query": "C5 环境的防腐年限要求", "expectDoc": "standards-glossary.md", "expectSubstring": "不低于十五年" },
+    { "id": "G05", "kind": "glossary", "query": "高强度螺栓扭矩系数每批复验几套", "expectDoc": "standards-glossary.md", "expectSubstring": "不少于八套" },
+    { "id": "G06", "kind": "glossary", "query": "雨水管渠设计重现期中心城区取几年", "expectDoc": "standards-glossary.md", "expectSubstring": "三年至五年" },
+    { "id": "G07", "kind": "glossary", "query": "潜水泵冷态绝缘电阻最低多少", "expectDoc": "standards-glossary.md", "expectSubstring": "不得低于五十兆欧" },
+    { "id": "G08", "kind": "glossary", "query": "泵站的 PLC 用的什么型号", "expectDoc": "standards-glossary.md", "expectSubstring": "S7-1500" },
+    { "id": "G09", "kind": "glossary", "query": "一级焊缝的无损检测要求", "expectDoc": "standards-glossary.md", "expectSubstring": "百分之百 UT 检测" }
+  ]
+}
