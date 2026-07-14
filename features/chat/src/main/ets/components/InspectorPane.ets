@@ -179,6 +179,14 @@ export struct InspectorPane {
             .maxLines(1)
             .width('100%')
         }
+        if (item.snippet.length > 0) {
+          // 命中片段内容（§4.5）：这就是"引了什么"的正身——不给内容的引用只是个计数
+          Text(item.snippet)
+            .inspectorBody(AdColor.inkSecondary)
+            .maxLines(6)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+        }
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)

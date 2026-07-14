@@ -41,6 +41,8 @@ export struct ConversationListPane {
   @Prop state: LoadState = 'idle';
   /** 页面级错误（列表没读出来）：说清发生了什么 + 给下一步（§5.3） */
   @Prop errorText: string = '';
+  /** 删除回调（确认对话框在 ChatPage——[R-41] 具名确认需要会话标题，这里只报意图） */
+  public onDelete: (convId: string) => void = () => {};
 
   onSelect: (convId: string) => void = () => {
   };
@@ -114,7 +116,7 @@ export struct ConversationListPane {
                   this.onSelect(item.id);
                 },
                 trailing: () => {
-                  this.brainChip(item);
+                  this.rowTrailing(item);
                 }
               })
             }
@@ -134,6 +136,23 @@ export struct ConversationListPane {
    * 行尾 local/remote 芯片：**没回答过的会话不渲染芯片**（lastProviderKind 未知就不猜——
    * 猜一个"本地"出来，等于伪造溯源断言）。
    */
+  @Builder
+  rowTrailing(item: ConversationVM) {
+    Row({ space: AdSpace.s1 }) {
+      this.brainChip(item)
+      AdButton({
+        label: '删除',
+        variant: AdButtonVariant.GHOST,
+        btnSize: AdButtonSize.SM,
+        a11yText: `删除会话 ${item.title}`,
+        onAction: () => {
+          this.onDelete(item.id);
+        }
+      })
+    }
+    .alignItems(VerticalAlign.Center)
+  }
+
   @Builder
   brainChip(item: ConversationVM) {
     if (item.brainKnown) {

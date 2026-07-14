@@ -284,6 +284,8 @@ export interface ChatCitation {
   title?: string;
   /** 标题路径末级（如 "3.2 材料要求"，定位串展示用） */
   heading?: string;
+  /** 命中片段内容快照（检视 Sheet 展示；上限 ~240 字，全文经 chunkId 回读——原文预览打磨项） */
+  snippet?: string;
 }
 
 interface ProvenanceEnvelope {

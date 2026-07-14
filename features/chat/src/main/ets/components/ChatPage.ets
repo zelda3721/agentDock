@@ -281,8 +281,43 @@ export struct ChatPage {
         this.listState = 'loading';
         this.pageError = '';
         this.controller.loadConversations(50);
+      },
+      onDelete: (convId: string): void => {
+        this.confirmDeleteConversation(convId);
       }
     })
+  }
+
+  /** [R-41] 具名确认：说清删的是哪个会话、后果是什么（消息与引用记录一并删除） */
+  private confirmDeleteConversation(convId: string): void {
+    let title: string = '会话';
+    for (const c of this.conversations) {
+      if (c.id === convId) {
+        title = c.title;
+        break;
+      }
+    }
+    this.getUIContext().showAlertDialog({
+      title: `删除会话「${title}」？`,
+      message: '全部消息与引用记录将被删除；进行中的生成会被停止。此操作不可撤销。',
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '删除',
+        fontColor: AdColor.dangerFg,
+        action: () => {
+          const wasCurrent: boolean = this.selectedId === convId;
+          if (wasCurrent) {
+            this.selectedId = '';
+            this.hasInspection = false;
+          }
+          this.controller.deleteConversation(convId);
+        }
+      }
+    });
   }
 
   /** 聊天栏：顶栏（当前大脑）+ 消息流 + 输入区。 */

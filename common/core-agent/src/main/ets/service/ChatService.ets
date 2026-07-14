@@ -455,7 +455,9 @@ class ChatTurn implements ChatTurnHandle {
                 title: titles.get(c.chunk.docId) ?? '',
                 heading: c.chunk.meta.headingPath.length > 0
                   ? c.chunk.meta.headingPath[c.chunk.meta.headingPath.length - 1]
-                  : ''
+                  : '',
+                // 片段快照上限 240 字：检视是"看清引了什么"，不是原文阅读器（全文走预览，打磨项）
+                snippet: c.chunk.text.length > 240 ? `${c.chunk.text.substring(0, 240)}…` : c.chunk.text
               };
               return cite;
             });
@@ -919,8 +921,21 @@ export class ChatService {
    * 无可用 Provider → 返回 null（不是"空模型"对象）。null 是 UI 禁用输入区、
    * 给出「去模型页下载一个」行动邀请的唯一依据。
    */
-  async currentBrain(): Promise<CurrentBrain | null> {
-    const provider: InferenceProvider | null = resolveProvider();
+  async currentBrain(convId?: string): Promise<CurrentBrain | null> {
+    // 会话感知：绑定智能体的会话按其绑定模型报大脑（与 send/ctxUsage 同一裁决函数，三处同源）。
+    // 绑定的模型不可用 → null（顶栏警示 + 输入区禁用——发送必然失败，不装作能发）。
+    let provider: InferenceProvider | null = null;
+    if (convId !== undefined && convId.length > 0 && this.repo !== null) {
+      const conv: ConversationRow | null = await this.repo.getConversation(convId);
+      if (conv !== null) {
+        const binding: AgentBindingRow | null = await bindingOf(this.repo, conv);
+        provider = resolveTurnProvider(binding).provider;
+      } else {
+        provider = resolveProvider();
+      }
+    } else {
+      provider = resolveProvider();
+    }
     if (provider === null) {
       return null;
     }

@@ -139,7 +139,10 @@ export class ChatController {
     const vm: BrainVM = new BrainVM();
     try {
       await this.service.whenReady();
-      const brain: CurrentBrain | null = await this.service.currentBrain();
+      // 会话感知（T0.9-16 修订）：绑定智能体的会话按**它绑定的模型**报大脑——
+      // 否则用户把 Echo 切到远程后顶栏仍显示本地默认，看起来像"切换没生效"
+      const brain: CurrentBrain | null = await this.service.currentBrain(
+        this.convId.length > 0 ? this.convId : undefined);
       vm.checked = true;
       if (brain !== null) {
         vm.available = true;
@@ -195,6 +198,8 @@ export class ChatController {
   async selectConversation(convId: string): Promise<void> {
     this.stop();
     this.convId = convId;
+    // 切会话即换绑定语境：顶栏大脑按新会话的智能体绑定重报（见 refreshBrain 注释）
+    this.refreshBrain();
     try {
       const records: ChatMessageRecord[] = await this.service.listMessages(convId, 200);
       this.messages.reset(records.map((r: ChatMessageRecord): ChatMessageVM => ChatController.toMessageVM(r)));
@@ -203,6 +208,18 @@ export class ChatController {
     } catch (err) {
       this.host.onPageError(ChatController.reasonOf(err, '这个会话的消息没能读出来'));
     }
+  }
+
+  /** 删除会话（[R-41] 确认在 UI 侧；进行中的生成由 ChatService 连带取消） */
+  async deleteConversation(convId: string): Promise<void> {
+    await this.service.whenReady();
+    await this.service.deleteConversation(convId);
+    if (this.convId === convId) {
+      this.convId = '';
+      this.messages.reset([]);
+      this.host.onMessageCountChanged(0);
+    }
+    await this.loadConversations(50);
   }
 
   async refreshCtx(): Promise<void> {
@@ -516,13 +533,15 @@ export class ChatController {
         const locator: string = d.page !== undefined && d.page > 0
           ? `p.${d.page}`
           : (d.heading !== undefined && d.heading.length > 0 ? d.heading : '');
-        citations.push(new AdCitation(
+        const cite: AdCitation = new AdCitation(
           i + 1,
           d.title !== undefined && d.title.length > 0 ? d.title : '（文档）',
           locator,
           d.score ?? 0,
           true   // V0.9 知识库均在端（远程文档源随共享库特性交付）
-        ));
+        );
+        cite.snippet = d.snippet ?? '';
+        citations.push(cite);
       }
     } else {
       for (let i = 0; i < p.citations; i++) {
