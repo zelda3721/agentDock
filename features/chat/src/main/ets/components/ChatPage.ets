@@ -26,10 +26,11 @@ import { MessageStream } from './MessageStream';
 /**
  * 会话页（V0.9 主战场 · T0.9-15 —— UI 设计规范 §4.2）。
  *
- * 三端一套代码（§2.5.2 / §7.5）：
- *   sm  单栏：会话列表与聊天是两个 Navigation 页（列表为一级页，选中即 push 聊天页）
- *   md  双栏：列表 + 聊天；检视栏降级为溯源条的就地展开态（AdProvenanceRail 自理）
- *   lg  三栏：列表 + 聊天（正文列最大 720vp）+ 检视栏（溯源条的展开态）
+ * 三端一套代码（§2.5.2 / §7.5，V0.9 三端一致裁量见 §2.5.2 裁量记录）：
+ *   sm     单栏：会话列表与聊天是两个 Navigation 页（列表为一级页，选中即 push 聊天页）
+ *   md/lg  双栏：列表 + 聊天
+ *   检视（溯源条的展开态）三端一律**底部 Sheet 弹出**（[R-70] 同一内容 InspectorPane，只换容器）；
+ *   lg 第三栏检视栏是 T1.0 的宽窗增强形态（[R-69] 按窗口宽度恢复，不按断点）。
  * 断点由 entry 统一计算下发（@Prop breakpoint），**features 不自行监听 mediaquery**——
  * design-system 组件另经 AppStorage['currentBreakpoint'] 订阅同一真值。
  *
@@ -101,9 +102,11 @@ export struct ChatPage {
   @State private brainModel: string = '';
   /** 是否已有"历史事实"（至少一条已完成回答）：没有时顶栏用当前 Provider 顶上，不空着也不猜 */
   @State private brainFromHistory: boolean = false;
-  /** lg 检视栏：被检视消息的溯源 */
+  /** 检视 Sheet：被检视消息的溯源（三端一致，[R-70] 单内容 InspectorPane + AdSheet 容器） */
   @State private inspected: AdProvenance = new AdProvenance(AdBrainKind.LOCAL, '');
   @State private hasInspection: boolean = false;
+  /** 检视 Sheet 是否打开（bindSheet 双向绑定；下拉/点关闭由系统回写 false） */
+  @State private inspectorOpen: boolean = false;
 
   /** sm 的两页栈（列表 ↔ 聊天） */
   private navStack: NavPathStack = new NavPathStack();
@@ -220,6 +223,7 @@ export struct ChatPage {
       .height('100%')
       .backgroundColor(AdColor.bg)
     } else {
+      // md/lg 双栏：列表 + 聊天。检视不再占第三栏——三端一律 Sheet 弹出（V0.9 裁量，见类注释）
       Row() {
         Column() {
           this.listPane()
@@ -234,17 +238,6 @@ export struct ChatPage {
         }
         .layoutWeight(1)
         .height('100%')
-
-        // lg 第三栏：检视栏（溯源条的展开态）
-        if (this.bp() === 'lg') {
-          this.verticalRule()
-
-          Column() {
-            InspectorPane({ provenance: this.inspected, hasSelection: this.hasInspection })
-          }
-          .width(AdBreakpoints.inspectorMinVp)
-          .height('100%')
-        }
       }
       .width('100%')
       .height('100%')
@@ -374,6 +367,20 @@ export struct ChatPage {
         this.controller.refreshBrain();
       }
     })
+    // 检视 = 底部 Sheet（三端一致，V0.9 裁量）。内容是 InspectorPane——与曾经的 lg 第三栏
+    // **同一个组件**（[R-70]：内容完全相同，只换容器；不允许两套内容）。
+    .bindSheet($$this.inspectorOpen, this.inspectorSheet(), {
+      // 两档：半屏看结论，拉满看全部（§3-C3 的 Sheet 可拖拽档位）
+      detents: [SheetSize.MEDIUM, SheetSize.LARGE],
+      showClose: true,
+      backgroundColor: AdColor.surface
+    })
+  }
+
+  /** 检视 Sheet 内容：InspectorPane 原样进 Sheet（[R-70] 单内容原则） */
+  @Builder
+  inspectorSheet() {
+    InspectorPane({ provenance: this.inspected, hasSelection: this.hasInspection })
   }
 
   /**
@@ -443,13 +450,14 @@ export struct ChatPage {
     });
   }
 
-  /** 点溯源条任一段 → lg 推入检视栏；md/sm 由 AdProvenanceRail 就地展开（[R-70] 内容相同，只换容器）。 */
+  /** 点溯源条任一段 → 打开检视 Sheet（三端一致；[R-70] 内容相同，只换容器）。 */
   private inspectMessage(messageId: string): void {
     for (let i = this.controller.messages.lastIndex(); i >= 0; i--) {
       const item: ChatMessageVM | null = this.controller.messages.itemAt(i);
       if (item !== null && item.id === messageId) {
         this.inspected = item.provenance;
         this.hasInspection = true;
+        this.inspectorOpen = true;
         return;
       }
     }
@@ -520,7 +528,7 @@ export struct ChatPage {
 
   /**
    * 列表栏宽（§2.5.2 关键栏宽 / §4.2 会话页 md 线框）。
-   *  - lg：280vp——规范区间「列表(280–320)」的下限（三栏下把宽度留给聊天主区）。
+   *  - lg：280vp——规范区间「列表(280–320)」的下限（把宽度留给聊天主区）。
    *  - md：240vp（listPaneMinVp）。**聊天是主区**：§4.2 的 md 线框里列表约占 1/4、聊天约占 3/4；
    *    而 §2.5.2 表的基线 320（旧实现更是写成了 400-40=360）在 600–840vp 的 md 窗宽里会让列表
    *    吃掉 43–60%——真机 674vp 竖屏（叠加 entry 的 96vp 导航栏）下聊天被挤到 216vp，比列表还窄，

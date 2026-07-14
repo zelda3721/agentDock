@@ -9,8 +9,7 @@ import { AdBreakpoint, AdBreakpoints, AD_BREAKPOINT_KEY } from '../../theme/Brea
 import { AdCurve, AdDuration, AD_REDUCE_MOTION_KEY, MotionPreference } from '../../theme/Motion';
 import { AdGlyph, AdGlyphKind } from '../base/AdGlyph';
 import { AdTag, AdTagKind } from '../base/AdTag';
-import { AdDivider } from '../base/AdDivider';
-import { AdBrainKind, AdCitation, AdFencedItem, AdMemoryRef, AdProvenance } from '../../model/Provenance';
+import { AdBrainKind, AdProvenance } from '../../model/Provenance';
 
 /**
  * B1. AdProvenanceRail —— **签名组件**（UI 设计规范 §1.3 / §3 B1）。
@@ -32,7 +31,11 @@ import { AdBrainKind, AdCitation, AdFencedItem, AdMemoryRef, AdProvenance } from
  *
  * 断点：sm 字段过多时**不换行、不省略**，改横向滚动——
  *       **任何字段都不允许被截断隐藏，那等于抹掉证据**（[R-26]）。lg 仪表体升至 12fp。
- * lg：不就地展开，内容推入第三栏检视栏（C3 AdInspector），溯源条本身转 selected 态。
+ *
+ * 展开态（V0.9 三端一致裁量，2026-07-14）：本组件**不就地展开**——任何一段被点按都经
+ * onSegmentTap 交给页面，由页面打开检视 Sheet（C3 内容 = InspectorPane，[R-70] 单内容原则：
+ * 早先"sm/md 就地展开 + lg 第三栏"是两套内容实现，已废除；lg 第三栏是 T1.0 宽窗增强）。
+ * inspected=true 时溯源条转 selected 态，表示检视正在显示本条的溯源。
  *
  * [R-07] 溯源条**不是"一整块可点"**：它的每一段都是独立可点、独立可聚焦的。
  * [R-14] 朗读第一句必须是 local/remote 归属，不是内容；拦截项必须前置"注意"并单独成句。
@@ -57,14 +60,6 @@ function railNum(color: ResourceColor, size: number) {
   .maxLines(1)
 }
 
-@Extend(Text)
-function railPanelText(color: ResourceColor) {
-  .fontSize(AdType.bodyS.size)
-  .lineHeight(AdType.bodyS.lineHeight)
-  .fontFamily(AdType.bodyS.family)
-  .fontColor(color)
-}
-
 /** 段序（左→右点亮的编排顺序）：模型 → 引用 → 记忆 → 拦截 → 计时 */
 enum RailSegment {
   MODEL = 0,
@@ -83,9 +78,8 @@ export struct AdProvenanceRail {
   @Prop inspected: boolean = false;
 
   /**
-   * 段被点击。lg 由页面转发到检视栏（经 core-infra EventBus 广播 `inspector.show`，**不引全局单例状态**）；
-   * sm/md 由本组件就地展开。
-   * TODO(T0.9-15)：features/chat 接线——lg 走 EventBus + AdInspector；md 走 AdSheet；sm 就地展开。
+   * 段被点击。三端一致：页面据此打开检视 Sheet（features/chat 的 InspectorPane + bindSheet）。
+   * 本组件只负责报告"哪一段被点了"，不持有任何弹层状态。
    */
   onSegmentTap: (segment: number) => void = () => {
   };
@@ -95,7 +89,6 @@ export struct AdProvenanceRail {
 
   /** 已点亮的段数（左→右）。动效减弱时一次性拉满 */
   @State private revealed: number = 0;
-  @State private expanded: boolean = false;
   @State private focused: boolean = false;
 
   aboutToAppear(): void {
@@ -163,6 +156,9 @@ export struct AdProvenanceRail {
         // sm 字段过多时横向滚动：**不换行、不省略、不截断**（[R-26]）
         .scrollable(ScrollDirection.Horizontal)
         .scrollBar(BarState.Off)
+        // [R-72] 溯源条与正文列左对齐：Scroll 对比视口短的内容默认**居中**（真机实证内容浮在
+        // 带子中间），用 align 显式钉到左侧——它是"内容小于视口时的对齐"的正牌 API
+        .align(Alignment.TopStart)
         .width('100%')
         .height('100%')
 
@@ -192,31 +188,13 @@ export struct AdProvenanceRail {
         this.focused = false;
       })
       .onClick(() => {
-        this.toggleExpand();
+        // 三端一致：整条兜底命中 = 模型段（各段自身另有独立命中区，[R-07]）
+        this.onSegmentTap(RailSegment.MODEL);
       })
       .accessibilityGroup(true)
       .accessibilityText(this.a11y())
-
-      // —— 展开态：sm/md 就地展开；lg 推入检视栏（由页面处理，本组件不就地展开）——
-      if (this.expanded && !AdBreakpoints.isCompact(this.bp)) {
-        this.expandedPanel()
-      }
     }
     .width('100%')
-  }
-
-  private toggleExpand(): void {
-    if (AdBreakpoints.isCompact(this.bp)) {
-      // lg：不就地展开，交给检视栏
-      this.onSegmentTap(RailSegment.MODEL);
-      return;
-    }
-    this.getUIContext().animateTo({
-      duration: MotionPreference.motion(AdDuration.normal, this.reduceMotion),
-      curve: AdCurve.decelerate
-    }, () => {
-      this.expanded = !this.expanded;
-    });
   }
 
   // ——————————————— 折叠态的各段 ———————————————
@@ -311,137 +289,15 @@ export struct AdProvenanceRail {
       .accessibilityLevel('no')
   }
 
+  /** 尾部 ⌄：指示"可点开检视"（Sheet 的入口可供性，三端一致） */
   @Builder
   chevron() {
     AdGlyph({
-      kind: this.expanded ? AdGlyphKind.CHEVRON_UP : AdGlyphKind.CHEVRON_DOWN,
+      kind: AdGlyphKind.CHEVRON_DOWN,
       glyphSize: 12,
       color: AdColor.inkTertiary
     })
       .margin({ left: AdSpace.s1 })
-  }
-
-  // ——————————————— 展开态（sm/md 就地）———————————————
-
-  @Builder
-  expandedPanel() {
-    Column({ space: AdSpace.s2 }) {
-      if (this.data.citations.length > 0) {
-        AdDivider({ label: '引用' })
-        ForEach(this.data.citations, (item: AdCitation) => {
-          this.citationRow(item)
-        }, (item: AdCitation) => `c${item.index}`)
-      }
-
-      if (this.data.memories.length > 0) {
-        AdDivider({ label: '记忆' })
-        ForEach(this.data.memories, (item: AdMemoryRef) => {
-          this.memoryRow(item)
-        }, (item: AdMemoryRef) => `m${item.id}`)
-      }
-
-      if (this.data.showsFenceSegment()) {
-        AdDivider({ label: '已拦截（未发送到远程）' })
-        if (this.data.fenced.length === 0) {
-          Text('本次未拦截任何本地内容。').railPanelText(AdColor.inkTertiary)
-        }
-        ForEach(this.data.fenced, (item: AdFencedItem) => {
-          this.fencedRow(item)
-        }, (item: AdFencedItem) => `f${item.label}`)
-      }
-    }
-    .width('100%')
-    .alignItems(HorizontalAlign.Start)
-    .padding({
-      left: AdStroke.marker + AdSpace.s2,
-      right: AdSpace.s2,
-      top: AdSpace.s2,
-      bottom: AdSpace.s2
-    })
-    .backgroundColor(AdColor.surfaceSunken)
-    .borderRadius(AdRadius.none)
-  }
-
-  @Builder
-  citationRow(item: AdCitation) {
-    Row({ space: AdSpace.s2 }) {
-      Text(`[${item.index}]`)
-        // 引用编号是导航可供性，不是来源断言（来源由行尾 AdTag 承担）→ brand_*
-        .railNum(AdColor.brandFg, this.instrumentSize())
-      Text(`${item.docTitle} · ${item.locator}`)
-        .railPanelText(AdColor.ink)
-        .layoutWeight(1)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-      Text(item.score.toFixed(2))
-        .railNum(AdColor.inkTertiary, this.instrumentSize())
-      AdTag({ kind: item.local ? AdTagKind.LOCAL : AdTagKind.REMOTE, text: '', inline: true })
-      // ocr / vlm 产物：**强制**"由 AI 识别，可能有误" + 可跳原图核对
-      if (item.needsVerification()) {
-        Row({ space: AdSpace.s1 }) {
-          AdGlyph({ kind: AdGlyphKind.TRIANGLE, glyphSize: 10, color: AdColor.warningFg })
-          Text('由 AI 识别，可能有误').railPanelText(AdColor.warningFg)
-        }
-        .alignItems(VerticalAlign.Center)
-      }
-    }
-    .width('100%')
-    .alignItems(VerticalAlign.Bottom)
-    .constraintSize({ minHeight: AdTouch.pointer })
-    .focusable(true)
-    .onClick(() => {
-      this.onSegmentTap(RailSegment.CITATIONS);
-    })
-    .accessibilityText(`引用 ${item.index}，来自 ${item.docTitle} ${item.locator}，相似度 ${item.score.toFixed(2)}，` +
-      `${item.local ? '本地文档' : '远程文档'}。${item.needsVerification() ? '由 AI 识别，可能有误。' : ''}双击查看原文`)
-  }
-
-  @Builder
-  memoryRow(item: AdMemoryRef) {
-    Row({ space: AdSpace.s2 }) {
-      // 实心圆点 = 本地来源（形状冗余）
-      AdGlyph({ kind: AdGlyphKind.DOT_FILLED, glyphSize: 8, color: AdColor.localFg })
-      Text(item.text)
-        .railPanelText(AdColor.ink)
-        .layoutWeight(1)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-      Text(item.confidence.toFixed(2))
-        .railNum(item.confidence < 0.6 ? AdColor.warningFg : AdColor.inkTertiary, this.instrumentSize())
-    }
-    .width('100%')
-    .alignItems(VerticalAlign.Bottom)
-    .constraintSize({ minHeight: AdTouch.pointer })
-    .focusable(true)
-    .onClick(() => {
-      this.onSegmentTap(RailSegment.MEMORIES);
-    })
-    .accessibilityText(`记忆：${item.text}，置信度 ${item.confidence.toFixed(2)}`)
-  }
-
-  @Builder
-  fencedRow(item: AdFencedItem) {
-    Column({ space: AdSpace.hairline }) {
-      Row({ space: AdSpace.s2 }) {
-        // 空心圆环 = 未出端的被拦截项（形状冗余）
-        AdGlyph({ kind: AdGlyphKind.DOT_HOLLOW, glyphSize: 8, color: AdColor.remoteFg })
-        Text(item.label).railPanelText(AdColor.remoteFg).layoutWeight(1)
-      }
-      .width('100%')
-      .alignItems(VerticalAlign.Center)
-
-      Text(`原因：${item.reason}`)
-        .railPanelText(AdColor.inkTertiary)
-        .margin({ left: AdSpace.s4 })
-    }
-    .width('100%')
-    .alignItems(HorizontalAlign.Start)
-    .constraintSize({ minHeight: AdTouch.pointer })
-    .focusable(true)
-    .onClick(() => {
-      this.onSegmentTap(RailSegment.FENCE);
-    })
-    .accessibilityText(`被拦截：${item.label}。原因：${item.reason}`)
   }
 
   // ——————————————— 计算 ———————————————

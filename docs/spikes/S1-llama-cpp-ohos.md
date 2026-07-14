@@ -87,6 +87,21 @@ token 经 threadsafe function 阻塞投递回 ArkTS；若 UI 每个 token 都 se
 模型只能由 App 自己下载（→ 提前跑通了 T0.9-10 的下载链路雏形）。
 真机直连 `huggingface.co` 不通，**hf-mirror.com / modelscope.cn 可达**——模型清单的下载源需按地区提供镜像。
 
+### 5.7 `hdc install 多文件` 不是原子安装 → 同版本 HSP 更新会静默失效（2026-07-14 排障实录）
+`hdc install a.hap b.hsp c.hsp…` 把每个包当**独立事务**逐个装，不是集合安装。三种死法：
+- **同版本覆盖**（versionCode 不变，日常开发常态）：已存在的同名 HSP 模块被"已安装"去重成
+  **静默 no-op**——每个包都报 `install bundle successfully`，设备上跑的还是旧代码，force-stop、
+  `bm clean -c`、甚至**重启设备**都打不掉。当天现象：连续 5 轮构建"安装成功"，dumpLayout 的
+  bounds 一个像素不变，一路误判成 ArkUI 布局 API 失效。
+- **升 versionCode**：entry 先于 HSP 处理 → `dependent module: chat does not exist`；
+  HSP 后处理 → `install version not compatible`。整批全挂。
+- **卸载后第一装**：可能漏注册 entry 模块（HSP 全在、`aa start` 报 ability 不存在），照样全报成功。
+
+**正确姿势（已固化为 `tools/device/deploy.sh`）**：全部包拷进一个目录，`hdc install <目录>`——
+bm 单事务收下整包集（DevEco「Deploy Multi Hap」同款路径），装完 `bm dump` 核对模块清单。
+连带教训：**"安装成功"不算数，装完必须验证**（bm dump 模块清单，或行为级 marker——且 marker
+要放在当前设备真正执行的分支里，lg 平板走的是 `isCompact` 分支）。
+
 ## 6. 未做 / 待办
 
 - ~~**FFRT 未用**：当前 NDK sysroot 不提供 `<ffrt/ffrt.h>`~~

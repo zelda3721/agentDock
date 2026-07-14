@@ -97,6 +97,11 @@ export struct AdBrainIndicator {
   build() {
     Column({ space: AdSpace.hairline }) {
       Button({ type: ButtonType.Normal, stateEffect: false }) {
+        // hover 染色 = Stack 自身的半透明背景（盖在 Button 底色之上）——
+        // 【真机翻车记录，勿回退】此前染色层是 Stack 里一个 `Column().width('100%').height('100%')`：
+        // ArkUI 里 Stack 的百分比子节点按**父约束**测量（AdButton 同款气球，见 AdButton.ets 注释）。
+        // 真机实证：顶栏里本组件被吹到整行宽（内容 678px，Button 1779px），
+        // 相邻的 layoutWeight(1) 标题被挤成 0 宽直接消失。
         Stack({ alignContent: Alignment.Start }) {
           Row({ space: AdSpace.s1 }) {
             this.glyphs()
@@ -125,14 +130,9 @@ export struct AdBrainIndicator {
               .backgroundColor(this.fg())
               .hitTestBehavior(HitTestMode.None)
           }
-
-          Column()
-            .width('100%')
-            .height('100%')
-            .backgroundColor(this.hovered ? AdColor.stateHover : Color.Transparent)
-            .hitTestBehavior(HitTestMode.None)
         }
         .height('100%')
+        .backgroundColor(this.hovered ? AdColor.stateHover : Color.Transparent)
       }
       .type(ButtonType.Normal)
       .stateEffect(false)
