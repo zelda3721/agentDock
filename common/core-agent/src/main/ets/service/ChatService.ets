@@ -34,10 +34,12 @@ import {
 } from 'core-llm';
 import { AppRdbStore } from 'core-data';
 import { Logger, Metrics } from 'core-infra';
+import { MemoryItem, MemoryService, SCOPE_USER_PROFILE } from 'core-memory';
 import {
   applyPrivacyFence,
   ContextBuilder,
   DEFAULT_RAG_TOKEN_BUDGET,
+  FencedMemoryItem,
   FenceResult,
   KnowledgeService,
   ScoredChunk
@@ -291,6 +293,8 @@ class ChatTurn implements ChatTurnHandle {
   private readonly repo: ChatRepository;
   /** Run 轨迹落库器（agent_runs/run_steps）；null = 服务未装配（轨迹失败不拖垮聊天） */
   private readonly recorder: RunRecorder | null;
+  /** 记忆服务（T1.0）；null = 缺席。召回受对话级 useMemory 门控，捕获恒开。 */
+  private readonly memory: MemoryService | null;
   private readonly controller: AbortController = new AbortController();
   private readonly events: AsyncEventQueue<ChatTurnEvent> = new AsyncEventQueue<ChatTurnEvent>();
   /** 是否被用户中断/被抢占（区分 aborted 与 failed：落库状态与 UI 呈现都不同） */
@@ -302,12 +306,13 @@ class ChatTurn implements ChatTurnHandle {
   private ragCitationDetails: ChatCitation[] = [];
 
   constructor(runId: string, assistantMessageId: string, convId: string,
-              repo: ChatRepository, recorder: RunRecorder | null) {
+              repo: ChatRepository, recorder: RunRecorder | null, memory: MemoryService | null) {
     this.runId = runId;
     this.assistantMessageId = assistantMessageId;
     this.convId = convId;
     this.repo = repo;
     this.recorder = recorder;
+    this.memory = memory;
   }
 
   // --- ChatTurnHandle ---------------------------------------------------------
@@ -432,25 +437,26 @@ class ChatTurn implements ChatTurnHandle {
       // 口径注：knowledge 段计入 anchor（anchorTokensOf 取末条 user 消息）——把水位推向保守侧
       // （更早触发压缩），方向安全；精确拆分随 T1.0-04 的 L1 外置一并处理。
       let effectiveText: string = text;
+      let injectedChunks: ScoredChunk[] = [];
       if (binding !== null && binding.libIds.length > 0) {
         try {
           const hits: ScoredChunk[] = await KnowledgeService.get().search(
             binding.libIds, text, { topK: binding.topK });
           const fenceResult: FenceResult = applyPrivacyFence(hits, [], provider.kind);
-          const injected: ScoredChunk[] = ContextBuilder.pickChunksByBudget(
+          injectedChunks = ContextBuilder.pickChunksByBudget(
             fenceResult.allowedChunks, DEFAULT_RAG_TOKEN_BUDGET);
-          this.ragCitations = injected.length;
+          this.ragCitations = injectedChunks.length;
           this.ragBlocked = fenceResult.filteredChunkCount;
-          if (injected.length > 0) {
+          if (injectedChunks.length > 0) {
             // 引用明细：标题快照 + 页码/标题路径 + RRF 得分（检视 Sheet 渲染；文档删了引用仍可读）
             const docIds: string[] = [];
-            for (const c of injected) {
+            for (const c of injectedChunks) {
               if (docIds.indexOf(c.chunk.docId) < 0) {
                 docIds.push(c.chunk.docId);
               }
             }
             const titles: Map<string, string> = await KnowledgeService.get().docTitles(docIds);
-            this.ragCitationDetails = injected.map((c: ScoredChunk): ChatCitation => {
+            this.ragCitationDetails = injectedChunks.map((c: ScoredChunk): ChatCitation => {
               const cite: ChatCitation = {
                 docId: c.chunk.docId,
                 chunkId: c.chunk.id,
@@ -466,12 +472,6 @@ class ChatTurn implements ChatTurnHandle {
               return cite;
             });
           }
-          if (injected.length > 0) {
-            const userPart: string = binding.requireCitation
-              ? `请在回答中为引用的资料标注来源。\n${text}`
-              : text;
-            effectiveText = ContextBuilder.buildVolatileTail([], injected, userPart, DEFAULT_RAG_TOKEN_BUDGET);
-          }
           if (fenceResult.fenceTriggered) {
             Logger.info(TAG, 'privacy fence filtered rag content', [
               { key: 'filtered', value: fenceResult.filteredChunkCount },
@@ -483,6 +483,40 @@ class ChatTurn implements ChatTurnHandle {
             { key: 'err', value: (e as Error).message }
           ]);
         }
+      }
+
+      // ---- [3c] 记忆召回注入（T1.0）：对话级 useMemory 开时，本轮 query 召回 L2 记忆 → 围栏 → 易变尾部 ----
+      // 与 RAG 同一注入位置（易变尾部，红线 11）。语义：对话级"关记忆"只关**注入**，
+      // 不关捕获（捕获在回合结束恒开）。围栏由 recall 数据层强制（remoteFence，红线 17）——
+      // 记忆默认 local_only，远程 Provider 下召回为空（如实缺席）。召回故障不杀聊天。
+      const fencedMemories: FencedMemoryItem[] = [];
+      if (this.memory !== null && conv.useMemory !== false) {
+        try {
+          const scopes: string[] = [SCOPE_USER_PROFILE];
+          if (conv.agentId !== null && conv.agentId.length > 0) {
+            scopes.push(`agent:${conv.agentId}`);
+          }
+          const recalled: MemoryItem[] = await this.memory.recall(scopes, text, undefined,
+            { targetProviderIsRemote: provider.kind === 'remote' });
+          for (const m of recalled) {
+            fencedMemories.push({ id: m.id, text: m.text, privacyLevel: 'local_only', createdAt: m.lastSeenAt });
+          }
+          if (recalled.length > 0) {
+            Logger.info(TAG, 'PERF|memory recall', [
+              { key: 'conv', value: this.convId }, { key: 'items', value: recalled.length }
+            ]);
+          }
+        } catch (e) {
+          Logger.warn(TAG, 'memory recall failed, answering without memory', [{ key: 'err', value: (e as Error).message }]);
+        }
+      }
+
+      // 合成易变尾部：记忆 + 知识 + 用户消息（任一非空即重建；均空则保持原文）
+      if (injectedChunks.length > 0 || fencedMemories.length > 0) {
+        const userPart: string = (binding !== null && binding.requireCitation && injectedChunks.length > 0)
+          ? `请在回答中为引用的资料标注来源。\n${text}`
+          : text;
+        effectiveText = ContextBuilder.buildVolatileTail(fencedMemories, injectedChunks, userPart, DEFAULT_RAG_TOKEN_BUDGET);
       }
 
       // ---- [4] 按 R2 顺序组 prompt（稳定前缀 → 摘要段（若有）→ 会话历史 → 易变尾部） ----
@@ -680,6 +714,17 @@ class ChatTurn implements ChatTurnHandle {
       // ================= Run 循环结束 =================
 
       await settleRun(stopReason, stopError);
+
+      // ---- 回合结束：触发记忆捕获（恒开，与对话级 useMemory 无关——"关记忆"只关注入不关捕获）----
+      // 后台 fire-and-forget：抽取新消息 → inbox → 最小收编转正；不阻塞 UI，失败不影响本轮。
+      // 目标是"越来越懂用户"：无论本会话是否使用记忆，聊天内容都沉淀进用户画像 scope。
+      if (this.memory !== null && stopReason === 'completed') {
+        const mem: MemoryService = this.memory;
+        const cid: string = this.convId;
+        mem.proposeFromConversation(cid, SCOPE_USER_PROFILE, 'message_threshold').catch((e: Object): void => {
+          Logger.warn(TAG, 'memory capture failed', [{ key: 'err', value: (e as Error).message }]);
+        });
+      }
     } catch (e) {
       const err: Error = e as Error;
       // 未预期的异常（多半是 RDB 写入失败，含安全模式只读）。用户内容禁止进日志（红线 20）。
@@ -857,6 +902,8 @@ export class ChatService {
 
   /** Run 轨迹落库器（agent_runs/run_steps，T0.9-16）；null = 尚未装配 */
   private recorder: RunRecorder | null = null;
+  /** 记忆服务（T1.0 记忆闭环）；null = 未装配（无本地模型或未接入）——记忆整体缺席，聊天照常 */
+  private memory: MemoryService | null = null;
 
   /** entry 启动时装配一次：注入**已打开**的 RDB（开库与迁移是 core-data 的事，本层不碰） */
   async init(rdb: AppRdbStore): Promise<void> {
@@ -867,6 +914,14 @@ export class ChatService {
       this.readyResolve();
     }
     Logger.info(TAG, 'chat service initialized');
+  }
+
+  /**
+   * 装配记忆服务（entry 在 ChatService 与 MemoryService 都就绪后调用）。
+   * 记忆是可选增强：null 时召回与捕获整体缺席，聊天链路不受影响。
+   */
+  attachMemory(memory: MemoryService): void {
+    this.memory = memory;
   }
 
   /** 装配失败时由 entry 调用：让等在门闩上的 UI 拿到真实错误，而不是永远转圈 */
@@ -909,6 +964,16 @@ export class ChatService {
 
   listMessages(convId: string, limit: number): Promise<ChatMessageRecord[]> {
     return this.requireRepo().listMessages(convId, limit);
+  }
+
+  /** 读对话级"使用记忆"开关（缺省 true；关=不注入记忆，但聊天内容仍捕获进记忆，T1.0）。 */
+  getUseMemory(convId: string): Promise<boolean> {
+    return this.requireRepo().getUseMemory(convId);
+  }
+
+  /** 设对话级"使用记忆"开关（只影响召回注入，不影响捕获——"越来越懂用户"始终进行）。 */
+  setUseMemory(convId: string, on: boolean): Promise<void> {
+    return this.requireRepo().setUseMemory(convId, on);
   }
 
   // --- 当前大脑（只读） ----------------------------------------------------------
@@ -971,7 +1036,7 @@ export class ChatService {
     // Provider 裁决在 run() 内完成（显式 > Agent 绑定 > 默认，见 resolveTurnProvider）：
     // Agent 绑定要先读会话行，是异步的——send 只负责同步造句柄，解析失败也走完整的
     // "user 落库 + error 事件"流程。若在这里抛，UI 拿不到句柄，用户输入就没人负责落库了。
-    const turn: ChatTurn = new ChatTurn(runId, assistantMessageId, convId, repo, this.recorder);
+    const turn: ChatTurn = new ChatTurn(runId, assistantMessageId, convId, repo, this.recorder, this.memory);
     this.turns.set(runId, turn);
 
     // 不 await：send 必须同步返回句柄。run() 内部吞掉所有异常并转成 error 事件，故无未处理的 rejection。

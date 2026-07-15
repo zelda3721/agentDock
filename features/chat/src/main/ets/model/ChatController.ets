@@ -210,6 +210,28 @@ export class ChatController {
     }
   }
 
+  /** 读当前会话"使用记忆"开关（缺省 true；无会话时 true）。 */
+  async getUseMemory(): Promise<boolean> {
+    if (this.convId.length === 0) {
+      return true;
+    }
+    try {
+      await this.service.whenReady();
+      return await this.service.getUseMemory(this.convId);
+    } catch (err) {
+      return true;
+    }
+  }
+
+  /** 设当前会话"使用记忆"开关（关=本会话不注入记忆，但聊天内容仍捕获——"越来越懂用户"不停）。 */
+  async setUseMemory(on: boolean): Promise<void> {
+    if (this.convId.length === 0) {
+      return;
+    }
+    await this.service.whenReady();
+    await this.service.setUseMemory(this.convId, on);
+  }
+
   /** 删除会话（[R-41] 确认在 UI 侧；进行中的生成由 ChatService 连带取消） */
   async deleteConversation(convId: string): Promise<void> {
     await this.service.whenReady();

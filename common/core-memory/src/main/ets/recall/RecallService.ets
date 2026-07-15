@@ -41,8 +41,12 @@ export interface RecallOptions {
 
 /** 记忆读取端口 → core-data + 向量索引 */
 export interface RecallRepositoryPort {
-  /** L2 向量召回：限定 scopes，**必须过滤 status != 'active'**（archived/superseded 不得召回） */
-  searchActive(scopes: MemoryScope[], queryVector: number[], topK: number): Promise<MemoryItem[]>;
+  /**
+   * L2 向量召回：限定 scopes，**必须过滤 status != 'active'**（archived/superseded 不得召回）。
+   * remoteFence=true（目标 Provider 为远程）时只返回 allow_remote 条目——local_only 记忆
+   * 禁止进 remote prompt（红线 17，数据层强制执行点）。
+   */
+  searchActive(scopes: MemoryScope[], queryVector: number[], topK: number, remoteFence: boolean): Promise<MemoryItem[]>;
   /** 命中反哺：accessCount++ 且刷新 lastSeenAt（§6.4） */
   bumpAccess(itemIds: string[]): Promise<void>;
   /** L3 画像（单文档） */
@@ -63,26 +67,40 @@ export class RecallService {
 
   /**
    * L2 召回（附录 A：MemoryService.recall 的实现体）。
-   *
-   * TODO(T1.0-08): 按设计文档 §6.4 实现：
-   *   1) embedQuery(query)
-   *   2) searchActive(可读 scopes ∩ Agent.memoryPolicy.scopes, vector, topK=5)
-   *      —— 过滤 archived / superseded_by（只召回 active）
-   *   3) 隐私围栏：targetProviderIsRemote 时过滤仅本地条目（红线 17，数据层执行）
-   *   4) bumpAccess(命中 ids) —— accessCount++ 反哺遗忘曲线
+   *   1) embedQuery(query)——无本地 embed 能力则返回空（诚实缺席）
+   *   2) searchActive(scopes, vector, topK)——只召回 active，remoteFence 过滤 local_only（红线 17）
+   *   3) bumpAccess(命中 ids)——accessCount++ 反哺遗忘曲线（§6.4）
    */
-  recall(scopes: MemoryScope[], query: string, opts?: RecallOptions): Promise<MemoryItem[]> {
-    throw new Error('Not implemented: T1.0-08');
+  async recall(scopes: MemoryScope[], query: string, opts?: RecallOptions): Promise<MemoryItem[]> {
+    if (scopes.length === 0 || query.trim().length === 0) {
+      return [];
+    }
+    const topK: number = opts?.topK ?? RECALL_TOP_K;
+    const remoteFence: boolean = opts?.targetProviderIsRemote === true;
+    const vector: number[] = await this.repo.embedQuery(query);
+    if (vector.length === 0) {
+      return [];   // 无本地 embed 能力：召回诚实缺席
+    }
+    const items: MemoryItem[] = await this.repo.searchActive(scopes, vector, topK, remoteFence);
+    if (items.length > 0) {
+      const ids: string[] = [];
+      for (const it of items) {
+        ids.push(it.id);
+      }
+      await this.repo.bumpAccess(ids);
+    }
+    return items;
   }
 
   /**
    * L3 画像直注（若 Agent 的 memoryPolicy.read 允许）。
    * 注入位置：**稳定前缀**（system + Agent 定义之后），R2 纪律。
-   *
-   * TODO(T1.0-08): 按设计文档 §6.4 实现画像读取与策略判定。
    */
-  getProfileForInjection(canRead: boolean): Promise<UserProfile | undefined> {
-    throw new Error('Not implemented: T1.0-08');
+  async getProfileForInjection(canRead: boolean): Promise<UserProfile | undefined> {
+    if (!canRead) {
+      return undefined;
+    }
+    return this.repo.getProfile();
   }
 
   /**

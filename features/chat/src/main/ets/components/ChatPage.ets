@@ -14,6 +14,8 @@ import {
   AdProvenance,
   AdSpace,
   AdStroke,
+  AdTag,
+  AdTagKind,
   AdType
 } from 'design-system';
 import { ChatController, ChatHost } from '../model/ChatController';
@@ -100,6 +102,8 @@ export struct ChatPage {
   @State private brainVM: BrainVM = new BrainVM();
   @State private brain: AdBrainKind = AdBrainKind.LOCAL;
   @State private brainModel: string = '';
+  /** 对话级"使用记忆"（默认 true）：关=本会话不注入记忆，但聊天内容仍捕获（越来越懂用户，T1.0） */
+  @State private memoryOn: boolean = true;
   /** 检视 Sheet：被检视消息的溯源（三端一致，[R-70] 单内容 InspectorPane + AdSheet 容器） */
   @State private inspected: AdProvenance = new AdProvenance(AdBrainKind.LOCAL, '');
   @State private hasInspection: boolean = false;
@@ -129,6 +133,7 @@ export struct ChatPage {
         this.messagesLoading = true;
         this.hasInspection = false;
         this.controller.selectConversation(list[0].id);
+        this.refreshMemoryToggle();
         // 注意：不走 selectConversation()——它在 sm 下会 pushPath。自动选中只该改状态，不该导航。
       }
     };
@@ -333,6 +338,19 @@ export struct ChatPage {
             .maxLines(1)
         }
         Blank().layoutWeight(1)
+        if (this.selectedId.length > 0) {
+          // 对话级"记忆"开关：关=本会话不注入记忆（但聊天内容仍进记忆——越来越懂用户不停）
+          AdTag({
+            kind: this.memoryOn ? AdTagKind.LOCAL : AdTagKind.NEUTRAL,
+            text: this.memoryOn ? '记忆·开' : '记忆·关',
+            inline: true,
+            interactive: true,
+            selected: this.memoryOn,
+            onAction: (): void => {
+              this.toggleMemory();
+            }
+          })
+        }
         this.brainSlot()
       }
       .width('100%')
@@ -485,9 +503,26 @@ export struct ChatPage {
     this.messagesLoading = true;
     this.hasInspection = false;
     this.controller.selectConversation(convId);
+    this.refreshMemoryToggle();
     if (this.bp() === 'sm') {
       this.navStack.pushPath({ name: 'chat' });
     }
+  }
+
+  /** 载入当前会话的"使用记忆"开关状态（切会话即刷新）。 */
+  private refreshMemoryToggle(): void {
+    this.controller.getUseMemory().then((on: boolean): void => {
+      this.memoryOn = on;
+    });
+  }
+
+  /** 顶栏"记忆"开关：关=本会话不注入记忆（但聊天内容仍进记忆）。 */
+  private toggleMemory(): void {
+    const next: boolean = !this.memoryOn;
+    this.memoryOn = next;
+    this.controller.setUseMemory(next).catch((): void => {
+      this.memoryOn = !next;   // 写失败回滚，不让 UI 说谎
+    });
   }
 
   private createConversation(): void {

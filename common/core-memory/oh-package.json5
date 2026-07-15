@@ -10,6 +10,7 @@
   "dependencies": {
     "core-llm": "file:../core-llm",
     "core-data": "file:../core-data",
-    "core-infra": "file:../core-infra"
+    "core-infra": "file:../core-infra",
+    "vec-index": "file:../../native/vec_index"
   }
 }

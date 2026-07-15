@@ -26,8 +26,12 @@ import {
 } from 'core-infra';
 import { KnowledgeService } from 'core-rag';
 import { ModelFacade } from 'models';
-import { LocalProvider, ProviderRegistry } from 'core-llm';
+import { InferenceProvider, LocalProvider, ProviderRegistry } from 'core-llm';
 import { AgentService, ChatService } from 'core-agent';
+import {
+  MemoryRepo, MemoryVectorStore, NanoAdapter, RecallRepoAdapter, RecallService,
+  OnlineExtractor, MemoryService, pickLocalMemoryProvider
+} from 'core-memory';
 import { BreakpointSystem } from '../common/BreakpointSystem';
 
 const DOMAIN: number = 0x1001;
@@ -115,6 +119,21 @@ export default class EntryAbility extends UIAbility {
       // 否则清扫 UPDATE 与续跑任务的 setDocStatus 抢同一行（T0.9-26 审查确认的双摄取损坏）。
       await KnowledgeService.get().whenReady();
       await queue.start();
+
+      // 6) 记忆服务（T1.0 最小闭环）：捕获（会话→抽取→inbox→收编）+ 召回（向量+scope+围栏）。
+      //    "Nano 抽取器"与"bge embedder"同为活跃本地 Provider（无独立 Nano 模型）；
+      //    无本地模型时记忆整体缺席，聊天照常。装配后 attach 进 ChatService（可选增强）。
+      const memRepo: MemoryRepo = new MemoryRepo(rdb);
+      const memVectors: MemoryVectorStore = new MemoryVectorStore(fileRepo,
+        (): Promise<void> => memRepo.clearAllVecRefs());
+      const memAccessor: () => InferenceProvider | null =
+        (): InferenceProvider | null => pickLocalMemoryProvider(ProviderRegistry.get().list());
+      const memService: MemoryService = new MemoryService(
+        new RecallService(new RecallRepoAdapter(memRepo, memVectors, memAccessor)),
+        new OnlineExtractor(new NanoAdapter(memAccessor), memRepo),
+        memRepo, memVectors, memAccessor);
+      ChatService.get().attachMemory(memService);
+
       hilog.info(DOMAIN, TAG, 'core stack ready');
     } catch (e) {
       const err = e as BusinessError;

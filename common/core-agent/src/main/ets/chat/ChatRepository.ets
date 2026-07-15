@@ -41,6 +41,8 @@ export interface ConversationRow {
   title: string;
   agentId: string | null;
   messageCount: number;
+  /** 对话级"使用记忆"开关（meta.useMemory，默认 true）——关=不注入记忆，但捕获照常（T1.0） */
+  useMemory: boolean;
 }
 
 /** 会话绑定 Agent 的发送要素（agentBinding 的返回；providerId 空串 = 未绑定模型） */
@@ -80,6 +82,8 @@ interface ConversationMeta {
   lastProviderId?: string;
   lastProviderKind?: string;
   l3Summary?: ChatSummaryState;
+  /** 对话级"使用记忆"开关（T1.0）：缺省视为 true（记忆默认开，用户可关注入）。 */
+  useMemory?: boolean;
 }
 
 export class ChatRepository {
@@ -141,18 +145,36 @@ export class ChatRepository {
 
   async getConversation(convId: string): Promise<ConversationRow | null> {
     return this.rdb.queryOne<ConversationRow>(
-      `SELECT id, title, agent_id, message_count FROM conversations WHERE id = ?;`,
+      `SELECT id, title, agent_id, message_count, meta FROM conversations WHERE id = ?;`,
       [convId] as Array<SqlArg>,
       (rs: relationalStore.ResultSet): ConversationRow => {
         const agentIdx: number = rs.getColumnIndex('agent_id');
+        const meta: ConversationMeta = ChatRepository.parseMeta(rs.getString(rs.getColumnIndex('meta')));
         const row: ConversationRow = {
           id: rs.getString(rs.getColumnIndex('id')),
           title: rs.getString(rs.getColumnIndex('title')),
           agentId: rs.isColumnNull(agentIdx) ? null : rs.getString(agentIdx),
-          messageCount: rs.getLong(rs.getColumnIndex('message_count'))
+          messageCount: rs.getLong(rs.getColumnIndex('message_count')),
+          useMemory: meta.useMemory !== false   // 缺省 true（记忆默认开）
         };
         return row;
       }
+    );
+  }
+
+  /** 读对话级"使用记忆"开关（缺省 true）。 */
+  async getUseMemory(convId: string): Promise<boolean> {
+    const meta: ConversationMeta = await this.readMeta(convId);
+    return meta.useMemory !== false;
+  }
+
+  /** 设对话级"使用记忆"开关（读改写合并，保留 l3Summary/lastProvider* 字段）。 */
+  async setUseMemory(convId: string, on: boolean): Promise<void> {
+    const meta: ConversationMeta = await this.readMeta(convId);
+    meta.useMemory = on;
+    await this.rdb.exec(
+      `UPDATE conversations SET meta = ?, updated_at = ? WHERE id = ?;`,
+      [JSON.stringify(meta), Date.now(), convId] as Array<SqlArg>
     );
   }
 
