@@ -25,7 +25,7 @@
  * 本类只接收已落盘的模型路径，绝不内置任何权重。
  */
 
-import { LlamaBridge, DeviceTier, LlamaErrorCode } from 'llama-bridge';
+import { LlamaBridge, DeviceTier, LlamaErrorCode, MODEL_BUDGET_PHONE_BYTES, MODEL_BUDGET_PC_BYTES } from 'llama-bridge';
 import type { LlamaGenerateParams, LlamaSessionConfig, LlamaStreamEvent } from 'llama-bridge';
 import { Logger, Metrics } from 'core-infra';
 import { fileIo } from '@kit.CoreFileKit';
@@ -60,6 +60,19 @@ const EMBED_BATCH_SIZE: number = 32;
 
 /** 默认上下文窗口（与 S1 实测会话参数一致：n_ctx=2048） */
 const DEFAULT_CONTEXT_SIZE: number = 2048;
+
+/**
+ * 常驻足迹系数：GGUF 权重在真机 mmap 后基本全量常驻（实测 2.5GB 文件 → RSS 2.65GB），
+ * 叠加 KV cache + 计算缓冲后，总常驻约为文件大小的 1.3 倍。
+ *
+ * 原生 engine 的预算闸只比过「文件大小 vs 预算」（engine.cpp:256），漏算了 KV/compute——
+ * 于是 2.5GB 的 Qwen3-4B（< 3GB 文件预算）过闸后，在建 KV/计算缓冲时把整进程顶爆，被系统
+ * OOM killer 直接 SIGKILL（无 faultlog、无 JS 异常、UI 只看到「一点就退回桌面」，2026-07-15 实录）。
+ * 这里在 ArkTS 侧、**调用原生 createSession 之前**按「文件×系数」二次核算：超预算的模型不进原生，
+ * 如实抛 MEMORY_BUDGET_EXCEEDED，让 UI 提示换更小档位或远程模型，而不是让应用闪退。
+ * 系数按模型体量等比缩放（而非按 ctx 绝对值）——0.5B 即便开 32k ctx，KV 也远小于 4B，不会被误伤。
+ */
+const MODEL_FOOTPRINT_FACTOR: number = 1.3;
 
 /** 默认单次最大输出 token */
 const DEFAULT_MAX_OUTPUT_TOKENS: number = 1024;
@@ -514,6 +527,7 @@ export class LocalProvider implements InferenceProvider {
    * 仍建议调用 load() 预热：把加载挪出首条消息的关键路径，让用户等在"载入模型中"而不是等在输入框。
    */
   private async createSession(cfg: LlamaSessionConfig, purpose: string): Promise<number> {
+    this.assertFitsBudget(cfg);
     const startedAt: number = Date.now();
     const handle: number = await LlamaBridge.createSession(cfg);
     const costMs: number = Date.now() - startedAt;
@@ -524,6 +538,36 @@ export class LocalProvider implements InferenceProvider {
     ]);
     Metrics.record('model.load_ms', costMs, 'ms', [{ key: 'model_id', value: this.config.modelLabel }]);
     return handle;
+  }
+
+  /**
+   * 加载前的内存足迹闸（§3.2-3）：权重常驻 + KV/compute 估算 vs 档位预算。
+   * 超预算**不调原生 createSession**——一旦进原生再 OOM，被杀的是整个应用进程
+   * （SIGKILL 无 faultlog，用户只看到闪退）。宁可在这里如实拒绝，让 UI 提示换更小档位/远程模型。
+   * 文件读不到（下载中/被删）时不拦：交给原生层按 MODEL_LOAD_FAILED 如实报错，避免把两类问题混淆。
+   */
+  private assertFitsBudget(cfg: LlamaSessionConfig): void {
+    let fileBytes: number = 0;
+    try {
+      fileBytes = fileIo.statSync(cfg.modelPath).size;
+    } catch (e) {
+      return;   // 文件不可读——不在这里下结论，原生层会如实报 MODEL_LOAD_FAILED
+    }
+    if (fileBytes <= 0) {
+      return;
+    }
+    const tier: DeviceTier = cfg.deviceTier === undefined ? DeviceTier.PHONE : cfg.deviceTier;
+    const budget: number = tier === DeviceTier.PC ? MODEL_BUDGET_PC_BYTES : MODEL_BUDGET_PHONE_BYTES;
+    const estimated: number = Math.round(fileBytes * MODEL_FOOTPRINT_FACTOR);
+    if (estimated > budget) {
+      Logger.warn(TAG, 'model exceeds memory budget — refused before native load', [
+        { key: 'model', value: this.config.modelLabel },
+        { key: 'file_mb', value: Math.round(fileBytes / (1024 * 1024)) },
+        { key: 'est_mb', value: Math.round(estimated / (1024 * 1024)) },
+        { key: 'budget_mb', value: Math.round(budget / (1024 * 1024)) }
+      ]);
+      throw LocalProvider.fromLlamaCode(LlamaErrorCode.MEMORY_BUDGET_EXCEEDED, '');
+    }
   }
 
   private tokenizeSafely(handle: number, text: string): number {

@@ -727,9 +727,19 @@ class ChatTurn implements ChatTurnHandle {
       }
     } catch (e) {
       const err: Error = e as Error;
-      // 未预期的异常（多半是 RDB 写入失败，含安全模式只读）。用户内容禁止进日志（红线 20）。
+      // 未预期的异常（模型超内存预算被拒 / RDB 写入失败 / 安全模式只读等）。用户内容禁止进日志（红线 20）。
       Logger.error(TAG, 'chat turn failed', [{ key: 'err', value: err.message }]);
-      this.fail(ChatErrorCode.PERSIST_FAILED, `本轮对话失败：${err.message}`);
+      // 必须落一条「失败」的 assistant 行——否则 UI 的 reloadProvenance 从库里读不到本轮助手消息，
+      // 会把刚点亮的错误气泡连同整轮一起抹掉，用户只看到自己发的话、没有任何反馈（静默失败，
+      // 违反"诚实失败/UI 不许说谎"）。生成前就抛的错（如超内存预算，steps=0）库里尚无本轮助手行，
+      // 这里补插；若已插过流式行/已落库（撞主键）则库里本就有可渲染的行，忽略插入即可（幂等兜底）。
+      try {
+        await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, err.message);
+      } catch (persistErr) {
+        Logger.warn(TAG, 'persist failed-assistant skipped (row may exist)',
+          [{ key: 'err', value: (persistErr as Error).message }]);
+      }
+      this.fail(ChatErrorCode.PERSIST_FAILED, err.message);
       await settleRun('error', err.message);
     } finally {
       this.events.close();
