@@ -231,6 +231,52 @@ export class MemoryRepo implements MemoryInboxRepositoryPort {
     return byRef;
   }
 
+  /** 记忆管理页：列出 active L2 记忆（最近确认在前）。scopes 空 = 全部 scope。 */
+  async listActiveMemories(scopes: MemoryScope[], limit: number): Promise<MemoryItem[]> {
+    const args: SqlArg[] = [];
+    let scopeClause: string = '';
+    if (scopes.length > 0) {
+      scopeClause = ` AND scope IN (${scopes.map((): string => '?').join(',')})`;
+      for (const s of scopes) {
+        args.push(s);
+      }
+    }
+    args.push(limit);
+    return this.rdb.queryRows<MemoryItem>(
+      `SELECT id, scope, text, kind, confidence, last_seen_at, access_count
+         FROM memory_items
+        WHERE layer = 'semantic' AND status = 'active'${scopeClause}
+        ORDER BY last_seen_at DESC LIMIT ?;`,
+      args,
+      (rs: relationalStore.ResultSet): MemoryItem => {
+        const item: MemoryItem = {
+          id: rs.getString(rs.getColumnIndex('id')),
+          scope: rs.getString(rs.getColumnIndex('scope')),
+          text: rs.getString(rs.getColumnIndex('text')),
+          kind: rs.getString(rs.getColumnIndex('kind')) as MemoryKind,
+          confidence: rs.getDouble(rs.getColumnIndex('confidence')),
+          score: 0,
+          lastSeenAt: rs.getLong(rs.getColumnIndex('last_seen_at'))
+        };
+        return item;
+      }
+    );
+  }
+
+  /** active L2 记忆条数（管理页顶部"记住了 N 条"）。 */
+  async countActiveMemories(): Promise<number> {
+    return (await this.rdb.queryScalarInt(
+      `SELECT COUNT(*) FROM memory_items WHERE layer = 'semantic' AND status = 'active';`, [])) ?? 0;
+  }
+
+  /**
+   * 用户主动删除一条记忆（物理删除条目）。向量留孤儿（检索回查 active 时天然丢弃，
+   * 与 KB 同纪律；压实随整库重建）。这是"用户对记忆的控制权"（§6.3 / 隐私）。
+   */
+  async deleteMemory(itemId: string): Promise<void> {
+    await this.rdb.exec(`DELETE FROM memory_items WHERE id = ?;`, [itemId] as Array<SqlArg>);
+  }
+
   /** 命中反哺：accessCount++ 且刷新 lastSeenAt（§6.4 遗忘曲线输入）。 */
   async bumpAccess(itemIds: string[]): Promise<void> {
     if (itemIds.length === 0) {

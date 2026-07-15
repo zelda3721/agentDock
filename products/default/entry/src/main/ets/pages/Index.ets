@@ -14,8 +14,7 @@
  * 颜色/字号一律取自 design-system 令牌（§2.8.2 铁律：ets 层颜色必须是 Resource，不得是 hex 字面量——
  * hex 不随主题切换，深色模式下会白底浅灰字）。
  *
- * V0.9 各 Tab 内容由 feature HSP 提供：
- *   chat / models / agents / knowledge / settings 已接入；memory 随 V1.0（T1.0-04）接入
+ * 各 Tab 内容由 feature HSP 提供：chat / models / agents / knowledge / settings / memory 均已接入。
  */
 import { AdButton, AdButtonSize, AdButtonVariant, AdColor, AdSpace, AdStroke, AdType } from 'design-system';
 import { ChatPage } from 'chat';
@@ -23,6 +22,7 @@ import { ModelFacade, ModelListPage, ProviderConfigPage } from 'models';
 import { AgentEditor, AgentListPage } from 'agents';
 import { KbDocumentList, KbListPage } from 'knowledge';
 import { LicensePage, SettingsPage } from 'settings';
+import { MemoryPage } from 'memory';
 import { AgentService, ChatService } from 'core-agent';
 import { Logger } from 'core-infra';
 import { Breakpoint, BREAKPOINT_KEY } from '../common/BreakpointSystem';
@@ -99,6 +99,10 @@ struct Index {
             this.KnowledgePane()
           } else if (item.key === 'settings') {
             this.SettingsPane()
+          } else if (item.key === 'memory') {
+            MemoryPage({
+              breakpoint: this.breakpoint === Breakpoint.LG ? 'lg' : (this.breakpoint === Breakpoint.MD ? 'md' : 'sm')
+            })
           } else {
             this.PlaceholderPane(item.label, '待接入对应 feature HSP')
           }

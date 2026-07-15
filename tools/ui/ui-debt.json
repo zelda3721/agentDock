@@ -12,7 +12,6 @@
     "每个文件头部已登记 TODO(<工单号> · UI-MIGRATION) 与迁移清单。"
   ],
   "files": [
-    "features/chat/src/main/ets/components/ChatPage.ets",
-    "features/memory/src/main/ets/components/MemoryPage.ets"
+    "features/chat/src/main/ets/components/ChatPage.ets"
   ]
 }
