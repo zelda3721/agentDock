@@ -65,7 +65,11 @@ export class VectorIndexManager {
       return [];
     }
     const dim: number = vectors[0].length;
-    let lib: OpenLib = this.ensureOpen(libId, dim);
+    // 换 embedding 模型时，平面文件维度≠新向量维度，**开库**（createIndex/load）即抛
+    // DIM_MISMATCH——发生在 add 之前，必须在此一并接住并重置。否则该异常越过下方 try
+    // 冒到 IngestPipeline，模型换代后向量路永久卡死却被误报成"本文档 FTS 兜底"
+    // （T0.9-26 审查确认：ensureOpen 原在 try 外，模型换代恢复分支恒不可达）。
+    let lib: OpenLib = await this.openForDim(libId, dim);
     let base: number = VecIndex.count(lib.handle);
     const labels: number[] = [];
     for (let i = 0; i < vectors.length; i++) {
@@ -84,13 +88,8 @@ export class VectorIndexManager {
         }
         VecIndex.add(lib.handle, labels, vectors);
       } else if (code === VecErrorCode.DIM_MISMATCH) {
-        // 换了 embedding 模型：重置库索引（老向量作废，老文档退回 FTS 单路——如实记账）
-        Logger.warn(TAG, 'embedding dim changed: resetting vector index (old docs fall back to FTS)', [
-          { key: 'lib', value: libId }, { key: 'newDim', value: dim }
-        ]);
-        this.resetLibrary(libId);
-        await this.onReset(libId);
-        lib = this.ensureOpen(libId, dim);
+        // add 阶段的维度不符（首批与既有平面文件行宽不一致等）：同样重置后从 0 重写
+        lib = await this.resetForDimChange(libId, dim);
         for (let i = 0; i < labels.length; i++) {
           labels[i] = i;
         }
@@ -101,6 +100,28 @@ export class VectorIndexManager {
     }
     VecIndex.save(lib.handle);
     return labels;
+  }
+
+  /** 开库；若因换 embedding 模型（平面文件维度≠dim）在开库阶段抛 DIM_MISMATCH，重置后以新维度重开。 */
+  private async openForDim(libId: string, dim: number): Promise<OpenLib> {
+    try {
+      return this.ensureOpen(libId, dim);
+    } catch (e) {
+      if (vecErrorCodeOf(e as Object) === VecErrorCode.DIM_MISMATCH) {
+        return await this.resetForDimChange(libId, dim);
+      }
+      throw new Error((e as BusinessErrorLike).message);
+    }
+  }
+
+  /** 重置库索引（换模型/维度作废）：删索引+平面文件 → 清 vec_ref → 以新维度重开空库。 */
+  private async resetForDimChange(libId: string, dim: number): Promise<OpenLib> {
+    Logger.warn(TAG, 'embedding dim changed: resetting vector index (old docs fall back to FTS)', [
+      { key: 'lib', value: libId }, { key: 'newDim', value: dim }
+    ]);
+    this.resetLibrary(libId);
+    await this.onReset(libId);
+    return this.ensureOpen(libId, dim);
   }
 
   /** 向量检索；库无索引/维度不符时返回空（检索路诚实缺席，不是错误）。 */

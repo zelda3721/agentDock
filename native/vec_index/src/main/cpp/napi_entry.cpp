@@ -151,23 +151,35 @@ bool GetSize(napi_env env, napi_value obj, const char* key, size_t* out, size_t 
   return true;
 }
 
-/** Float32Array → std::vector<float>（拷贝：向量随后要归一化+转 f16，不能改 JS 内存） */
+/**
+ * Float32Array → std::vector<float>（拷贝：向量随后要归一化+转 f16，不能改 JS 内存）。
+ *
+ * 【真机修复 2026-07-14】不使用 napi_get_typedarray_info 的 length 字段——OHOS 实现
+ * 返回的是**字节数**而非 Node-API 规范的元素数（实录：512 维向量被读成 2048 个 float，
+ * 越界读 4 倍内存进索引）。元素数改由底层 ArrayBuffer 字节长度换算，语义无歧义。
+ */
 bool GetF32Array(napi_env env, napi_value v, std::vector<float>* out) {
   bool isTa = false;
   if (napi_is_typedarray(env, v, &isTa) != napi_ok || !isTa) {
     return false;
   }
   napi_typedarray_type type;
-  size_t length = 0;
+  size_t lengthAmbiguous = 0;   // 元素数或字节数，视实现而定——不使用
   void* data = nullptr;
   napi_value buffer;
   size_t offset = 0;
-  if (napi_get_typedarray_info(env, v, &type, &length, &data, &buffer, &offset) != napi_ok ||
+  if (napi_get_typedarray_info(env, v, &type, &lengthAmbiguous, &data, &buffer, &offset) != napi_ok ||
       type != napi_float32_array) {
     return false;
   }
-  const float* f = static_cast<const float*>(data);
-  out->assign(f, f + length);
+  void* abData = nullptr;
+  size_t abBytes = 0;
+  if (napi_get_arraybuffer_info(env, buffer, &abData, &abBytes) != napi_ok || abBytes < offset) {
+    return false;
+  }
+  const size_t count = (abBytes - offset) / sizeof(float);
+  const float* f = static_cast<const float*>(data);   // data 已指向视图起点（含 offset）
+  out->assign(f, f + count);
   return true;
 }
 

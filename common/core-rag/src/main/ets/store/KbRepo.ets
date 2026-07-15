@@ -249,6 +249,25 @@ export class KbRepo {
     );
   }
 
+  /**
+   * 启动清扫：滞留在中间态（parsing/embedding）的文档转 failed（真机实录 2026-07-14：
+   * embed 中进程崩溃 + 任务重试耗尽 → 文档永远停在「建索引」，UI 在说谎）。
+   * 若队列里仍有该文档的存活任务，续跑时 processDocument 会把状态翻回处理中——
+   * 本清扫只把"没人管的中间态"变成可重试的诚实失败。返回清扫条数。
+   */
+  async resetStaleProcessing(): Promise<number> {
+    const stale: number = (await this.rdb.queryScalarInt(
+      `SELECT COUNT(*) FROM kb_document WHERE status IN ('parsing','embedding');`, [])) ?? 0;
+    if (stale > 0) {
+      await this.rdb.exec(
+        `UPDATE kb_document SET status = 'failed', error = '处理被中断（应用重启），点重试继续', updated_at = ?
+          WHERE status IN ('parsing','embedding');`,
+        [Date.now()] as Array<SqlArg>
+      );
+    }
+    return stale;
+  }
+
   /** 解析出的文档标题（如 md 的 H1）回填；空标题不覆盖文件名 */
   async setDocTitle(docId: string, title: string): Promise<void> {
     if (title.length === 0) {

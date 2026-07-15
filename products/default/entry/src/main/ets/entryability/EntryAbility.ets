@@ -111,6 +111,9 @@ export default class EntryAbility extends UIAbility {
       //    大批量导入的后台执行（ADR-4）；前台路径先真实可用。
       const queue: TaskQueue = new TaskQueue(new RdbTaskStore(rdb), new NoopBackgroundScheduler());
       KnowledgeService.get().init(rdb, fileRepo, queue);
+      // 就绪门闩含启动清扫（stale 中间态→诚实终态）；**必须在 queue.start() 续跑前完成**，
+      // 否则清扫 UPDATE 与续跑任务的 setDocStatus 抢同一行（T0.9-26 审查确认的双摄取损坏）。
+      await KnowledgeService.get().whenReady();
       await queue.start();
       hilog.info(DOMAIN, TAG, 'core stack ready');
     } catch (e) {

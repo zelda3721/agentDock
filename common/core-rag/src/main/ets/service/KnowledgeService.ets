@@ -122,6 +122,30 @@ export class KnowledgeService {
     this.pipeline = pipeline;
     this.vectors = vectors;
     this.retriever = new Retriever(repo as FtsSearchPort, new LocalVectorPort(repo, vectors));
+
+    // 启动清扫必须**先于就绪门闩解锁**：把上次会话遗留的中间态（parsing/embedding）扫成诚实
+    // 终态，再放行等在 whenReady() 上的查询与 TaskQueue 续跑（EntryAbility 在 queue.start()
+    // 前 await whenReady()）。否则（T0.9-26 审查确认）：① 门闩解开瞬间 UI 读到 stale
+    // 'embedding' 的说谎态；② 更严重——清扫的 UPDATE 与续跑任务的 setDocStatus 抢同一行，
+    // 清扫把正在续跑的文档翻成「失败·点重试」，用户重试触发的 processDocument 与续跑任务
+    // 的 processDocument 并发 commitChunks，交错写坏 chunk/vec_ref。
+    repo.resetStaleProcessing().then((n: number): void => {
+      if (n > 0) {
+        Logger.warn(TAG, 'stale processing docs reset to failed (retryable)', [{ key: 'count', value: n }]);
+      }
+      this.markReady();
+    }).catch((e: Error): void => {
+      // 清扫失败不永久卡死门闩（stale 可能残留，记 error 后仍放行——挂死比 stale 更糟）
+      Logger.error(TAG, 'stale processing sweep failed', [{ key: 'err', value: e.message }]);
+      this.markReady();
+    });
+  }
+
+  /** 就绪门闩解锁（幂等）：清扫完成后调用，此后 whenReady() 保证中间态已扫成诚实终态。 */
+  private markReady(): void {
+    if (this.ready) {
+      return;
+    }
     this.ready = true;
     if (this.readyResolve !== null) {
       this.readyResolve();
@@ -145,19 +169,12 @@ export class KnowledgeService {
     return this.requirePipeline().importFiles(libId, uris);
   }
 
-  async search(libIds: string[], query: string, opts?: SearchOpts): Promise<ScoredChunk[]> {
+  search(libIds: string[], query: string, opts?: SearchOpts): Promise<ScoredChunk[]> {
     if (this.retriever === null) {
       throw new Error('KnowledgeService 尚未初始化');
     }
-    const startedAt: number = Date.now();
-    const hits: ScoredChunk[] = await this.retriever.search(libIds, query, opts);
-    // §12-M2 验收口径打点：万级片段真机检索 <300ms（hilog 过滤 PERF|search 量测）
-    Logger.info(TAG, 'PERF|search', [
-      { key: 'ms', value: Date.now() - startedAt },
-      { key: 'libs', value: libIds.length },
-      { key: 'hits', value: hits.length }
-    ]);
-    return hits;
+    // §12-M2 检索耗时与双路参与度打点在 Retriever.search（PERF|retrieve，含 vec/fts 分路）
+    return this.retriever.search(libIds, query, opts);
   }
 
   // --- 库 / 文档管理（§4.5 UI 数据口） -----------------------------------------

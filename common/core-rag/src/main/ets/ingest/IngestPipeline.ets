@@ -121,6 +121,12 @@ export class IngestPipeline {
   private vectors: VectorIndexManager | null = null;
   /** embedding Provider 候选源（装配注入：ProviderRegistry.list()；空数组 = 无候选） */
   private embedCandidates: () => InferenceProvider[] = (): InferenceProvider[] => [];
+  /**
+   * 进程内在飞文档闸（T0.9-26 审查确认）：同一 docId 同时只允许一个 processDocument。
+   * 崩溃续跑的队列任务与用户手动重试（reparse）可能对同一文档并发调用 processDocument，
+   * 两个 commitChunks（先清后写）交错会写坏 chunk/vec_ref——本闸直接让第二个调用让出。
+   */
+  private readonly inFlight: Set<string> = new Set<string>();
 
   constructor(repo: KbRepo, parsers: ParserRegistry, chunker: Chunker,
               files: FileRepo, queue: TaskQueue | null) {
@@ -203,6 +209,21 @@ export class IngestPipeline {
    * TODO(T1.0): R3 批边界 AbortSignal 抢占检查（当前批量小、单批耗时短，抢占收益随库规模再接）。
    */
   async processDocument(docId: string): Promise<void> {
+    if (this.inFlight.has(docId)) {
+      // 同一文档已有 processDocument 在跑（续跑任务 + 手动重试撞车）：让出，避免双摄取损坏
+      Logger.warn(TAG, 'processDocument skipped: already in flight', [{ key: 'doc', value: docId }]);
+      return;
+    }
+    this.inFlight.add(docId);
+    try {
+      await this.runIngest(docId);
+    } finally {
+      this.inFlight.delete(docId);
+    }
+  }
+
+  /** processDocument 的实际执行体（在飞闸内运行，见 processDocument）。 */
+  private async runIngest(docId: string): Promise<void> {
     const doc = await this.repo.getDocument(docId);
     if (doc === null) {
       Logger.warn(TAG, 'ingest: doc missing (deleted before processing)', [{ key: 'doc', value: docId }]);

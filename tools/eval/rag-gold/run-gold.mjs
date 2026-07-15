@@ -70,6 +70,9 @@ try {
       if (spec.startsWith('@kit.')) {
         return `from './kit-stub.ts'`;   // 平台 Kit 统一打桩；金标集直喂文本，不触达文件/解压
       }
+      if (spec === 'core-infra') {
+        return `from './core-infra-stub.ts'`;   // Logger 等——金标集里降为 no-op
+      }
       if (spec.startsWith('.')) {
         return `from './${basename(spec)}.ts'`;
       }
@@ -98,6 +101,16 @@ try {
     '  rmdirSync: (_p: string): void => {},',
     '};',
     "export const zlib = { decompressFile: async (_a: string, _b: string): Promise<void> => { throw new Error('harness 不解压'); } };",
+    '',
+  ].join('\n'));
+
+  // 2b) core-infra 桩：Retriever 等引入 Logger（PERF|retrieve 打点）——金标集里 no-op
+  writeFileSync(join(build, 'core-infra-stub.ts'), [
+    '// core-infra 桩（仅供金标集转译运行；Logger 降为 no-op）',
+    'export const Logger = {',
+    '  info: (..._a: unknown[]): void => {}, warn: (..._a: unknown[]): void => {},',
+    '  error: (..._a: unknown[]): void => {}, debug: (..._a: unknown[]): void => {},',
+    '};',
     '',
   ].join('\n'));
 

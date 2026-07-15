@@ -16,6 +16,7 @@
  * RRF 是移动端零成本拿到两者优势的标准做法。
  */
 
+import { Logger } from 'core-infra';
 import { DEFAULT_SEARCH_OPTS } from '../model/Types';
 import type {
   KbChunk,
@@ -24,6 +25,8 @@ import type {
   ScoredChunk,
   SearchOpts
 } from '../model/Types';
+
+const TAG: string = 'Retriever';
 
 /** 单路召回结果（向量路或 FTS 路） */
 export interface RankedHit {
@@ -157,11 +160,20 @@ export class Retriever {
    */
   async search(libIds: string[], query: string, opts?: SearchOpts): Promise<ScoredChunk[]> {
     const resolved: SearchOpts = Retriever.resolveOpts(opts);
+    const t0: number = Date.now();
     const routes: [RankedHit[], RankedHit[]] = await Promise.all([
       this.searchVectorRoute(libIds, query, resolved.vectorTopK ?? 24),
       this.fts.searchFts(libIds, query, resolved.ftsTopK ?? 24)
     ]);
     const fused: ScoredChunk[] = fuseRRF(routes[0], routes[1], resolved.rrfK ?? 60);
+    // §12-M2 验收口径 + 双路参与度打点（真机 hilog 过滤 PERF|retrieve）：
+    // 并行两路 → 总耗时 = max(向量, FTS)，不是二者之和。vec>0 即向量路真参与融合。
+    Logger.info(TAG, 'PERF|retrieve', [
+      { key: 'ms', value: Date.now() - t0 },
+      { key: 'vec', value: routes[0].length },
+      { key: 'fts', value: routes[1].length },
+      { key: 'fused', value: fused.length }
+    ]);
     return fused.slice(0, resolved.topK ?? 6);
   }
 
