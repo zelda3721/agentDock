@@ -33,6 +33,7 @@ import { util } from '@kit.ArkTS';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Logger, Metrics, RuntimeFlags, SecretStore } from 'core-infra';
 import { AsyncPushQueue } from '../stream/AsyncPushQueue';
+import { ThinkTagFilter } from '../stream/ThinkTagFilter';
 import { SseDecoder } from '../stream/SseDecoder';
 import { NetworkGuard, NetworkType } from '../net/NetworkGuard';
 import { InferenceError, InferenceErrorCode } from './InferenceProvider';
@@ -240,6 +241,8 @@ class StreamState {
    */
   frameError: InferenceError | null = null;
   readonly toolCalls: Map<number, ToolCallAccumulator> = new Map<number, ToolCallAccumulator>();
+  /** 内联 <think> 归一化（个别网关把思考塞进 content；标准 qwen3.6 走 reasoning_content 本就不进来） */
+  readonly thinkFilter: ThinkTagFilter = new ThinkTagFilter();
 }
 
 /** 在途请求句柄：signal / 消费方 dispose 都要能取消它 */
@@ -519,12 +522,15 @@ export class RemoteProvider implements InferenceProvider {
           state.firstTokenMs = Date.now() - startedAt;
         }
         state.emitted = true;
-        state.text += content;
         if (!state.usageFromServer) {
-          // 服务端没给 usage 时的兜底计数：一个增量≈一个 token（OpenAI 协议下基本成立）
+          // 服务端没给 usage 时的兜底计数：一个增量≈一个 token（OpenAI 协议下基本成立；含思考——真实花费）
           state.completionTokens++;
         }
-        queue.push({ type: 'text', text: content });
+        const visible: string = state.thinkFilter.feed(content);
+        if (visible.length > 0) {
+          state.text += visible;
+          queue.push({ type: 'text', text: visible });
+        }
       }
       if (delta.tool_calls !== undefined) {
         // 纯工具调用响应（无前置文本）同样算「已产出」：既防『空流』误判 BAD_RESPONSE，
@@ -543,6 +549,16 @@ export class RemoteProvider implements InferenceProvider {
       latencyMs,
       tokensPerSec: RemoteProvider.computeTps(state.completionTokens, state.firstTokenMs, latencyMs)
     };
+
+    // 思考过滤的收尾：持留尾巴照吐；全程只思考且无工具调用时兜底交出思考全文（空气泡更糟）
+    const thinkTail: string = state.thinkFilter.flush();
+    if (thinkTail.length > 0) {
+      state.text += thinkTail;
+      queue.push({ type: 'text', text: thinkTail });
+    } else if (!state.thinkFilter.hasVisible() && state.toolCalls.size === 0
+      && state.thinkFilter.fallbackThinkText().length > 0) {
+      queue.push({ type: 'text', text: state.thinkFilter.fallbackThinkText() });
+    }
 
     // 工具调用必须在 done 之前、且已聚合成完整的 ToolCall（§3.1）。
     // finish_reason='length' 时**不发**：截断可能落在 arguments 半截，残缺调用不交给上层。

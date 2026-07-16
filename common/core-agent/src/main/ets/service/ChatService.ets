@@ -30,6 +30,7 @@ import {
   ProviderKind,
   ProviderRegistry,
   StreamDelta,
+  StreamMetrics,
   TokenUsage,
   ToolCall,
   ToolSpec
@@ -959,6 +960,9 @@ class ChatTurn implements ChatTurnHandle {
     let errorMessage: string = '';
     let lastCheckpoint: number = Date.now();
     const toolCalls: ToolCall[] = [];
+    // Provider 自算的性能指标（首 token/tok/s 的**引擎真值**）。think 过滤后本层看到的
+    // 首个 text 增量是首个**可见**字（思考结束才出现），拿它算解码速度会虚高一个量级。
+    let providerMetrics: StreamMetrics | null = null;
 
     try {
       const stream: AsyncIterable<StreamDelta> = provider.chatStream(assembly.messages, options);
@@ -985,8 +989,14 @@ class ChatTurn implements ChatTurnHandle {
           toolCalls.push(delta.toolCall);
         } else if (delta.type === 'usage' && delta.usage !== undefined) {
           usage = delta.usage;
+          if (delta.metrics !== undefined) {
+            providerMetrics = delta.metrics;
+          }
         } else if (delta.type === 'done') {
           finishReason = delta.finishReason ?? 'stop';
+          if (delta.metrics !== undefined) {
+            providerMetrics = delta.metrics;
+          }
         }
       }
     } catch (e) {
@@ -1055,8 +1065,11 @@ class ChatTurn implements ChatTurnHandle {
       memories: 0,                               // 记忆随 T1.0
       blockedByFence: assembly.blockedByFence + this.ragBlocked,  // 围栏拦截真值（[R-17]：remote 时 0 也要渲染"未拦截"）
       latencyMs: latencyMs,
+      // 首字 = 用户等到第一个可见字的时长（本层实测）；tok/s = 引擎解码真值（Provider 自算，
+      // think 过滤不影响它）。两个口径各自诚实，不互相顶替。
       firstTokenMs: firstTokenMs,
-      tokensPerSec: decodeSpeed(turnCompletion, firstTokenMs, latencyMs)
+      tokensPerSec: providerMetrics !== null ? providerMetrics.tokensPerSec
+        : decodeSpeed(turnCompletion, firstTokenMs, latencyMs)
     };
 
     const status: ChatMessageStatus =

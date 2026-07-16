@@ -32,6 +32,7 @@ import { fileIo } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hidebug } from '@kit.PerformanceAnalysisKit';
 import { AsyncPushQueue } from '../stream/AsyncPushQueue';
+import { ThinkTagFilter } from '../stream/ThinkTagFilter';
 import { InferenceError, InferenceErrorCode } from './InferenceProvider';
 import type {
   AbortListener,
@@ -295,6 +296,8 @@ export class LocalProvider implements InferenceProvider {
     let firstTokenMs: number = -1;
     let completionTokens: number = 0;
     let settled: boolean = false;
+    // Qwen3 系思考模型把 <think>…</think> 内联在正文流里：归一化为不可见（与远程 reasoning_content 一致）
+    const think: ThinkTagFilter = new ThinkTagFilter();
 
     // 抢占/取消的实际生效点（红线 12）：signal → 原生 abort
     const onAbort: AbortListener = (reason: string): void => {
@@ -351,20 +354,35 @@ export class LocalProvider implements InferenceProvider {
           return;
         }
         if (firstTokenMs < 0) {
-          firstTokenMs = Date.now() - startedAt;
+          firstTokenMs = Date.now() - startedAt;   // 引擎真实首 token（含思考），不按可见首字造假
         }
-        completionTokens++;
-        queue.push({ type: 'text', text: token });
+        completionTokens++;   // usage 计原始 token（思考真实花了算力，不假装没花）
+        const visible: string = think.feed(token);
+        if (visible.length > 0) {
+          queue.push({ type: 'text', text: visible });
+        }
         return;
       }
       if (event.type === 'done') {
+        const tail: string = think.flush();
+        if (tail.length > 0) {
+          queue.push({ type: 'text', text: tail });
+        } else if (!think.hasVisible() && think.fallbackThinkText().length > 0) {
+          // 全程只思考没答案：把思考全文交出（空气泡比看见草稿更糟）
+          queue.push({ type: 'text', text: think.fallbackThinkText() });
+        }
         finish(completionTokens >= maxTokens ? 'length' : 'stop');
         return;
       }
       // event.type === 'error'
       const code: number = event.code === undefined ? LlamaErrorCode.INTERNAL : event.code;
       if (code === LlamaErrorCode.ABORTED) {
-        // 中断是正常终态：保留已产出内容（[R-37]），不抛错
+        // 中断是正常终态：保留已产出内容（[R-37]），不抛错。持留尾巴照吐；
+        // 思考兜底不做（中断时的半截思考是噪音，不冒充部分回答）
+        const tail: string = think.flush();
+        if (tail.length > 0) {
+          queue.push({ type: 'text', text: tail });
+        }
         finish('aborted');
         return;
       }
