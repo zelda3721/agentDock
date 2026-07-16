@@ -3,10 +3,13 @@
 
 import { AppRdbStore } from 'core-data';
 import { InferenceProvider, ProviderRegistry } from 'core-llm';
+import { Logger } from 'core-infra';
 import { AgentDef } from '../model/AgentDef';
 import { AgentRunHandle } from '../runtime/AgentRun';
 import { AgentRepo } from './AgentRepo';
 import { RunRecorder } from '../runtime/RunRecorder';
+
+const TAG: string = 'AgentService';
 
 /**
  * 附录 A：Agent 运行入口——**features 层唯一依赖点**。
@@ -109,6 +112,22 @@ export class AgentService {
     this.agentRepo = repo;
     this.repo = repo;
     this.recorder = new RunRecorder(rdb);
+    // 先播种内置模板、再放行就绪门闩——保证 UI 首次读列表时内置智能体已在册（幂等，不冲用户改动）。
+    // 播种失败不挡启动：记一笔警告后照常放行（智能体功能仍可用，只是没有内置模板）。
+    repo.seedBuiltins()
+      .then((n: number): void => {
+        if (n > 0) {
+          Logger.info(TAG, 'builtin agents seeded', [{ key: 'inserted', value: n }]);
+        }
+        this.markReady();
+      })
+      .catch((e: Object): void => {
+        Logger.warn(TAG, 'seed builtins failed (agents still usable)', [{ key: 'err', value: (e as Error).message }]);
+        this.markReady();
+      });
+  }
+
+  private markReady(): void {
     this.ready = true;
     if (this.readyResolve !== null) {
       this.readyResolve();
@@ -170,9 +189,15 @@ export class AgentService {
     const result: AgentSummary[] = [];
     for (const def of defs) {
       const lastRunAt: number = this.recorder === null ? 0 : await this.recorder.lastRunAt(def.id);
-      const provider: InferenceProvider | null = def.model.providerId.length > 0
-        ? registry.get(def.model.providerId)
-        : null;
+      // 未绑定模型（providerId 空，如内置模板）= 跟随全局默认模型：有默认 Provider 就算可用，
+      // 与发送时的解析（resolveTurnProvider 的 fallback 分支）一致，否则列表会说"不可用"而实际能跑。
+      let provider: InferenceProvider | null = null;
+      if (def.model.providerId.length > 0) {
+        provider = registry.get(def.model.providerId);
+      } else {
+        const defaultId: string | null = registry.defaultProviderId();
+        provider = defaultId !== null ? registry.get(defaultId) : null;
+      }
       result.push({ def: def, lastRunAt: lastRunAt, providerAvailable: provider !== null });
     }
     return result;

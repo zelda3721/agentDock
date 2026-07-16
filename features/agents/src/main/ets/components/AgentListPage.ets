@@ -152,10 +152,12 @@ export struct AgentListPage {
                 title: item.name,
                 subtitle: item.providerAvailable
                   ? this.lastUsedText(item)
-                  : `绑定的模型不可用（${item.providerId}）`,
+                  : (item.providerId.length === 0
+                      ? '未配置模型：去「模型」页启用一个'
+                      : `绑定的模型不可用（${item.providerId}）`),
                 selected: this.selectedAgentId === item.id,
                 a11yText: `智能体 ${item.name}，${this.lastUsedText(item)}` +
-                  (item.providerAvailable ? '' : '，绑定的模型当前不可用') + '。双击编辑。',
+                  (item.providerAvailable ? '' : '，当前没有可用模型') + '。双击编辑。',
                 onAction: () => {
                   this.onSelectAgent(item.id);
                 },

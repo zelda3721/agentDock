@@ -114,9 +114,65 @@ function rowToDef(rs: relationalStore.ResultSet): AgentDef {
 const SELECT_COLUMNS: string =
   `id, name, avatar, system_prompt, model, knowledge, loop, builtin, enabled, def_version, created_at, updated_at`;
 
-// TODO(T1.0-10): 预置智能体模板播种——首启（或版本升级）时检测 builtin Agent 缺失则 INSERT
-//   种子集（翻译/写作/代码助手/文档问答等），builtin=1 不可删、可禁用；用户编辑 builtin 走
-//   copy-on-write（另存为新 Agent）或版本化覆盖，种子升级不得冲掉用户改动。详见开发计划 §6.2 TODO。
+/** 内置模板未绑定具体模型：providerId 留空 = 跟随用户当前激活的默认模型（本地/远程皆可）。 */
+const UNBOUND_MODEL: AgentModelConfig = { providerId: '' };
+
+/**
+ * 内置智能体模板种子（T1.0-10①）。首启/版本升级时 INSERT OR IGNORE 播种，builtin=1 不可删。
+ * id 用**稳定字符串**（非随机 UUID）→ 幂等：已存在（含用户改过的）就跳过、绝不覆盖用户改动；
+ * 只有版本升级新增的模板才会被插入。systemPrompt 尽量简短克制，弱模型（0.5B）也能照做。
+ */
+const BUILTIN_AGENT_SEEDS: AgentDef[] = [
+  {
+    id: 'builtin-translator',
+    name: '翻译助手',
+    avatar: '🌐',
+    systemPrompt: '你是翻译助手。用户发来任意语言的文本，你先判断它的语言：是中文就翻成地道自然的英文，' +
+      '是其他语言就翻成通顺的简体中文。只输出译文本身，不解释、不加引号。专有名词可保留原文并在括号里附译名。',
+    model: UNBOUND_MODEL,
+    tools: [],
+    loop: DEFAULT_LOOP_CONFIG,
+    createdAt: 0,
+    updatedAt: 0
+  },
+  {
+    id: 'builtin-writer',
+    name: '写作助手',
+    avatar: '✍️',
+    systemPrompt: '你是中文写作助手。帮用户起草、润色、改写文字：让表达更清晰、简洁、通顺，保留原意和语气。' +
+      '用户没特别说明时，直接给出改写后的版本；用户要求解释改动时，再逐条说明。不无中生有地添加事实。',
+    model: UNBOUND_MODEL,
+    tools: [],
+    loop: DEFAULT_LOOP_CONFIG,
+    createdAt: 0,
+    updatedAt: 0
+  },
+  {
+    id: 'builtin-coder',
+    name: '代码助手',
+    avatar: '💻',
+    systemPrompt: '你是编程助手。帮用户读代码、写代码、查 bug、解释报错。先给能直接用的代码或结论，' +
+      '再简要说明关键处；代码块标注语言；不确定的 API 如实说明而不是编造。默认用简体中文解释，代码与标识符保持英文。',
+    model: UNBOUND_MODEL,
+    tools: [],
+    loop: DEFAULT_LOOP_CONFIG,
+    createdAt: 0,
+    updatedAt: 0
+  },
+  {
+    id: 'builtin-summarizer',
+    name: '总结助手',
+    avatar: '📝',
+    systemPrompt: '你是摘要助手。把用户发来的长文本压缩成要点：先一句话总述，再用 3-6 条要点列出关键信息，' +
+      '保留其中的数字、结论和待办项。忠于原文，不添加原文没有的内容。',
+    model: UNBOUND_MODEL,
+    tools: [],
+    loop: DEFAULT_LOOP_CONFIG,
+    createdAt: 0,
+    updatedAt: 0
+  }
+];
+
 export class AgentRepo implements AgentRepositoryPort {
   private readonly rdb: AppRdbStore;
 
@@ -180,6 +236,38 @@ export class AgentRepo implements AgentRepositoryPort {
         [def.id, def.name, avatar, def.systemPrompt, modelJson, knowledgeJson, loopJson, now, now] as Array<SqlArg>
       );
     });
+  }
+
+  /**
+   * 首启/版本升级播种内置模板（T1.0-10①）。逐条判存：已在册（含用户改过的）就跳过、绝不覆盖，
+   * 只插缺失的模板（builtin=1 不可删）。幂等——重复调用安全。返回本次新插入的条数。
+   */
+  async seedBuiltins(): Promise<number> {
+    const now: number = Date.now();
+    let inserted: number = 0;
+    await this.rdb.withTransaction<void>(async (): Promise<void> => {
+      for (const seed of BUILTIN_AGENT_SEEDS) {
+        const exists: number | null = await this.rdb.queryScalarInt(
+          `SELECT COUNT(*) FROM agent_defs WHERE id = ?;`,
+          [seed.id] as Array<SqlArg>
+        );
+        if (exists !== null && exists > 0) {
+          continue;   // 已在册（含用户改过的）——跳过，不覆盖用户改动
+        }
+        const modelJson: string = JSON.stringify(seed.model);
+        const knowledgeJson: string = JSON.stringify(seed.knowledge ?? {
+          libIds: [], topK: DEFAULT_KNOWLEDGE_TOP_K, requireCitation: false
+        } as AgentKnowledgeConfig);
+        const loopJson: string = JSON.stringify(seed.loop);
+        await this.rdb.exec(
+          `INSERT INTO agent_defs (id, name, avatar, system_prompt, model, knowledge, loop, builtin, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?);`,
+          [seed.id, seed.name, seed.avatar ?? '', seed.systemPrompt, modelJson, knowledgeJson, loopJson, now, now] as Array<SqlArg>
+        );
+        inserted++;
+      }
+    });
+    return inserted;
   }
 
   /**
