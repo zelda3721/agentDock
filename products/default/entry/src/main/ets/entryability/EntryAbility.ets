@@ -27,7 +27,7 @@ import {
 import { KnowledgeService } from 'core-rag';
 import { ModelFacade } from 'models';
 import { InferenceProvider, LocalProvider, ProviderRegistry } from 'core-llm';
-import { AgentService, ChatService } from 'core-agent';
+import { AgentService, ChatService, DatetimeTool, KbSearchTool, ToolBus } from 'core-agent';
 import { MemoryService, pickLocalMemoryProvider } from 'core-memory';
 import { BreakpointSystem } from '../common/BreakpointSystem';
 
@@ -104,6 +104,14 @@ export default class EntryAbility extends UIAbility {
       // 4) 聊天服务 + 智能体服务（T0.9-16：Agent CRUD 与 Run 轨迹共用同一 RDB）
       await ChatService.get().init(rdb);
       AgentService.get().init(rdb);
+
+      // 4b) 工具总线（T1.0-01/02）：注册内置工具后接入聊天链路（§2 装配纪律：products 层装配）。
+      //     kb.search 依赖 KnowledgeService（下方第 5 步初始化）——工具在**执行时**才取用它，
+      //     注册先行无碍；datetime 无依赖。工具是否随请求下发由 Agent 白名单 ∩ Provider 能力决定。
+      const toolBus: ToolBus = new ToolBus();
+      toolBus.register(new DatetimeTool());
+      toolBus.register(new KbSearchTool());
+      ChatService.get().attachTools(toolBus);
 
       // 5) 任务队列 + 知识库服务（T0.9-13/14/18）：
       //    handler 必须在 start() 前注册（KnowledgeService.init 内注册 KB_INGEST_DOC）；

@@ -67,6 +67,8 @@ export interface ToolContext {
   cancellation?: CancellationToken;
   /** 目标 Provider 是否为远程；隐私围栏据此拦截 local_only 内容（红线 17/§9.2） */
   targetProviderIsRemote: boolean;
+  /** 当前 Agent 绑定的知识库（kb.search 的检索范围；未绑定 = 空数组，工具如实说明） */
+  kbLibIds?: string[];
 }
 
 /** 工具执行结果 */
@@ -146,6 +148,52 @@ export function toolGrantKey(agentId: string, toolName: string): string {
   return `tool_grant:${agentId}:${toolName}`;
 }
 
+function paramToOai(p: ToolParamSchema): Record<string, Object> {
+  const out: Record<string, Object> = {};
+  out['type'] = p.type;
+  if (p.description !== undefined) {
+    out['description'] = p.description;
+  }
+  if (p.enumValues !== undefined) {
+    out['enum'] = p.enumValues;   // 内部字段名 enumValues（ArkTS 不用保留字），协议侧是 enum
+  }
+  if (p.items !== undefined) {
+    out['items'] = paramToOai(p.items);
+  }
+  if (p.properties !== undefined) {
+    const props: Record<string, Object> = {};
+    const keys: string[] = Object.keys(p.properties);
+    for (const k of keys) {
+      props[k] = paramToOai(p.properties[k]);
+    }
+    out['properties'] = props;
+  }
+  if (p.required !== undefined) {
+    out['required'] = p.required;
+  }
+  return out;
+}
+
+/**
+ * 内部 ToolJsonSchema → OpenAI function.parameters 形状（协议字段名转换，如 enumValues→enum）。
+ * **不要**用 JSON.parse(JSON.stringify(schema)) 原样透传：字段名不转换，服务端按未知字段忽略，
+ * 枚举约束在模型侧静默失效。
+ */
+export function toOpenAiParameters(schema: ToolJsonSchema): Record<string, Object> {
+  const out: Record<string, Object> = {};
+  out['type'] = schema.type;
+  const props: Record<string, Object> = {};
+  const keys: string[] = Object.keys(schema.properties);
+  for (const k of keys) {
+    props[k] = paramToOai(schema.properties[k]);
+  }
+  out['properties'] = props;
+  if (schema.required !== undefined) {
+    out['required'] = schema.required;
+  }
+  return out;
+}
+
 // ============================ 注册表 ============================
 
 /**
@@ -197,20 +245,204 @@ export class ToolBus {
 
   /**
    * 校验工具入参是否满足其 JSON Schema（§5.2 步骤 3）。
-   * TODO(T1.0-02): 按设计文档 §5.2 实现 JSON-Schema 校验（type/required/enum/嵌套 object/array），
-   * 校验失败以 errorCode='schema_invalid' 回填 tool 消息，让模型自我纠正而非中断 Run。
+   * 校验失败以 errorCode='schema_invalid' 回填 tool 消息，让模型自我纠正而非中断 Run（§5.2 步骤 3）。
    */
   validateArgs(tool: Tool, args: ToolArgs): ToolResult {
-    throw new Error('Not implemented: T1.0-02');
+    const problems: string[] = [];
+    const schema: ToolJsonSchema = tool.jsonSchema;
+    const required: string[] = schema.required ?? [];
+    for (const key of required) {
+      if (args[key] === undefined || args[key] === null) {
+        problems.push(`缺少必填参数 ${key}`);
+      }
+    }
+    const propNames: string[] = Object.keys(args);
+    for (const key of propNames) {
+      const propSchema: ToolParamSchema | undefined = schema.properties[key];
+      if (propSchema === undefined) {
+        continue;   // 未声明的多余参数不算错（模型常带无害附加字段），执行器自行忽略
+      }
+      const problem: string | null = ToolBus.checkValue(key, args[key], propSchema);
+      if (problem !== null) {
+        problems.push(problem);
+      }
+    }
+    if (problems.length > 0) {
+      const bad: ToolResult = {
+        ok: false,
+        content: `参数不符合工具 ${tool.name} 的要求：${problems.join('；')}`,
+        errorCode: 'schema_invalid',
+        errorMessage: problems.join('；')
+      };
+      return bad;
+    }
+    const good: ToolResult = { ok: true, content: '' };
+    return good;
+  }
+
+  /** 单值 vs Schema（type/enumValues/嵌套 object/array）。返回 null = 合法，否则返回问题描述。 */
+  private static checkValue(path: string, value: JsonValue | undefined, schema: ToolParamSchema): string | null {
+    if (value === undefined || value === null) {
+      return null;   // 可选字段缺席合法；必填缺席在 required 检查里报
+    }
+    const t: string = schema.type;
+    if (t === 'string') {
+      if (typeof value !== 'string') {
+        return `${path} 应为字符串`;
+      }
+      if (schema.enumValues !== undefined && schema.enumValues.indexOf(value) < 0) {
+        return `${path} 取值须为 ${schema.enumValues.join('/')} 之一`;
+      }
+      return null;
+    }
+    if (t === 'number' || t === 'integer') {
+      if (typeof value !== 'number' || Number.isNaN(value)) {
+        return `${path} 应为数字`;
+      }
+      if (t === 'integer' && !Number.isInteger(value)) {
+        return `${path} 应为整数`;
+      }
+      return null;
+    }
+    if (t === 'boolean') {
+      return typeof value === 'boolean' ? null : `${path} 应为布尔值`;
+    }
+    if (t === 'array') {
+      if (!Array.isArray(value)) {
+        return `${path} 应为数组`;
+      }
+      if (schema.items !== undefined) {
+        const arr: Object[] = value as Object[];
+        for (let i = 0; i < arr.length; i++) {
+          const problem: string | null = ToolBus.checkValue(`${path}[${i}]`, arr[i] as JsonValue, schema.items);
+          if (problem !== null) {
+            return problem;
+          }
+        }
+      }
+      return null;
+    }
+    if (t === 'object') {
+      if (typeof value !== 'object' || Array.isArray(value)) {
+        return `${path} 应为对象`;
+      }
+      if (schema.properties !== undefined) {
+        const obj: Record<string, JsonValue> = value as Record<string, JsonValue>;
+        const req: string[] = schema.required ?? [];
+        for (const key of req) {
+          if (obj[key] === undefined || obj[key] === null) {
+            return `${path}.${key} 为必填`;
+          }
+        }
+        const keys: string[] = Object.keys(obj);
+        for (const key of keys) {
+          const sub: ToolParamSchema | undefined = schema.properties[key];
+          if (sub !== undefined) {
+            const problem: string | null = ToolBus.checkValue(`${path}.${key}`, obj[key], sub);
+            if (problem !== null) {
+              return problem;
+            }
+          }
+        }
+      }
+      return null;
+    }
+    return null;   // 未知 type 声明：不拦（Schema 写错不应把 Run 卡死），执行器兜底
   }
 
   /**
-   * 执行工具：权限门（none/confirm/always_ask）→ Schema 校验 → 超时控制 → L1 外置大结果。
-   * TODO(T1.0-02): 按设计文档 §5.2/§9.4 实现权限模型（首次确认 + 按 Agent 记忆化）、
-   * 独立超时、http.fetch 域名白名单拦截、file.read 授权路径校验；
-   * 后台段（Long Job）中需授权的调用一律挂起转"待确认"，绝不后台静默越权（§24.3）。
+   * 执行工具：权限门 → Schema 校验 → 独立超时。任何失败都以 ToolResult 形态返回
+   * （回填 tool 消息让模型自我纠正/如实转告用户），**不抛异常**——工具失败不中断 Run（§5.2）。
+   *
+   * 权限模型现状（T1.0-02 首增量）：只放行 permission==='none' 的工具；confirm/always_ask 的
+   * 确认交互（弹窗 + 按 Agent 记忆化，§9.4）尚未交付，调用一律如实拒绝——绝不静默越权。
+   * http.fetch 域名白名单 / file.read 授权路径校验随各自工具实现时落地。
    */
-  execute(name: string, args: ToolArgs, ctx: ToolContext): Promise<ToolResult> {
-    throw new Error('Not implemented: T1.0-02');
+  async execute(name: string, args: ToolArgs, ctx: ToolContext): Promise<ToolResult> {
+    const tool: Tool | undefined = this.tools.get(name);
+    if (tool === undefined) {
+      const missing: ToolResult = {
+        ok: false,
+        content: `工具 ${name} 不存在或未启用`,
+        errorCode: 'not_found',
+        errorMessage: `unknown tool: ${name}`
+      };
+      return missing;
+    }
+    if (tool.permission !== 'none') {
+      const denied: ToolResult = {
+        ok: false,
+        content: `工具 ${name} 需要用户授权，当前版本尚未支持授权流程，无法执行`,
+        errorCode: 'permission_denied',
+        errorMessage: `permission '${tool.permission}' not yet supported`
+      };
+      return denied;
+    }
+    // 运行时兜底：arguments 可能是 'null'/标量经 JSON.parse 后穿过类型断言（模型输出不可信）
+    const safeArgs: ToolArgs = (args === null || args === undefined || typeof args !== 'object') ? {} : args;
+    let invalid: ToolResult;
+    try {
+      invalid = this.validateArgs(tool, safeArgs);
+    } catch (e) {
+      const bad: ToolResult = {
+        ok: false,
+        content: `参数无法校验：${(e as Error).message}`,
+        errorCode: 'schema_invalid',
+        errorMessage: (e as Error).message
+      };
+      return bad;
+    }
+    if (!invalid.ok) {
+      return invalid;
+    }
+    try {
+      return await ToolBus.withTimeout(tool.execute(safeArgs, ctx), tool.timeoutMs, name);
+    } catch (e) {
+      const failed: ToolResult = {
+        ok: false,
+        content: `工具 ${name} 执行失败：${(e as Error).message}`,
+        errorCode: 'execution_failed',
+        errorMessage: (e as Error).message
+      };
+      return failed;
+    }
+  }
+
+  /** 独立超时（§5.2 步骤 3）。超时不杀执行体（ArkTS 无强杀原语），但 Run 不再等它。 */
+  private static withTimeout(work: Promise<ToolResult>, timeoutMs: number, name: string): Promise<ToolResult> {
+    return new Promise<ToolResult>((resolve: (r: ToolResult) => void): void => {
+      let settled: boolean = false;
+      const timer: number = setTimeout((): void => {
+        if (!settled) {
+          settled = true;
+          const timedOut: ToolResult = {
+            ok: false,
+            content: `工具 ${name} 执行超时（>${timeoutMs}ms）`,
+            errorCode: 'timeout',
+            errorMessage: `timeout after ${timeoutMs}ms`
+          };
+          resolve(timedOut);
+        }
+      }, timeoutMs);
+      work.then((r: ToolResult): void => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(r);
+        }
+      }).catch((e: Object): void => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          const failed: ToolResult = {
+            ok: false,
+            content: `工具 ${name} 执行失败：${(e as Error).message}`,
+            errorCode: 'execution_failed',
+            errorMessage: (e as Error).message
+          };
+          resolve(failed);
+        }
+      });
+    });
   }
 }

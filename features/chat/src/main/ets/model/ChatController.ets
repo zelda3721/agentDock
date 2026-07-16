@@ -42,6 +42,12 @@ export class ChatHost {
    */
   onCompressing: (compressing: boolean) => void = () => {
   };
+  /**
+   * 工具循环执行进展（T1.0-01）：显示「正在使用工具 kb.search…」。
+   * 与压缩同一纪律：工具执行必须显示，不许静默。空串 = 当前无工具在执行。
+   */
+  onToolActivity: (toolName: string) => void = () => {
+  };
   onCtxUsage: (usage: CtxUsageVM) => void = () => {
   };
   /**
@@ -363,6 +369,13 @@ export class ChatController {
       this.host.onCompressing(ev.compressing === true);
       return;
     }
+    if (ev.type === 'tool') {
+      // 工具循环进展（T1.0-01）：running 点亮「正在使用工具 …」，done/failed 熄灭。
+      // 先把已到的文本增量刷出去——工具执行可能耗秒级，不能让已生成的思考文字压在缓冲里。
+      this.flushPending();
+      this.host.onToolActivity(ev.toolPhase === 'running' ? (ev.toolName ?? '') : '');
+      return;
+    }
     if (ev.type === 'usage') {
       if (ev.usage !== undefined) {
         this.completionTokens = ev.usage.completionTokens;
@@ -393,6 +406,7 @@ export class ChatController {
   private settle(status: AdMessageStatus, errorText: string): void {
     this.stopFlushTimer();
     this.flushPending();
+    this.host.onToolActivity('');   // 工具状态随本轮落定熄灭——UI 状态不许悬挂
 
     const msg: ChatMessageVM | null = this.messages.itemAt(this.streamingIndex);
     if (msg !== null) {

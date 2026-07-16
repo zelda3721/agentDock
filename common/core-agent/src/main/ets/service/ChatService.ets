@@ -30,7 +30,9 @@ import {
   ProviderKind,
   ProviderRegistry,
   StreamDelta,
-  TokenUsage
+  TokenUsage,
+  ToolCall,
+  ToolSpec
 } from 'core-llm';
 import { AppRdbStore } from 'core-data';
 import { Logger, Metrics } from 'core-infra';
@@ -54,6 +56,7 @@ import { DEFAULT_LOOP_CONFIG } from '../model/AgentDef';
 import { RunFinishReason } from '../runtime/AgentRun';
 import { adjudicateAfterStep, decideNext, GateDecision, RunBudgetSpec, runStateOf } from '../runtime/RunGate';
 import { RunRecorder } from '../runtime/RunRecorder';
+import { Tool, ToolBus, ToolContext, ToolResult, toOpenAiParameters } from '../tools/ToolBus';
 import {
   CHAT_DEFAULT_MAX_OUTPUT_TOKENS,
   ChatCitation,
@@ -80,6 +83,9 @@ const TAG: string = 'ChatService';
  * 2s 是折中：再密就是把交互路径变成写库路径（WAL 下单次 UPDATE 亚毫秒，但没必要）。
  */
 const CHECKPOINT_INTERVAL_MS: number = 2000;
+
+/** 单步 tool_calls 执行上限（T1.0-01）：超出部分回填「超限」结果保住协议配对，不执行 */
+const MAX_TOOL_CALLS_PER_STEP: number = 5;
 
 // ============================================================================
 // 模块级工具函数
@@ -203,6 +209,10 @@ interface StepResult {
   firstTokenMs: number;
   latencyMs: number;
   errorMessage: string;
+  /** 本步产出的文本（工具循环回放：assistant(tool_calls) 消息的 content） */
+  content: string;
+  /** 本步模型请求的工具调用（finishReason==='tool_calls' 时非空；Run 循环据此执行并 continue） */
+  toolCalls: ToolCall[];
 }
 
 /** 溯源条的 modelLabel：providers.name；未登记则回退 providerId（不编造型号名） */
@@ -295,6 +305,8 @@ class ChatTurn implements ChatTurnHandle {
   private readonly recorder: RunRecorder | null;
   /** 记忆服务（T1.0）；null = 缺席。召回受对话级 useMemory 门控，捕获恒开。 */
   private readonly memory: MemoryService | null;
+  /** 工具总线（T1.0-01/02）；null = 未装配 = 无工具循环（Agent 声明了工具也如实不带） */
+  private readonly toolBus: ToolBus | null;
   private readonly controller: AbortController = new AbortController();
   private readonly events: AsyncEventQueue<ChatTurnEvent> = new AsyncEventQueue<ChatTurnEvent>();
   /** 是否被用户中断/被抢占（区分 aborted 与 failed：落库状态与 UI 呈现都不同） */
@@ -302,17 +314,23 @@ class ChatTurn implements ChatTurnHandle {
   /** 本轮实际注入的 RAG 引用数 / 被围栏拦截数（溯源真值，T0.9-14；未走检索恒 0） */
   private ragCitations: number = 0;
   private ragBlocked: number = 0;
+  /** 跨步累计的气泡内容（工具循环多步共用同一 assistant 行；checkpoint/落库均写累计值） */
+  private turnContent: string = '';
+  /** 跨步累计的输出 token（气泡「已生成 N tok」与 messages.token_count 的口径 = 全回合，非末步） */
+  private turnCompletionTokens: number = 0;
   /** 引用明细（标题/页码/得分快照，随消息入信封——检视 Sheet 的数据源） */
   private ragCitationDetails: ChatCitation[] = [];
 
   constructor(runId: string, assistantMessageId: string, convId: string,
-              repo: ChatRepository, recorder: RunRecorder | null, memory: MemoryService | null) {
+              repo: ChatRepository, recorder: RunRecorder | null, memory: MemoryService | null,
+              toolBus: ToolBus | null) {
     this.runId = runId;
     this.assistantMessageId = assistantMessageId;
     this.convId = convId;
     this.repo = repo;
     this.recorder = recorder;
     this.memory = memory;
+    this.toolBus = toolBus;
   }
 
   // --- ChatTurnHandle ---------------------------------------------------------
@@ -429,6 +447,32 @@ class ChatTurn implements ChatTurnHandle {
         return;
       }
 
+      // ---- [3a] 工具声明（T1.0-01/02）：Agent 白名单 ∩ 注册表 ∩ Provider 能力 ----
+      // 三关都过才带 tools：Agent 没声明/总线未装配/Provider 不支持工具调用（如本地模型的
+      // tool-call 解析未落地）任一不满足即不带——模型看不到工具就不会调用，诚实缺席。
+      let allowedTools: Tool[] = [];
+      let toolSpecs: ToolSpec[] = [];
+      if (this.toolBus !== null && binding !== null && binding.tools.length > 0) {
+        if (provider.capabilities().supportsTools) {
+          allowedTools = this.toolBus.listFor(binding.tools);
+          toolSpecs = allowedTools.map((t: Tool): ToolSpec => {
+            const spec: ToolSpec = {
+              type: 'function',
+              function: {
+                name: t.name,
+                description: t.description,
+                parameters: toOpenAiParameters(t.jsonSchema)
+              }
+            };
+            return spec;
+          });
+        } else {
+          Logger.info(TAG, 'agent declares tools but provider does not support tool calls', [
+            { key: 'provider', value: providerId }, { key: 'tools', value: binding.tools.length }
+          ]);
+        }
+      }
+
       // ---- [3b] RAG 检索注入（T0.9-14）：Agent 绑定知识库时，本轮 query 检索 → 围栏 → 合成易变尾部 ----
       // 注入位置 = 用户消息同一条（<knowledge> + 原文），属【易变尾部】（红线 11：绝不前置）。
       // 围栏（applyPrivacyFence）在装配前按 provider.kind 过滤（红线 17 数据层强制执行点）；
@@ -541,6 +585,12 @@ class ChatTurn implements ChatTurnHandle {
         maxSteps: DEFAULT_LOOP_CONFIG.maxSteps,
         timeoutMs: DEFAULT_LOOP_CONFIG.timeoutMs
       };
+      // 工具循环的回合内延伸（T1.0-01）：assistant(tool_calls) + tool 结果，逐圈追加在装配之后。
+      // 只存在于本回合内存（轨迹进 run_steps）；聊天历史只落最终回答——后续轮次不回放工具往来，
+      // 与 OpenAI 多轮实践一致，也避免历史被工具中间态撑大。
+      const loopExtension: ChatMessage[] = [];
+      // assistant 行只插一次（多步循环共用同一气泡/同一行）；中途预算停/取消时改走 UPDATE 落定
+      let assistantRowInserted: boolean = false;
 
       while (true) {
       // ---- ① 前置裁决 ----
@@ -552,14 +602,24 @@ class ChatTurn implements ChatTurnHandle {
       if (!gate.proceed) {
         stopReason = gate.stopReason ?? 'error';
         if (stopReason === 'user_cancelled') {
-          await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, '已取消');
+          if (assistantRowInserted) {
+            // 工具循环中途取消：行已存在，UPDATE 落定为 cancelled（部分内容保留，[R-37]；
+            // 与流中取消同一落库语义——UI 渲染「已中断」而非错误气泡）
+            await this.repo.failStreamingAssistant(this.assistantMessageId, '已取消', 'cancelled');
+          } else {
+            await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, '已取消');
+          }
           await this.repo.touchCounts(this.convId);
           this.events.push({ type: 'done', finishReason: 'aborted' });
         } else {
-          // V0.9 单步现实下预算类前置停止不可达（8 步/120s 对一步绰绰有余）——
-          // 这不是死代码，是 T1.0 多步循环的承重护栏，其数学由 tools/eval/agent-run 全覆盖。
+          // 预算类前置停止：T1.0-01 工具循环下**真实可达**（模型连环调用工具烧步数/时间），
+          // 其数学由 tools/eval/agent-run 全覆盖。
           stopError = stopReason === 'budget_steps' ? '本轮已达步数预算上限' : '本轮已超时';
-          await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, stopError);
+          if (assistantRowInserted) {
+            await this.repo.failStreamingAssistant(this.assistantMessageId, stopError);
+          } else {
+            await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, stopError);
+          }
           await this.repo.touchCounts(this.convId);
           this.fail(ChatErrorCode.PROVIDER_FAILED, stopError);
         }
@@ -568,6 +628,14 @@ class ChatTurn implements ChatTurnHandle {
 
       // ---- ② gather context：装配 + 真算预算（§23.2）+ 水位压缩（T0.9-17） ----
       let assembly: PromptResult = assembleWithSummary(systemPrompt, history, summaryState, effectiveText, provider.kind);
+      if (loopExtension.length > 0) {
+        // 工具循环续圈：把 assistant(tool_calls) + tool 结果追加在装配之后（顺序即协议要求）
+        const extended: PromptResult = {
+          messages: assembly.messages.concat(loopExtension),
+          blockedByFence: assembly.blockedByFence
+        };
+        assembly = extended;
+      }
       const devCtxOverride: number = await this.repo.devCtxOverride();   // 仅开发用，见方法注释
       const budget: ChatBudgetSpec = budgetOf(provider.capabilities(), devCtxOverride);
       let promptTokens: number = await provider.countTokens(assembly.messages);
@@ -577,7 +645,9 @@ class ChatTurn implements ChatTurnHandle {
       const waterline: WaterlineStatus = settleWaterline(compactor, budget, anchorTokens, promptTokens);
       let didCompact: boolean = false;
 
-      if (waterline.action !== 'ok') {
+      // 工具循环续圈不做水位压缩：压缩器只会折叠**历史**，折不动本回合的工具往来；且中途改写
+      // 前缀会毁 KV 复用。超预算由下方容量硬判定兜底（诚实失败），压缩机会留给下一回合。
+      if (waterline.action !== 'ok' && loopExtension.length === 0) {
         // §23.4 攒批纪律：一次压到 ≤50%（不是每轮微调）——压缩必然改写 prompt 前缀，
         // KV cache 失效、下一轮全量 prefill（S1 实测秒级），代价必须摊到多轮。
         // 压缩期间 UI 显示「整理思路中…」（AdCtxGauge），输入框不禁用（UI 规范 B3）。
@@ -651,7 +721,11 @@ class ChatTurn implements ChatTurnHandle {
         const detail: string = didCompact
           ? `上下文已满（压缩后仍需 ${promptTokens} / ${budget.promptCapacity} token），请新建会话继续。`
           : `上下文已满（${promptTokens} / ${budget.promptCapacity} token），请新建会话继续。`;
-        await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, detail);
+        if (assistantRowInserted) {
+          await this.repo.failStreamingAssistant(this.assistantMessageId, detail);
+        } else {
+          await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, detail);
+        }
         await this.repo.touchConversation(this.convId, providerId, provider.kind);
         Logger.warn(TAG, 'context budget exhausted', [
           { key: 'prompt_tokens', value: promptTokens },
@@ -667,18 +741,25 @@ class ChatTurn implements ChatTurnHandle {
       // 用户在组 prompt 期间就点了停止（①的采样此刻可能已过时——发前再看一眼）：
       // 不发请求，也不留一条永远 streaming 的空壳
       if (this.aborted) {
-        await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, '已取消');
+        if (assistantRowInserted) {
+          await this.repo.failStreamingAssistant(this.assistantMessageId, '已取消', 'cancelled');
+        } else {
+          await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, '已取消');
+        }
         await this.repo.touchCounts(this.convId);
         this.events.push({ type: 'done', finishReason: 'aborted' });
         stopReason = 'user_cancelled';
         break;
       }
 
-      // assistant 消息以 status='streaming' 落库（流开始时）
-      await this.repo.insertAssistantStreaming(this.assistantMessageId, this.convId, this.runId);
+      // assistant 消息以 status='streaming' 落库（流开始时；多步循环共用同一行，只插一次）
+      if (!assistantRowInserted) {
+        await this.repo.insertAssistantStreaming(this.assistantMessageId, this.convId, this.runId);
+        assistantRowInserted = true;
+      }
 
       // ---- ③ 一步 LLM（流式直出） ----
-      const step: StepResult = await this.generate(provider, providerId, assembly, promptTokens, budget, startedAt);
+      const step: StepResult = await this.generate(provider, providerId, assembly, promptTokens, budget, startedAt, toolSpecs);
       stepsUsed++;
       tokensPromptTotal += step.promptTokens;
       tokensOutputTotal += step.completionTokens;
@@ -705,8 +786,103 @@ class ChatTurn implements ChatTurnHandle {
         }
       }
 
-      // ---- ⑤ 终局裁决：V0.9 每种生成结局都是终态（无工具 → 无「回到①」的分支） ----
-      // TODO(T1.0-01): finishReason==='tool_calls' 时执行工具、回填 tool 消息并 continue。
+      // ---- ⑤ 终局裁决（T1.0-01）：tool_calls → 执行工具、回填 tool 消息、回到① ----
+      if (step.finishReason === 'tool_calls' && step.toolCalls.length > 0 && this.toolBus !== null) {
+        // 回放要求（OpenAI 协议）：assistant(tool_calls) 先入延伸区，随后**每个** tool_call 必须
+        // 有对应 tool 消息（跳过/超限/超时也要回填错误结果，否则下一请求缺配对被服务端拒收）
+        const assistantMsg: ChatMessage = {
+          role: 'assistant',
+          content: step.content,
+          toolCalls: step.toolCalls
+        };
+        loopExtension.push(assistantMsg);
+        // Agent 工具白名单在**执行点**再守一次（[3a] 只决定声明；服务端幻觉/网关注入的名字不在
+        // 白名单内绝不执行——授权以 Agent 声明为准，不以模型输出为准）
+        const allowedNames: string[] = allowedTools.map((t: Tool): string => t.name);
+        let executedCount: number = 0;
+        for (const call of step.toolCalls) {
+          const toolName: string = call.function.name;
+          let result: ToolResult;
+          const toolStartedAt: number = Date.now();
+          if (this.aborted) {
+            // 用户已取消：不再执行，但仍回填占位结果保住协议配对；下一圈①的取消裁决负责落定
+            result = { ok: false, content: '本轮已取消，工具未执行', errorCode: 'cancelled', errorMessage: 'cancelled' };
+          } else if (allowedNames.indexOf(toolName) < 0) {
+            result = {
+              ok: false,
+              content: `工具 ${toolName} 不在当前智能体的授权清单内，未执行`,
+              errorCode: 'not_allowed', errorMessage: `tool not in agent whitelist: ${toolName}`
+            };
+          } else if (executedCount >= MAX_TOOL_CALLS_PER_STEP) {
+            result = {
+              ok: false,
+              content: `单步工具调用数量已达上限（${MAX_TOOL_CALLS_PER_STEP}），该调用未执行，请合并检索或分步进行`,
+              errorCode: 'step_limit', errorMessage: 'per-step tool call cap reached'
+            };
+          } else if (Date.now() - startedAt >= loopBudget.timeoutMs) {
+            // 墙钟预算在工具执行段同样生效（gate 只在步间采样）；回填后下一圈①按超时收束
+            result = { ok: false, content: '本轮已超时，工具未执行', errorCode: 'timeout', errorMessage: 'run budget timeout' };
+          } else {
+            executedCount++;
+            // 工具执行必须显示，不许静默（与压缩同一纪律）
+            this.events.push({ type: 'tool', toolName: toolName, toolPhase: 'running' });
+            let parsedArgs: Record<string, Object> = {};
+            try {
+              const parsed: Object | null = JSON.parse(
+                call.function.arguments.length > 0 ? call.function.arguments : '{}') as Object | null;
+              // 模型可能给出 'null' / 数组 / 标量：一律按空参处理（validateArgs 的 required 检查会如实报缺）
+              if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                parsedArgs = parsed as Record<string, Object>;
+              }
+            } catch (e) {
+              parsedArgs = {};
+            }
+            const toolCtx: ToolContext = {
+              runId: this.runId,
+              agentId: conv.agentId ?? '',
+              convId: this.convId,
+              stepIndex: stepsUsed,
+              depth: 0,
+              targetProviderIsRemote: provider.kind === 'remote',
+              kbLibIds: binding !== null ? binding.libIds : []
+            };
+            result = await this.toolBus.execute(toolName, parsedArgs, toolCtx);
+            this.events.push({ type: 'tool', toolName: toolName, toolPhase: result.ok ? 'done' : 'failed' });
+          }
+          const toolLatencyMs: number = Date.now() - toolStartedAt;
+          Logger.info(TAG, `PERF|tool run=${this.runId} name=${toolName} ok=${result.ok ? 1 : 0}` +
+            ` code=${result.errorCode ?? ''} cost_ms=${toolLatencyMs}`);
+          // 工具步进轨迹（append-only；落账失败不拖垮聊天）
+          if (runBegun && this.recorder !== null) {
+            stepSeq++;
+            try {
+              await this.recorder.recordToolStep(this.runId, stepSeq, toolName, call.function.arguments,
+                toolLatencyMs, result.ok ? 'done' : 'failed',
+                result.ok ? null : (result.errorMessage ?? result.errorCode ?? 'failed'));
+            } catch (e) {
+              Logger.error(TAG, 'record tool step failed', [{ key: 'err', value: (e as Error).message }]);
+            }
+          }
+          // 失败也回填（模型自我纠正/如实转告用户），不中断 Run（§5.2）
+          const toolMsg: ChatMessage = {
+            role: 'tool',
+            content: result.content,
+            toolCallId: call.id
+          };
+          loopExtension.push(toolMsg);
+        }
+        continue;   // 回到①：前置裁决（步数/超时/取消）把关下一圈
+      }
+      if (step.finishReason === 'tool_calls') {
+        // 模型要求调用工具但本轮没有可执行条件（总线未装配/空调用列表）：如实按错误收束，
+        // 绝不静默吞掉——上游 [3a] 不带 tools 时模型不应产生 tool_calls，走到这里是异常。
+        stopReason = 'error';
+        stopError = '模型请求了工具调用，但当前没有可执行的工具';
+        await this.repo.failStreamingAssistant(this.assistantMessageId, stopError);
+        await this.repo.touchCounts(this.convId);
+        this.fail(ChatErrorCode.PROVIDER_FAILED, stopError);
+        break;
+      }
       stopReason = adjudicateAfterStep(step.finishReason);
       stopError = step.errorMessage.length > 0 ? step.errorMessage : null;
       break;
@@ -736,8 +912,14 @@ class ChatTurn implements ChatTurnHandle {
       try {
         await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, err.message);
       } catch (persistErr) {
-        Logger.warn(TAG, 'persist failed-assistant skipped (row may exist)',
-          [{ key: 'err', value: (persistErr as Error).message }]);
+        // 行已存在（流式行已插入后异常逃逸）：insert 撞主键 → 改走 UPDATE 落定，
+        // 绝不能把行留在 streaming——那是一条永远转圈的气泡（终态在库里说谎）。
+        try {
+          await this.repo.failStreamingAssistant(this.assistantMessageId, err.message, 'failed');
+        } catch (updateErr) {
+          Logger.error(TAG, 'persist failed-assistant unrecoverable',
+            [{ key: 'err', value: (updateErr as Error).message }]);
+        }
       }
       this.fail(ChatErrorCode.PERSIST_FAILED, err.message);
       await settleRun('error', err.message);
@@ -747,23 +929,36 @@ class ChatTurn implements ChatTurnHandle {
     }
   }
 
-  /** 一步 LLM 生成：消费 StreamDelta → 回吐 ChatTurnEvent → 结束时按 done/aborted/failed 落库；返回步结果供 Run 账本 */
+  /**
+   * 一步 LLM 生成：消费 StreamDelta → 回吐 ChatTurnEvent → 结束时按 done/aborted/failed 落库；
+   * 返回步结果供 Run 账本。finishReason==='tool_calls' 是**中间态**（T1.0-01）：本步不落终态、
+   * 不发 done/usage 事件——同一 assistant 行/气泡跨步复用，checkpoint 累计内容，Run 循环执行
+   * 工具后回到①继续生成。
+   */
   private async generate(provider: InferenceProvider, providerId: string, assembly: PromptResult,
-                         promptTokens: number, budget: ChatBudgetSpec, startedAt: number): Promise<StepResult> {
+                         promptTokens: number, budget: ChatBudgetSpec, startedAt: number,
+                         toolSpecs: ToolSpec[]): Promise<StepResult> {
     const options: GenerateOptions = {
       maxTokens: budget.maxOutputTokens,
       signal: this.controller.signal
     };
+    if (toolSpecs.length > 0) {
+      options.tools = toolSpecs;
+    }
     // TODO(T0.9-07): 聊天请求应经 core-llm 的 InferenceQueue 以 INTERACTIVE 优先级入队
     //   （抢占正在跑的 BACKGROUND 摘要/摄取任务，R3/红线 12）。队列落地前先直连 Provider——
     //   取消语义已经是同一条 AbortSignal，接队列时本层代码无需改动。
 
+    // 跨步累计（工具循环共用同一行/气泡）：checkpoint 与最终落库都写**累计**内容，
+    // 否则续圈 checkpoint 会把上一步文本从库里冲掉（UI 重读时丢失，[R-37]）
+    const contentBase: string = this.turnContent;
     let content: string = '';
     let firstTokenMs: number = 0;
     let usage: TokenUsage | null = null;
     let finishReason: FinishReason = 'stop';
     let errorMessage: string = '';
     let lastCheckpoint: number = Date.now();
+    const toolCalls: ToolCall[] = [];
 
     try {
       const stream: AsyncIterable<StreamDelta> = provider.chatStream(assembly.messages, options);
@@ -783,15 +978,16 @@ class ChatTurn implements ChatTurnHandle {
           const now: number = Date.now();
           if (now - lastCheckpoint >= CHECKPOINT_INTERVAL_MS) {
             lastCheckpoint = now;
-            await this.repo.checkpointAssistant(this.assistantMessageId, content);
+            await this.repo.checkpointAssistant(this.assistantMessageId, contentBase + content);
           }
+        } else if (delta.type === 'tool_call' && delta.toolCall !== undefined) {
+          // Provider 已聚合完整（远程 SSE 分片在 Provider 内部拼好才发出）
+          toolCalls.push(delta.toolCall);
         } else if (delta.type === 'usage' && delta.usage !== undefined) {
           usage = delta.usage;
         } else if (delta.type === 'done') {
           finishReason = delta.finishReason ?? 'stop';
         }
-        // delta.type === 'tool_call'：V0.9 无工具循环，忽略。
-        // TODO(T1.0-01): ReActLoop 在此消费工具调用（V0.9 绝不静默执行任何工具）。
       }
     } catch (e) {
       const err: Error = e as Error;
@@ -811,15 +1007,44 @@ class ChatTurn implements ChatTurnHandle {
     if (this.aborted && finishReason !== 'error') {
       finishReason = 'aborted';
     }
+    if (finishReason === 'tool_calls' && toolCalls.length === 0) {
+      // 服务端说 tool_calls 却没给出可执行的调用：按 stop 收束，防止空转循环
+      finishReason = 'stop';
+    }
 
-    // ---- 结算：溯源 + 落库（中断/失败都**保留已生成内容**，[R-37]） ----
     const latencyMs: number = Date.now() - startedAt;
     const completionTokens: number = await completionTokensOf(provider, usage, content);
     const promptTokensFinal: number = usage === null ? promptTokens : usage.promptTokens;
+
+    // ---- 中间态（tool_calls）：checkpoint 累计内容即返回，终态结算留给最后一步 ----
+    if (finishReason === 'tool_calls') {
+      this.turnContent = contentBase + content + (content.length > 0 ? '\n\n' : '');
+      this.turnCompletionTokens += completionTokens;
+      if (content.length > 0) {
+        this.events.push({ type: 'text', text: '\n\n' });   // 步间分隔，最终回答不与思考粘连
+      }
+      await this.repo.checkpointAssistant(this.assistantMessageId, this.turnContent);
+      const mid: StepResult = {
+        finishReason: 'tool_calls',
+        promptTokens: promptTokensFinal,
+        completionTokens: completionTokens,
+        firstTokenMs: firstTokenMs,
+        latencyMs: latencyMs,
+        errorMessage: '',
+        content: content,
+        toolCalls: toolCalls
+      };
+      return mid;
+    }
+
+    // ---- 结算：溯源 + 落库（中断/失败都**保留已生成内容**，[R-37]） ----
+    this.turnContent = contentBase + content;
+    // 消息级 token 口径 = 全回合累计（工具循环多步共用同一气泡；只报末步会与内容对不上）
+    const turnCompletion: number = this.turnCompletionTokens + completionTokens;
     const finalUsage: TokenUsage = {
       promptTokens: promptTokensFinal,
-      completionTokens: completionTokens,
-      totalTokens: promptTokensFinal + completionTokens
+      completionTokens: turnCompletion,
+      totalTokens: promptTokensFinal + turnCompletion
     };
 
     const provenance: ChatProvenance = {
@@ -831,14 +1056,14 @@ class ChatTurn implements ChatTurnHandle {
       blockedByFence: assembly.blockedByFence + this.ragBlocked,  // 围栏拦截真值（[R-17]：remote 时 0 也要渲染"未拦截"）
       latencyMs: latencyMs,
       firstTokenMs: firstTokenMs,
-      tokensPerSec: decodeSpeed(completionTokens, firstTokenMs, latencyMs)
+      tokensPerSec: decodeSpeed(turnCompletion, firstTokenMs, latencyMs)
     };
 
     const status: ChatMessageStatus =
       finishReason === 'aborted' ? 'aborted' : (finishReason === 'error' ? 'failed' : 'done');
 
     await this.repo.finishAssistant(
-      this.assistantMessageId, content, status, completionTokens, provenance,
+      this.assistantMessageId, this.turnContent, status, turnCompletion, provenance,
       errorMessage.length > 0 ? errorMessage : null,
       this.ragCitationDetails
     );
@@ -862,7 +1087,9 @@ class ChatTurn implements ChatTurnHandle {
       completionTokens: completionTokens,
       firstTokenMs: firstTokenMs,
       latencyMs: latencyMs,
-      errorMessage: errorMessage
+      errorMessage: errorMessage,
+      content: content,
+      toolCalls: toolCalls
     };
     return step;
   }
@@ -914,6 +1141,8 @@ export class ChatService {
   private recorder: RunRecorder | null = null;
   /** 记忆服务（T1.0 记忆闭环）；null = 未装配（无本地模型或未接入）——记忆整体缺席，聊天照常 */
   private memory: MemoryService | null = null;
+  /** 工具总线（T1.0-01/02 工具循环）；null = 未装配——工具整体缺席，聊天照常 */
+  private toolBus: ToolBus | null = null;
 
   /** entry 启动时装配一次：注入**已打开**的 RDB（开库与迁移是 core-data 的事，本层不碰） */
   async init(rdb: AppRdbStore): Promise<void> {
@@ -932,6 +1161,14 @@ export class ChatService {
    */
   attachMemory(memory: MemoryService): void {
     this.memory = memory;
+  }
+
+  /**
+   * 装配工具总线（entry 在注册完内置工具后调用，§2 装配纪律：products 层负责装配）。
+   * 工具是可选增强：null 时 Agent 声明的 tools 如实缺席（模型看不到工具声明），聊天链路不受影响。
+   */
+  attachTools(toolBus: ToolBus): void {
+    this.toolBus = toolBus;
   }
 
   /** 装配失败时由 entry 调用：让等在门闩上的 UI 拿到真实错误，而不是永远转圈 */
@@ -1046,7 +1283,7 @@ export class ChatService {
     // Provider 裁决在 run() 内完成（显式 > Agent 绑定 > 默认，见 resolveTurnProvider）：
     // Agent 绑定要先读会话行，是异步的——send 只负责同步造句柄，解析失败也走完整的
     // "user 落库 + error 事件"流程。若在这里抛，UI 拿不到句柄，用户输入就没人负责落库了。
-    const turn: ChatTurn = new ChatTurn(runId, assistantMessageId, convId, repo, this.recorder, this.memory);
+    const turn: ChatTurn = new ChatTurn(runId, assistantMessageId, convId, repo, this.recorder, this.memory, this.toolBus);
     this.turns.set(runId, turn);
 
     // 不 await：send 必须同步返回句柄。run() 内部吞掉所有异常并转成 error 事件，故无未处理的 rejection。

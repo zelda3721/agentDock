@@ -47,6 +47,8 @@ export struct ChatComposer {
   @Prop dangerAt: number = 90;
   /** L3 滚动摘要进行中：显示「整理思路中…」；此时输入框**不禁用**（可继续打字） */
   @Prop compressing: boolean = false;
+  /** 工具循环进行中（T1.0-01）：非空 = 正在执行的工具名，显示「正在使用工具 …」；空 = 无 */
+  @Prop toolActivity: string = '';
   /**
    * 此刻是否有可用模型（core-agent 的 ChatService.currentBrain() 非 null）。
    * false ⇒ ①水位线整条隐藏（没有 tokenizer 就没有诚实读数，不画一条 0% 的假线）；
@@ -82,6 +84,16 @@ export struct ChatComposer {
           warnAt: this.warnAt,
           dangerAt: this.dangerAt
         })
+        if (this.toolActivity.length > 0) {
+          // 工具执行必须显示，不许静默（与「整理思路中…」同一纪律，T1.0-01）
+          Text(`正在使用工具 ${this.toolActivity}…`)
+            .fontSize(AdType.bodyS.size)
+            .lineHeight(AdType.bodyS.lineHeight)
+            .fontFamily(AdType.bodyS.family)
+            .fontColor(AdColor.inkTertiary)
+            .width('100%')
+            .textAlign(TextAlign.Start)
+        }
       } else {
         this.noModelInvitation()
       }

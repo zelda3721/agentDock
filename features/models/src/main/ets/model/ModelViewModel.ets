@@ -442,7 +442,10 @@ export class ModelFacade {
         modelId: row.modelId ?? '',
         modelLabel: row.name,
         secretAlias: row.secretAlias ?? SecretAlias.forProvider(row.id),
-        networkPolicy: row.networkPolicy === 'wifi_only' ? 'wifi_only' : 'any'
+        networkPolicy: row.networkPolicy === 'wifi_only' ? 'wifi_only' : 'any',
+        // OpenAI 兼容端点均定义 tools 字段（T1.0-01 工具循环）；个别不支持的服务端会如实报错，
+        // 错误进气泡不静默。按 Provider 关闭的开关随设置页迭代。
+        supportsTools: true
       };
       registry.register(new RemoteProvider(config));
     }

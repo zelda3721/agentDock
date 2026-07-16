@@ -98,6 +98,20 @@ export class RunRecorder {
   }
 
   /**
+   * 记一条 tool 步（T1.0-01 工具循环）。tool_args 存 JSON 原文（本地加密库，非日志——红线 20
+   * 约束的是日志明文，轨迹落库是可回放性的一部分）；结果全文不内联（大结果 L1 外置随 T1.0-04）。
+   */
+  async recordToolStep(runId: string, seq: number, toolName: string, toolArgs: string,
+                       latencyMs: number, state: 'done' | 'failed', error: string | null): Promise<void> {
+    const now: number = Date.now();
+    await this.rdb.exec(
+      `INSERT INTO run_steps (id, run_id, seq, type, tool_name, tool_args, latency_ms, state, error, created_at)
+       VALUES (?, ?, ?, 'tool', ?, ?, ?, ?, ?, ?);`,
+      [util.generateRandomUUID(true), runId, seq, toolName, toolArgs, latencyMs, state, error, now] as Array<SqlArg>
+    );
+  }
+
+  /**
    * Run 收束（终态 + 统计）。running → 终态的迁移合法性由 canTransition 校验，
    * 非法迁移抛错（调用方按"可观测性故障不拖垮主链路"的纪律 catch + 记日志）。
    */

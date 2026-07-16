@@ -188,6 +188,8 @@ interface OaiRequestMessage {
   content: string;
   name?: string;
   tool_call_id?: string;
+  /** assistant 消息携带的工具调用（工具循环回放：assistant(tool_calls) 必须先于 tool 结果，OpenAI 协议） */
+  tool_calls?: Object[];
 }
 
 interface OaiStreamOptions {
@@ -525,6 +527,9 @@ export class RemoteProvider implements InferenceProvider {
         queue.push({ type: 'text', text: content });
       }
       if (delta.tool_calls !== undefined) {
+        // 纯工具调用响应（无前置文本）同样算「已产出」：既防『空流』误判 BAD_RESPONSE，
+        // 也防中途重试把已聚合的调用分片重复累加
+        state.emitted = true;
         RemoteProvider.accumulateToolCalls(delta.tool_calls, state);
       }
     }
@@ -539,7 +544,12 @@ export class RemoteProvider implements InferenceProvider {
       tokensPerSec: RemoteProvider.computeTps(state.completionTokens, state.firstTokenMs, latencyMs)
     };
 
-    // 工具调用必须在 done 之前、且已聚合成完整的 ToolCall（§3.1）
+    // 工具调用必须在 done 之前、且已聚合成完整的 ToolCall（§3.1）。
+    // finish_reason='length' 时**不发**：截断可能落在 arguments 半截，残缺调用不交给上层。
+    const finalReason: 'stop' | 'length' | 'tool_calls' | 'error' = RemoteProvider.mapFinishReason(state);
+    if (finalReason !== 'tool_calls') {
+      state.toolCalls.clear();
+    }
     state.toolCalls.forEach((acc: ToolCallAccumulator, index: number) => {
       if (acc.name.length === 0) {
         return;
@@ -558,7 +568,7 @@ export class RemoteProvider implements InferenceProvider {
       totalTokens: state.promptTokens + state.completionTokens
     };
     queue.push({ type: 'usage', usage, metrics });
-    queue.push({ type: 'done', finishReason: RemoteProvider.mapFinishReason(state), metrics });
+    queue.push({ type: 'done', finishReason: finalReason, metrics });
     queue.close();
 
     if (state.firstTokenMs >= 0) {
@@ -711,6 +721,10 @@ export class RemoteProvider implements InferenceProvider {
         name: msg.name,
         tool_call_id: msg.toolCallId
       };
+      if (msg.toolCalls !== undefined && msg.toolCalls.length > 0) {
+        // ToolCall 与 OpenAI 协议同构（id/type/function{name,arguments}），原样透传
+        item.tool_calls = msg.toolCalls as Object[];
+      }
       messages.push(item);
     }
     const request: OaiChatRequest = {
@@ -801,8 +815,19 @@ export class RemoteProvider implements InferenceProvider {
 
   private static accumulateToolCalls(deltas: OaiToolCallDelta[], state: StreamState): void {
     for (const delta of deltas) {
-      const index: number = delta.index === undefined ? 0 : delta.index;
+      let index: number = delta.index === undefined ? 0 : delta.index;
       let acc: ToolCallAccumulator | undefined = state.toolCalls.get(index);
+      // 准兼容端点（如 Ollama）对并行调用会省略 index 或统一给 0：靠 id 变化识别新调用，
+      // 否则两个调用的 name/arguments 被首尾拼进同一累加器成乱码
+      if (acc !== undefined && delta.id !== undefined && delta.id.length > 0
+        && acc.id.length > 0 && acc.id !== delta.id) {
+        let maxKey: number = -1;
+        state.toolCalls.forEach((_a: ToolCallAccumulator, k: number) => {
+          maxKey = Math.max(maxKey, k);
+        });
+        index = maxKey + 1;
+        acc = undefined;
+      }
       if (acc === undefined) {
         acc = new ToolCallAccumulator();
         state.toolCalls.set(index, acc);
@@ -823,11 +848,12 @@ export class RemoteProvider implements InferenceProvider {
   }
 
   private static mapFinishReason(state: StreamState): 'stop' | 'length' | 'tool_calls' | 'error' {
+    if (state.finishReason === 'length') {
+      // 截断优先于 tool_calls：max_tokens 截断可能砍在 arguments 半截，残缺调用绝不能交给上层执行
+      return 'length';
+    }
     if (state.toolCalls.size > 0 || state.finishReason === 'tool_calls') {
       return 'tool_calls';
-    }
-    if (state.finishReason === 'length') {
-      return 'length';
     }
     if (state.finishReason === 'content_filter') {
       return 'error';

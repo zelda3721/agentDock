@@ -25,7 +25,7 @@ export { FinishReason, TokenUsage };
 // 事件流（合同 §二）
 // ---------------------------------------------------------------------------
 
-export type ChatTurnEventType = 'text' | 'usage' | 'done' | 'error' | 'compressing';
+export type ChatTurnEventType = 'text' | 'usage' | 'done' | 'error' | 'compressing' | 'tool';
 
 export interface ChatTurnEvent {
   type: ChatTurnEventType;
@@ -43,6 +43,12 @@ export interface ChatTurnEvent {
    * 且不可取消（它是本轮生成的必要前置）；输入框不禁用。
    */
   compressing?: boolean;
+  /**
+   * type==='tool'：工具循环的执行进展（T1.0-01）。工具执行**必须显示，不许静默**（与压缩同一纪律）：
+   * running 在开始执行时发出，done/failed 在结束时发出——UI 据此显示「正在使用工具 kb.search…」。
+   */
+  toolName?: string;
+  toolPhase?: 'running' | 'done' | 'failed';
 }
 
 /**

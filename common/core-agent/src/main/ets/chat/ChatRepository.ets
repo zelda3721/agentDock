@@ -56,6 +56,8 @@ export interface AgentBindingRow {
   topK: number;
   /** 要求回答带引用标记（§4.3） */
   requireCitation: boolean;
+  /** 工具白名单（§5.1 tools；空数组 = 本 Agent 不用工具，T1.0-01 工具循环按此声明 tools） */
+  tools: string[];
 }
 
 /** agent_defs.model 列 JSON 的最小读形（只取 send 路径需要的 providerId） */
@@ -325,6 +327,20 @@ export class ChatRepository {
   }
 
   /**
+   * 把已在流式态的 assistant 行落定为终态（T1.0-01 工具循环：预算/取消发生在**多步中途**时，
+   * 行已存在不能再 insert）。已 checkpoint 的部分内容**保留**（[R-37]），只改状态与错误。
+   * 取消必须落 'cancelled' 而非 'failed'——与流中取消（finishAssistant aborted→cancelled）同一
+   * 落库语义：UI 渲染「已中断」而非错误气泡，且部分内容不被 loadHistoryForPrompt 的 failed 过滤剔除。
+   */
+  async failStreamingAssistant(id: string, errorMessage: string,
+                               dbStatus: 'failed' | 'cancelled' = 'failed'): Promise<void> {
+    await this.rdb.exec(
+      `UPDATE messages SET status = ?, error = ?, updated_at = ? WHERE id = ?;`,
+      [dbStatus, errorMessage, Date.now(), id] as Array<SqlArg>
+    );
+  }
+
+  /**
    * 流式中的内容检查点（每 N ms 一次，见 ChatService.CHECKPOINT_INTERVAL_MS）。
    * 目的：进程被系统杀死时，已生成的部分不至于全丢（[R-37] 的精神：已生成内容永远保留）。
    */
@@ -412,7 +428,7 @@ export class ChatRepository {
    */
   async agentBinding(agentId: string): Promise<AgentBindingRow | null> {
     return this.rdb.queryOne<AgentBindingRow>(
-      `SELECT name, system_prompt, model, knowledge FROM agent_defs WHERE id = ? AND enabled = 1;`,
+      `SELECT name, system_prompt, model, knowledge, tools FROM agent_defs WHERE id = ? AND enabled = 1;`,
       [agentId] as Array<SqlArg>,
       (rs: relationalStore.ResultSet): AgentBindingRow => {
         let providerId: string = '';
@@ -440,13 +456,27 @@ export class ChatRepository {
         } catch (e) {
           // knowledge 列损坏按"未绑定知识库"处理，不让脏数据挡住发送
         }
+        let tools: string[] = [];
+        try {
+          const parsed: Object = JSON.parse(rs.getString(rs.getColumnIndex('tools'))) as Object;
+          if (Array.isArray(parsed)) {
+            for (const t of parsed as Object[]) {
+              if (typeof t === 'string' && t.length > 0) {
+                tools.push(t);
+              }
+            }
+          }
+        } catch (e) {
+          // tools 列损坏按"无工具"处理，不让脏数据挡住发送
+        }
         const row: AgentBindingRow = {
           name: rs.getString(rs.getColumnIndex('name')),
           systemPrompt: rs.getString(rs.getColumnIndex('system_prompt')),
           providerId: providerId,
           libIds: libIds,
           topK: topK,
-          requireCitation: requireCitation
+          requireCitation: requireCitation,
+          tools: tools
         };
         return row;
       }

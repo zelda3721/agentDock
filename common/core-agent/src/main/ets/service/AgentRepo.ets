@@ -29,7 +29,27 @@ import {
   DEFAULT_KNOWLEDGE_TOP_K,
   DEFAULT_LOOP_CONFIG
 } from '../model/AgentDef';
+import { TOOL_DATETIME, TOOL_KB_SEARCH } from '../tools/ToolBus';
 import { AgentRepositoryPort } from './AgentService';
+
+/** tools 列的 JSON 编解码（字符串数组；损坏/缺失 → 空数组 = 无工具，不让脏数据挡住列表） */
+function parseTools(json: string): string[] {
+  try {
+    const parsed: Object = JSON.parse(json) as Object;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    const tools: string[] = [];
+    for (const t of parsed as Object[]) {
+      if (typeof t === 'string' && t.length > 0) {
+        tools.push(t);
+      }
+    }
+    return tools;
+  } catch (e) {
+    return [];
+  }
+}
 
 /** model 列的 JSON 编解码（损坏 → providerId 空串，由上层按"未绑定模型"处理） */
 function parseModel(json: string): AgentModelConfig {
@@ -100,7 +120,7 @@ function rowToDef(rs: relationalStore.ResultSet): AgentDef {
     systemPrompt: rs.getString(rs.getColumnIndex('system_prompt')),
     model: parseModel(rs.getString(rs.getColumnIndex('model'))),
     knowledge: parseKnowledge(rs.getString(rs.getColumnIndex('knowledge'))),
-    tools: [],   // V0.9 恒空（无工具循环，开发计划 §5.1 Won't）；T1.0-01 起从 tools 列解码
+    tools: parseTools(rs.getString(rs.getColumnIndex('tools'))),   // T1.0-01 工具循环按此白名单声明 tools
     loop: parseLoop(rs.getString(rs.getColumnIndex('loop'))),
     createdAt: rs.getLong(rs.getColumnIndex('created_at')),
     updatedAt: rs.getLong(rs.getColumnIndex('updated_at'))
@@ -112,10 +132,17 @@ function rowToDef(rs: relationalStore.ResultSet): AgentDef {
 }
 
 const SELECT_COLUMNS: string =
-  `id, name, avatar, system_prompt, model, knowledge, loop, builtin, enabled, def_version, created_at, updated_at`;
+  `id, name, avatar, system_prompt, model, knowledge, tools, loop, builtin, enabled, def_version, created_at, updated_at`;
 
 /** 内置模板未绑定具体模型：providerId 留空 = 跟随用户当前激活的默认模型（本地/远程皆可）。 */
 const UNBOUND_MODEL: AgentModelConfig = { providerId: '' };
+
+/**
+ * 内置模板的默认工具白名单（T1.0-01/02）：知识库检索 + 日期时间，均为 permission='none' 的
+ * 本地安全工具。模型自行决定用不用（翻译类场景通常不会调用）；工具是否真正生效还取决于
+ * 当前 Provider 是否支持工具调用（ChatService 按 capabilities 判定）。
+ */
+const BUILTIN_SEED_TOOLS: string[] = [TOOL_KB_SEARCH, TOOL_DATETIME];
 
 /**
  * 内置智能体模板种子（T1.0-10①）。首启/版本升级时 INSERT OR IGNORE 播种，builtin=1 不可删。
@@ -130,7 +157,7 @@ const BUILTIN_AGENT_SEEDS: AgentDef[] = [
     systemPrompt: '你是翻译助手。用户发来任意语言的文本，你先判断它的语言：是中文就翻成地道自然的英文，' +
       '是其他语言就翻成通顺的简体中文。只输出译文本身，不解释、不加引号。专有名词可保留原文并在括号里附译名。',
     model: UNBOUND_MODEL,
-    tools: [],
+    tools: BUILTIN_SEED_TOOLS,
     loop: DEFAULT_LOOP_CONFIG,
     createdAt: 0,
     updatedAt: 0
@@ -142,7 +169,7 @@ const BUILTIN_AGENT_SEEDS: AgentDef[] = [
     systemPrompt: '你是中文写作助手。帮用户起草、润色、改写文字：让表达更清晰、简洁、通顺，保留原意和语气。' +
       '用户没特别说明时，直接给出改写后的版本；用户要求解释改动时，再逐条说明。不无中生有地添加事实。',
     model: UNBOUND_MODEL,
-    tools: [],
+    tools: BUILTIN_SEED_TOOLS,
     loop: DEFAULT_LOOP_CONFIG,
     createdAt: 0,
     updatedAt: 0
@@ -154,7 +181,7 @@ const BUILTIN_AGENT_SEEDS: AgentDef[] = [
     systemPrompt: '你是编程助手。帮用户读代码、写代码、查 bug、解释报错。先给能直接用的代码或结论，' +
       '再简要说明关键处；代码块标注语言；不确定的 API 如实说明而不是编造。默认用简体中文解释，代码与标识符保持英文。',
     model: UNBOUND_MODEL,
-    tools: [],
+    tools: BUILTIN_SEED_TOOLS,
     loop: DEFAULT_LOOP_CONFIG,
     createdAt: 0,
     updatedAt: 0
@@ -166,7 +193,7 @@ const BUILTIN_AGENT_SEEDS: AgentDef[] = [
     systemPrompt: '你是摘要助手。把用户发来的长文本压缩成要点：先一句话总述，再用 3-6 条要点列出关键信息，' +
       '保留其中的数字、结论和待办项。忠于原文，不添加原文没有的内容。',
     model: UNBOUND_MODEL,
-    tools: [],
+    tools: BUILTIN_SEED_TOOLS,
     loop: DEFAULT_LOOP_CONFIG,
     createdAt: 0,
     updatedAt: 0
@@ -241,18 +268,28 @@ export class AgentRepo implements AgentRepositoryPort {
   /**
    * 首启/版本升级播种内置模板（T1.0-10①）。逐条判存：已在册（含用户改过的）就跳过、绝不覆盖，
    * 只插缺失的模板（builtin=1 不可删）。幂等——重复调用安全。返回本次新插入的条数。
+   *
+   * tools 列例外地对既有 builtin 行**同步种子值**：V0.9/V1.0 编辑器不暴露 tools（用户不可能改过它），
+   * 同步不会冲掉用户改动；这让先装后升的老用户也能拿到 T1.0-01 起为内置模板配的工具白名单。
+   * 一旦编辑器暴露 tools 字段，此同步必须改为版本化迁移（种子升级不得冲掉用户改动）。
    */
   async seedBuiltins(): Promise<number> {
     const now: number = Date.now();
     let inserted: number = 0;
     await this.rdb.withTransaction<void>(async (): Promise<void> => {
       for (const seed of BUILTIN_AGENT_SEEDS) {
+        const toolsJson: string = JSON.stringify(seed.tools);
         const exists: number | null = await this.rdb.queryScalarInt(
           `SELECT COUNT(*) FROM agent_defs WHERE id = ?;`,
           [seed.id] as Array<SqlArg>
         );
         if (exists !== null && exists > 0) {
-          continue;   // 已在册（含用户改过的）——跳过，不覆盖用户改动
+          // 已在册：只同步 tools（见方法注释），其余字段不触碰
+          await this.rdb.exec(
+            `UPDATE agent_defs SET tools = ? WHERE id = ? AND builtin = 1 AND tools != ?;`,
+            [toolsJson, seed.id, toolsJson] as Array<SqlArg>
+          );
+          continue;
         }
         const modelJson: string = JSON.stringify(seed.model);
         const knowledgeJson: string = JSON.stringify(seed.knowledge ?? {
@@ -260,9 +297,9 @@ export class AgentRepo implements AgentRepositoryPort {
         } as AgentKnowledgeConfig);
         const loopJson: string = JSON.stringify(seed.loop);
         await this.rdb.exec(
-          `INSERT INTO agent_defs (id, name, avatar, system_prompt, model, knowledge, loop, builtin, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?);`,
-          [seed.id, seed.name, seed.avatar ?? '', seed.systemPrompt, modelJson, knowledgeJson, loopJson, now, now] as Array<SqlArg>
+          `INSERT INTO agent_defs (id, name, avatar, system_prompt, model, knowledge, tools, loop, builtin, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?);`,
+          [seed.id, seed.name, seed.avatar ?? '', seed.systemPrompt, modelJson, knowledgeJson, toolsJson, loopJson, now, now] as Array<SqlArg>
         );
         inserted++;
       }

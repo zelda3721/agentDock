@@ -198,9 +198,10 @@ export struct AgentListPage {
     Row({ space: AdSpace.s2 }) {
       if (item.providerAvailable && item.providerId.startsWith('local:')) {
         AdTag({ kind: AdTagKind.LOCAL, text: '', inline: true })
-      } else if (item.providerAvailable) {
+      } else if (item.providerAvailable && item.providerId.length > 0) {
         AdTag({ kind: AdTagKind.REMOTE, text: '', inline: true })
       }
+      // providerId 空 = 未绑定、跟随默认模型：不贴本地/远程标——默认随时会换，贴哪个都可能说谎
       AdButton({
         label: '聊天',
         variant: AdButtonVariant.GHOST,

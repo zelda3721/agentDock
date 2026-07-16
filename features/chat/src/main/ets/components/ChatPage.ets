@@ -91,6 +91,8 @@ export struct ChatPage {
   @State private streaming: boolean = false;
   /** L3 滚动摘要进行中（T0.9-17）：AdCtxGauge 显示「整理思路中…」，输入框不禁用（规范 B3） */
   @State private compressing: boolean = false;
+  /** 工具循环进行中（T1.0-01）：非空 = 正在执行的工具名（「正在使用工具 …」），空 = 无 */
+  @State private toolActivity: string = '';
   @State private ctx: CtxUsageVM = new CtxUsageVM();
   @State private pageError: string = '';
   /**
@@ -142,6 +144,9 @@ export struct ChatPage {
     };
     host.onCompressing = (compressing: boolean): void => {
       this.compressing = compressing;
+    };
+    host.onToolActivity = (toolName: string): void => {
+      this.toolActivity = toolName;
     };
     host.onCtxUsage = (usage: CtxUsageVM): void => {
       this.ctx = usage;
@@ -400,6 +405,7 @@ export struct ChatPage {
         ctx: this.ctx,
         streaming: this.streaming,
         compressing: this.compressing,
+        toolActivity: this.toolActivity,
         // 无模型 ⇒ 输入区禁用。**这不是防御性冗余**：ChatTurn 里的 Provider 校验会诚实失败，
         // 但让用户把一段话打完、按下发送、再收到一条失败消息，是在浪费他的时间。
         composerEnabled: this.selectedId.length > 0 && this.brainVM.available,
