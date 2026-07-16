@@ -253,7 +253,11 @@ ErrorCode Engine::CreateSession(const SessionConfig& config, SessionHandle* outH
   if (fileBytes == 0) {
     return ErrorCode::MODEL_LOAD_FAILED;  // 文件不存在 / 不是普通文件 / 无权限
   }
-  if (fileBytes > ModelBudgetBytes(config.deviceTier)) {
+  // 有效预算：优先用 ArkTS 侧 hidebug 读到的本机实际 RSS 预算，缺省回退档位常量。
+  const uint64_t budget = config.procRssBudgetBytes > 0
+      ? config.procRssBudgetBytes : ModelBudgetBytes(config.deviceTier);
+  // 权重本身就装不下（没有任何余地留给 KV/计算缓冲）——直接拒，不进 llama 加载。
+  if (fileBytes > budget) {
     return ErrorCode::MEMORY_BUDGET_EXCEEDED;
   }
 
@@ -295,12 +299,45 @@ ErrorCode Engine::CreateSession(const SessionConfig& config, SessionHandle* outH
     cparams.n_batch = cparams.n_ctx;
     cparams.n_ubatch = cparams.n_ctx;
   } else {
-    // 生成会话：n_batch 限流以压住预填阶段的计算缓冲峰值（手机内存预算紧，§3.2-3），
-    // 超长 prompt 由 Generate 分块预填。
-    cparams.n_batch = std::min<uint32_t>(config.contextSize, 512);
+    // 生成会话：按内存预算钳制 n_ctx——KV cache 随 n_ctx 线性增长。manifest 里 4B 标 32768 是模型
+    // **能力上界**，不是本机内存装得下的窗口：Qwen3-4B @32768 的 KV≈4.8GB，叠加权重直接顶爆
+    // 进程 RSS 上限被系统 OOM killer 杀（2026-07-16 实录）。这里据预算把 n_ctx 钳到能装下的最大值：
+    //   KV 预算 = 进程预算 − 权重常驻 − 计算/基线余量；n_ctx_max = KV 预算 / (每 token 的 KV 字节)。
+    const uint64_t weightBytes = llama_model_size(model);
+    const uint32_t nLayer  = static_cast<uint32_t>(std::max(1, llama_model_n_layer(model)));
+    const uint32_t nEmbd   = static_cast<uint32_t>(std::max(1, llama_model_n_embd(model)));
+    const uint32_t nHead   = static_cast<uint32_t>(std::max(1, llama_model_n_head(model)));
+    const uint32_t nHeadKv = static_cast<uint32_t>(std::max(1, llama_model_n_head_kv(model)));
+    // head_dim 与 n_embd/n_head 解耦（Qwen3 head_dim=128 而 n_embd/n_head=80），取 max(…,128) 逼近真值。
+    // kv_dim = n_head_kv × head_dim；每 token KV = (K+V) × n_layer × kv_dim × fp16(2B) = 4 × n_layer × kv_dim。
+    // ×1.2 安全裕量：兜住个别 head_dim>128 解耦模型的低估，以及 llama 的 KV 对齐/额外缓冲。
+    const uint32_t headDim = std::max(nEmbd / nHead, 128u);
+    const uint64_t kvPerToken = (4ULL * nLayer * static_cast<uint64_t>(nHeadKv) * headDim * 12) / 10;
+    const uint64_t fixed = weightBytes + kComputeReserveBytes;
+    const uint64_t kvBudget = budget > fixed ? (budget - fixed) : 0;
+    uint32_t affordCtx = kvPerToken > 0
+        ? static_cast<uint32_t>(kvBudget / kvPerToken) : cparams.n_ctx;
+    if (affordCtx < kMinGenCtx) {
+      // 权重本该被 ArkTS 侧闸掉；仍走到这里就给最小可用窗口（真装不下则 llama_init 返回 null → OOM 可控降级）。
+      affordCtx = kMinGenCtx;
+    }
+    if (cparams.n_ctx > affordCtx) {
+      cparams.n_ctx = affordCtx;  // 诚实：窗口被本机内存预算钳小，不假装用户拿到了 32768
+    }
+    // n_batch 限流以压住预填阶段的计算缓冲峰值（手机内存预算紧，§3.2-3），超长 prompt 由 Generate 分块预填。
+    cparams.n_batch = std::min<uint32_t>(cparams.n_ctx, 512);
     cparams.n_ubatch = std::min<uint32_t>(cparams.n_batch, 512);
   }
 
+  {
+    char dbg[256];
+    std::snprintf(dbg, sizeof(dbg),
+        "createSession: embed=%d req_ctx=%u final_ctx=%u n_batch=%u budget_mb=%llu weights_mb=%llu",
+        config.embeddingOnly ? 1 : 0, config.contextSize, cparams.n_ctx, cparams.n_batch,
+        static_cast<unsigned long long>(budget / (1024ULL * 1024)),
+        static_cast<unsigned long long>(llama_model_size(model) / (1024ULL * 1024)));
+    OH_LOG_Print(LOG_APP, LOG_WARN, kLogDomain, kLogTag, "%{public}s", dbg);
+  }
   llama_context* ctx = llama_init_from_model(model, cparams);
   if (ctx == nullptr) {
     llama_model_free(model);

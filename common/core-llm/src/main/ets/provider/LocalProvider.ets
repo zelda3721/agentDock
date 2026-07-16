@@ -30,6 +30,7 @@ import type { LlamaGenerateParams, LlamaSessionConfig, LlamaStreamEvent } from '
 import { Logger, Metrics } from 'core-infra';
 import { fileIo } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { hidebug } from '@kit.PerformanceAnalysisKit';
 import { AsyncPushQueue } from '../stream/AsyncPushQueue';
 import { InferenceError, InferenceErrorCode } from './InferenceProvider';
 import type {
@@ -62,17 +63,18 @@ const EMBED_BATCH_SIZE: number = 32;
 const DEFAULT_CONTEXT_SIZE: number = 2048;
 
 /**
- * 常驻足迹系数：GGUF 权重在真机 mmap 后基本全量常驻（实测 2.5GB 文件 → RSS 2.65GB），
- * 叠加 KV cache + 计算缓冲后，总常驻约为文件大小的 1.3 倍。
- *
- * 原生 engine 的预算闸只比过「文件大小 vs 预算」（engine.cpp:256），漏算了 KV/compute——
- * 于是 2.5GB 的 Qwen3-4B（< 3GB 文件预算）过闸后，在建 KV/计算缓冲时把整进程顶爆，被系统
- * OOM killer 直接 SIGKILL（无 faultlog、无 JS 异常、UI 只看到「一点就退回桌面」，2026-07-15 实录）。
- * 这里在 ArkTS 侧、**调用原生 createSession 之前**按「文件×系数」二次核算：超预算的模型不进原生，
- * 如实抛 MEMORY_BUDGET_EXCEEDED，让 UI 提示换更小档位或远程模型，而不是让应用闪退。
- * 系数按模型体量等比缩放（而非按 ctx 绝对值）——0.5B 即便开 32k ctx，KV 也远小于 4B，不会被误伤。
+ * 单应用模型内存预算 = 权重 + KV + 计算缓冲的上限，从**本机实际系统内存**推算（hidebug.getSystemMemInfo）：
+ *  · 取总内存的 0.30：HarmonyOS memmgr 的单应用 RSS 阈值随机型而定、无公开 API 可读，12GB 平板实测约 4GB≈总内存 1/3；
+ *    取 0.30 是在这个阈值下再留出应用基线常驻（ArkTS 运行时 + UI，实测 ~180MB）的余量。
+ *  · 与当前可用内存的 0.85 取小：内存吃紧时自动缩预算，不与系统抢内存触发全局 OOM killer。
+ * 注意：**不能**用 hidebug.getAppMemoryLimit().rssLimit——它是进程 RLIMIT_RSS，本机为 unlimited 哨兵（远超物理内存），
+ * 直接拿来当预算会溢出成天文数字，导致 n_ctx 完全不被钳制（2026-07-16 实录：budget_mb=16184811160862、4B 仍崩）。
  */
-const MODEL_FOOTPRINT_FACTOR: number = 1.3;
+const BUDGET_TOTAL_MEM_RATIO: number = 0.30;
+const BUDGET_AVAIL_MEM_RATIO: number = 0.85;
+/** rssLimit 仅在它是合理值（< 总内存，即不是 unlimited 哨兵）时才作为额外上限收敛；此为其基线余量。 */
+const RSS_HEADROOM_MIN_BYTES: number = 512 * 1024 * 1024;
+const RSS_HEADROOM_RATIO: number = 0.08;
 
 /** 默认单次最大输出 token */
 const DEFAULT_MAX_OUTPUT_TOKENS: number = 1024;
@@ -470,7 +472,8 @@ export class LocalProvider implements InferenceProvider {
       threadCount: this.config.threadCount,
       useMmap: true,
       embeddingOnly: false,
-      deviceTier: this.config.deviceTier === undefined ? DeviceTier.PHONE : this.config.deviceTier
+      deviceTier: this.config.deviceTier === undefined ? DeviceTier.PHONE : this.config.deviceTier,
+      procRssBudgetBytes: this.procRssBudgetBytes()
     };
     this.loadingGen = this.createSession(cfg, 'generate')
       .then((handle: number): number => {
@@ -506,7 +509,8 @@ export class LocalProvider implements InferenceProvider {
       useMmap: true,
       // 关键：pooling 只在 embeddingOnly 会话里开启（engine.cpp:246）
       embeddingOnly: true,
-      deviceTier: this.config.deviceTier === undefined ? DeviceTier.PHONE : this.config.deviceTier
+      deviceTier: this.config.deviceTier === undefined ? DeviceTier.PHONE : this.config.deviceTier,
+      procRssBudgetBytes: this.procRssBudgetBytes()
     };
     this.loadingEmbed = this.createSession(cfg, 'embedding')
       .then((handle: number): number => {
@@ -541,9 +545,38 @@ export class LocalProvider implements InferenceProvider {
   }
 
   /**
-   * 加载前的内存足迹闸（§3.2-3）：权重常驻 + KV/compute 估算 vs 档位预算。
-   * 超预算**不调原生 createSession**——一旦进原生再 OOM，被杀的是整个应用进程
-   * （SIGKILL 无 faultlog，用户只看到闪退）。宁可在这里如实拒绝，让 UI 提示换更小档位/远程模型。
+   * 进程 RSS 预算（字节）：读本机**实际**的应用 RSS 上限（hidebug.getAppMemoryLimit，随设备而异），
+   * 扣掉基线常驻 + 安全余量后，作为「权重 + KV + 计算缓冲」的总预算传给原生。
+   * pad mini / 平板 / PC 各按自己的上限自适应——不写死档位常量。取不到（老设备 / 接口缺失）则回退档位默认。
+   */
+  private procRssBudgetBytes(): number {
+    try {
+      const sys = hidebug.getSystemMemInfo();
+      const totalBytes: number = Number(sys.totalMem) * 1024;       // KB → bytes
+      const availBytes: number = Number(sys.availableMem) * 1024;
+      if (totalBytes > 0) {
+        let budget: number = Math.min(totalBytes * BUDGET_TOTAL_MEM_RATIO, availBytes * BUDGET_AVAIL_MEM_RATIO);
+        // rssLimit 只在它是合理值（< 总内存，非 unlimited 哨兵）时才再收敛一次——不能直接拿来当预算（见常量注释）。
+        const rssBytes: number = Number(hidebug.getAppMemoryLimit().rssLimit) * 1024;
+        if (rssBytes > 0 && rssBytes < totalBytes) {
+          budget = Math.min(budget, rssBytes - Math.max(rssBytes * RSS_HEADROOM_RATIO, RSS_HEADROOM_MIN_BYTES));
+        }
+        if (budget > 0) {
+          return Math.round(budget);
+        }
+      }
+    } catch (e) {
+      // 落回档位常量（下方）
+    }
+    const tier: DeviceTier = this.config.deviceTier === undefined ? DeviceTier.PHONE : this.config.deviceTier;
+    return tier === DeviceTier.PC ? MODEL_BUDGET_PC_BYTES : MODEL_BUDGET_PHONE_BYTES;
+  }
+
+  /**
+   * 加载前的内存闸（§3.2-3）：权重（文件大小）本身就装不下预算 ⇒ **不调原生 createSession**。
+   * 一旦进原生再 OOM，被杀的是整个应用进程（SIGKILL 无 faultlog，用户只看到闪退）；宁可这里如实拒绝，
+   * 让 UI 提示换更小档位/远程模型。KV cache 那部分不在这里拦——原生层会按本预算把 n_ctx 钳到能装下的
+   * 最大值（engine.cpp 生成分支），所以大模型也能在缩窗口后跑起来，而不是一律拒之门外。
    * 文件读不到（下载中/被删）时不拦：交给原生层按 MODEL_LOAD_FAILED 如实报错，避免把两类问题混淆。
    */
   private assertFitsBudget(cfg: LlamaSessionConfig): void {
@@ -556,14 +589,11 @@ export class LocalProvider implements InferenceProvider {
     if (fileBytes <= 0) {
       return;
     }
-    const tier: DeviceTier = cfg.deviceTier === undefined ? DeviceTier.PHONE : cfg.deviceTier;
-    const budget: number = tier === DeviceTier.PC ? MODEL_BUDGET_PC_BYTES : MODEL_BUDGET_PHONE_BYTES;
-    const estimated: number = Math.round(fileBytes * MODEL_FOOTPRINT_FACTOR);
-    if (estimated > budget) {
-      Logger.warn(TAG, 'model exceeds memory budget — refused before native load', [
+    const budget: number = cfg.procRssBudgetBytes === undefined ? this.procRssBudgetBytes() : cfg.procRssBudgetBytes;
+    if (fileBytes > budget) {
+      Logger.warn(TAG, 'model weights exceed memory budget — refused before native load', [
         { key: 'model', value: this.config.modelLabel },
         { key: 'file_mb', value: Math.round(fileBytes / (1024 * 1024)) },
-        { key: 'est_mb', value: Math.round(estimated / (1024 * 1024)) },
         { key: 'budget_mb', value: Math.round(budget / (1024 * 1024)) }
       ]);
       throw LocalProvider.fromLlamaCode(LlamaErrorCode.MEMORY_BUDGET_EXCEEDED, '');

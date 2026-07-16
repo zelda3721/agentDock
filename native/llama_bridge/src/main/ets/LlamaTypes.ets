@@ -37,6 +37,12 @@ export interface LlamaSessionConfig {
   useMmap?: boolean;
   embeddingOnly?: boolean;
   deviceTier?: DeviceTier;
+  /**
+   * 进程 RSS 预算（字节）：由 ArkTS 侧用 hidebug.getAppMemoryLimit() 读到本机**实际**的
+   * 应用 RSS 上限后动态算得（权重 + KV + 计算缓冲要落在其内）。缺省/0 时原生层回退到档位常量。
+   * 这样 pad mini / 平板 / PC 各按自己的内存上限自适应，而不是写死一个档位数字。
+   */
+  procRssBudgetBytes?: number;
 }
 
 export interface LlamaGenerateParams {

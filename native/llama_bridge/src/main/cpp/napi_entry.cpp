@@ -243,6 +243,13 @@ napi_value CreateSession(napi_env env, napi_callback_info info) {
         config.deviceTier = (tier == 1) ? DeviceTier::PC : DeviceTier::PHONE;
       }
     }
+    if (GetProperty(env, args[0], "procRssBudgetBytes", &prop)) {
+      // 进程 RSS 预算（字节）：ArkTS 侧读本机实际 RSS 上限动态算得，可能 > uint32，走 double 读。
+      double budget = 0;
+      if (napi_get_value_double(env, prop, &budget) == napi_ok && budget > 0) {
+        config.procRssBudgetBytes = static_cast<uint64_t>(budget);
+      }
+    }
     config.gpuLayers = 0;  // 平台无可用 GPU 后端（§3.2-1），恒为 0，不接受外部覆盖
 
     // 参数校验失败仍**同步抛**（编程错误，调用方拿不到 Promise 也无妨）；

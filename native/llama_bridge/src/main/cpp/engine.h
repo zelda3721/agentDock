@@ -21,10 +21,17 @@ namespace agentdock {
 namespace llama {
 
 // ── 内存预算表（§3.2-3）────────────────────────────────────────────────────
-// 模型用 mmap 加载（GGUF 原生支持），常驻内存 ≈ KV cache + 计算缓冲。
-// 超预算的模型由 ArkTS 侧（models UI）标注"本机不可运行"，原生层作为最后一道闸门再校验一次。
-constexpr uint64_t kModelBudgetPhoneBytes = 3ULL * 1024 * 1024 * 1024;  // 手机档（12GB RAM）≤3GB
-constexpr uint64_t kModelBudgetPcBytes = 8ULL * 1024 * 1024 * 1024;     // PC 档（24/32GB）≤8GB
+// 首选来源是 SessionConfig.procRssBudgetBytes——ArkTS 侧用 hidebug.getAppMemoryLimit() 读到
+// **本机实际**的应用 RSS 上限后动态算得（不同设备不同）。下面这两个档位常量只是**回退兜底**
+// （取不到实际上限的老设备 / 接口缺失时用）。权重 + KV + 计算缓冲要一起落在预算内，超了整进程
+// 被系统 OOM killer 杀掉。
+constexpr uint64_t kModelBudgetPhoneBytes = 3ULL * 1024 * 1024 * 1024;  // 回退：手机/平板档
+constexpr uint64_t kModelBudgetPcBytes = 8ULL * 1024 * 1024 * 1024;     // 回退：PC 档
+
+// 生成会话 n_ctx 下限：按内存预算钳制后不低于此值（再小的窗口没有使用价值）。
+constexpr uint32_t kMinGenCtx = 1024;
+// 计算缓冲 + 应用基线常驻的余量估算（从预算里先扣掉，剩下的才留给 KV cache）。
+constexpr uint64_t kComputeReserveBytes = 384ULL * 1024 * 1024;
 
 // 设备档位：由 ArkTS 侧依 deviceInfo 判定后传入，原生层不自行探测。
 enum class DeviceTier : int32_t {
@@ -47,6 +54,7 @@ struct SessionConfig {
   bool useMmap = true;              // GGUF mmap 加载
   bool embeddingOnly = false;       // embedding 专用会话（bge-small / bge-m3 量化档）
   DeviceTier deviceTier = DeviceTier::PHONE;
+  uint64_t procRssBudgetBytes = 0;  // ArkTS 侧 hidebug 动态算得的进程 RSS 预算；0 = 用档位常量兜底
 };
 
 struct GenerateParams {
