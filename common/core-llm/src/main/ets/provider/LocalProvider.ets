@@ -135,6 +135,8 @@ export class LocalProvider implements InferenceProvider {
   private generating: boolean = false;
   /** 实测得到的 embedding 维度（0 = 尚未探明） */
   private embeddingDimActual: number = 0;
+  /** 生成会话**实际生效**的 n_ctx（原生按内存预算钳制后的真值；0 = 尚未加载）。capabilities 用它报真实窗口。 */
+  private actualGenCtx: number = 0;
   /** 生成会话的加载 Promise，避免并发 load 时重复 createSession */
   private loadingGen: Promise<number> | null = null;
   private loadingEmbed: Promise<number> | null = null;
@@ -181,6 +183,7 @@ export class LocalProvider implements InferenceProvider {
     if (this.genHandle >= 0) {
       const handle: number = this.genHandle;
       this.genHandle = -1;
+      this.actualGenCtx = 0;
       LocalProvider.releaseQuietly(handle);
     }
     if (this.embedHandle >= 0) {
@@ -195,7 +198,8 @@ export class LocalProvider implements InferenceProvider {
 
   capabilities(): ProviderCaps {
     return {
-      contextWindow: this.contextSize(),
+      // 已加载则报原生钳制后的**真实**窗口；未加载时用请求值（首轮短、不会溢出，加载后即转真值）。
+      contextWindow: this.actualGenCtx > 0 ? this.actualGenCtx : this.contextSize(),
       maxOutputTokens: this.maxOutputTokens(),
       // 工具调用依赖模型自身的 chat template；V0.9 单 Agent 无工具循环（§26.4），
       // 故先按 false 暴露，待 V1.0 ToolBus（T1.0-02）联调后按模型能力位开启。
@@ -478,6 +482,8 @@ export class LocalProvider implements InferenceProvider {
     this.loadingGen = this.createSession(cfg, 'generate')
       .then((handle: number): number => {
         this.genHandle = handle;
+        // 记下原生按内存预算钳制后的**真实** n_ctx，供 capabilities → ContextGovernor 按真值记账（避免长对话撞满 KV）。
+        this.actualGenCtx = LlamaBridge.getContextSize(handle);
         this.loadingGen = null;
         return handle;
       })

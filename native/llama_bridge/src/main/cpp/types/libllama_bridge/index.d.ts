@@ -65,5 +65,8 @@ export const embed: (handle: number, texts: string[]) => Promise<Float32Array[]>
 /** 分词，供 ContextGovernor 令牌预算账本使用（§23.2）。 */
 export const tokenize: (handle: number, text: string) => number[];
 
+/** 会话实际生效的 n_ctx（可能被内存预算钳小于请求值）；handle 无效返回 0。 */
+export const getContextSize: (handle: number) => number;
+
 /** 卸载模型与 KV cache（幂等；重复释放抛 1005 SESSION_NOT_FOUND）。 */
 export const releaseSession: (handle: number) => void;

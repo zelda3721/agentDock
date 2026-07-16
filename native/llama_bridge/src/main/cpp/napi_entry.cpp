@@ -540,6 +540,25 @@ napi_value ReleaseSession(napi_env env, napi_callback_info info) {
   AD_NAPI_GUARD_END(env)
 }
 
+// getContextSize(handle: number): number  —— 会话实际生效的 n_ctx（可能被内存预算钳小）；handle 无效返回 0。
+napi_value GetContextSize(napi_env env, napi_callback_info info) {
+  AD_NAPI_GUARD_BEGIN
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) {
+      return ThrowError(env, ErrorCode::INVALID_ARGUMENT, "getContextSize 需要 1 个参数：handle");
+    }
+    SessionHandle handle = agentdock::llama::kInvalidSession;
+    if (!ReadHandle(env, args[0], &handle)) {
+      return ThrowError(env, ErrorCode::INVALID_ARGUMENT, "getContextSize: handle 必须是 number");
+    }
+    napi_value out = nullptr;
+    napi_create_uint32(env, Engine::Instance().ContextSizeOf(handle), &out);
+    return out;
+  AD_NAPI_GUARD_END(env)
+}
+
 }  // namespace
 
 EXTERN_C_START
@@ -550,6 +569,7 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"abort", nullptr, Abort, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"embed", nullptr, Embed, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"tokenize", nullptr, Tokenize, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"getContextSize", nullptr, GetContextSize, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"releaseSession", nullptr, ReleaseSession, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);

@@ -325,8 +325,12 @@ ErrorCode Engine::CreateSession(const SessionConfig& config, SessionHandle* outH
       cparams.n_ctx = affordCtx;  // 诚实：窗口被本机内存预算钳小，不假装用户拿到了 32768
     }
     // n_batch 限流以压住预填阶段的计算缓冲峰值（手机内存预算紧，§3.2-3），超长 prompt 由 Generate 分块预填。
-    cparams.n_batch = std::min<uint32_t>(cparams.n_ctx, 512);
-    cparams.n_ubatch = std::min<uint32_t>(cparams.n_batch, 512);
+    // 内存吃紧（权重+计算余量已吃掉预算大半）时再把批次砍到 128：预填/解码的常驻计算缓冲随 n_ubatch 线性，
+    // 砍小它能给权重/KV 腾出常驻空间、少走 zram swap，解码更快（4B 在本机实测 swap 是速度瓶颈）。
+    const bool memTight = (weightBytes + kComputeReserveBytes) > (budget * 3 / 5);
+    const uint32_t batchCap = memTight ? 128u : 512u;
+    cparams.n_batch = std::min<uint32_t>(cparams.n_ctx, batchCap);
+    cparams.n_ubatch = std::min<uint32_t>(cparams.n_batch, batchCap);
   }
 
   {
@@ -791,6 +795,15 @@ ErrorCode Engine::Tokenize(SessionHandle handle, const std::string& text,
   return ErrorCode::OK;
 }
 
+uint32_t Engine::ContextSizeOf(SessionHandle handle) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto it = sessions_.find(handle);
+  if (it == sessions_.end() || it->second->ctx == nullptr) {
+    return 0;
+  }
+  return llama_n_ctx(it->second->ctx);
+}
+
 #else  // !LLAMA_BRIDGE_HAS_LLAMA
 
 // ── 骨架模式：子模块未拉取时的降级实现（CMakeLists 的守卫分支）────────────────
@@ -836,6 +849,8 @@ ErrorCode Engine::Tokenize(SessionHandle, const std::string&, std::vector<int32_
   }
   return ErrorCode::NOT_IMPLEMENTED;
 }
+
+uint32_t Engine::ContextSizeOf(SessionHandle) { return 0; }
 
 #endif  // LLAMA_BRIDGE_HAS_LLAMA
 

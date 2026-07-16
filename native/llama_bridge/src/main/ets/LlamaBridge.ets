@@ -51,6 +51,11 @@ export class LlamaBridge {
     return llamaNative.tokenize(handle, text);
   }
 
+  /** 会话实际生效的 n_ctx（可能被内存预算钳小于请求值）；handle 无效返回 0。供上层把真实窗口回报给 ContextGovernor。 */
+  static getContextSize(handle: number): number {
+    return llamaNative.getContextSize(handle);
+  }
+
   /** 卸载模型与 KV cache（幂等）。 */
   static releaseSession(handle: number): void {
     llamaNative.releaseSession(handle);

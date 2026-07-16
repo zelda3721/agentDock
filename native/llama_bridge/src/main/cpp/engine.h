@@ -98,6 +98,10 @@ class Engine {
   // 分词（供 ContextGovernor 做令牌预算账本，§23.2）。
   ErrorCode Tokenize(SessionHandle handle, const std::string& text, std::vector<int32_t>* outTokens);
 
+  // 会话**实际生效**的 n_ctx（可能被内存预算钳小于请求值）；供 ArkTS 侧把真实窗口回报给
+  // ContextGovernor 做压缩预算，避免顶栏按声明的 32768 记账、长对话在压缩前撞满 KV。handle 无效返回 0。
+  uint32_t ContextSizeOf(SessionHandle handle);
+
  private:
   Engine() = default;
   // 析构必须在 engine.cpp 中定义（此处 Session 尚不完整，unique_ptr<Session> 的删除器
