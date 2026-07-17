@@ -43,6 +43,12 @@ export interface ConversationRow {
   messageCount: number;
   /** 对话级"使用记忆"开关（meta.useMemory，默认 true）——关=不注入记忆，但捕获照常（T1.0） */
   useMemory: boolean;
+  /**
+   * 会话级模型覆盖（meta.providerOverride，T0.9-10 顶栏切换菜单）：用户在本会话手选的模型。
+   * null = 未覆盖（跟随智能体绑定或全局默认）。解析序：覆盖 > 绑定 > 默认（send/currentBrain/
+   * ctxUsage 三处同源）；覆盖的模型已不可用时按未覆盖处理——顶栏永远显示真值。
+   */
+  providerOverride: string | null;
 }
 
 /** 会话绑定 Agent 的发送要素（agentBinding 的返回；providerId 空串 = 未绑定模型） */
@@ -86,6 +92,8 @@ interface ConversationMeta {
   l3Summary?: ChatSummaryState;
   /** 对话级"使用记忆"开关（T1.0）：缺省视为 true（记忆默认开，用户可关注入）。 */
   useMemory?: boolean;
+  /** 会话级模型覆盖（T0.9-10）：缺省 = 未覆盖。 */
+  providerOverride?: string;
 }
 
 export class ChatRepository {
@@ -157,7 +165,9 @@ export class ChatRepository {
           title: rs.getString(rs.getColumnIndex('title')),
           agentId: rs.isColumnNull(agentIdx) ? null : rs.getString(agentIdx),
           messageCount: rs.getLong(rs.getColumnIndex('message_count')),
-          useMemory: meta.useMemory !== false   // 缺省 true（记忆默认开）
+          useMemory: meta.useMemory !== false,   // 缺省 true（记忆默认开）
+          providerOverride: typeof meta.providerOverride === 'string' && meta.providerOverride.length > 0
+            ? meta.providerOverride : null
         };
         return row;
       }
@@ -174,6 +184,20 @@ export class ChatRepository {
   async setUseMemory(convId: string, on: boolean): Promise<void> {
     const meta: ConversationMeta = await this.readMeta(convId);
     meta.useMemory = on;
+    await this.rdb.exec(
+      `UPDATE conversations SET meta = ?, updated_at = ? WHERE id = ?;`,
+      [JSON.stringify(meta), Date.now(), convId] as Array<SqlArg>
+    );
+  }
+
+  /** 设会话级模型覆盖（读改写合并；providerId null = 清除覆盖 → 回到跟随绑定/默认）。 */
+  async setProviderOverride(convId: string, providerId: string | null): Promise<void> {
+    const meta: ConversationMeta = await this.readMeta(convId);
+    if (providerId === null || providerId.length === 0) {
+      meta.providerOverride = undefined;
+    } else {
+      meta.providerOverride = providerId;
+    }
     await this.rdb.exec(
       `UPDATE conversations SET meta = ?, updated_at = ? WHERE id = ?;`,
       [JSON.stringify(meta), Date.now(), convId] as Array<SqlArg>

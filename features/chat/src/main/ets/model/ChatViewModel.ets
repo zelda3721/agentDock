@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { AdBrainKind, AdMessageRole, AdMessageStatus, AdProvenance } from 'design-system';
+import { BrainOption } from 'core-agent';
 
 /**
  * chat 模块的 UI 侧视图模型（UI 设计规范 §4.2 会话页 · 三层合同「三、features/chat 对外」）。
@@ -82,6 +83,17 @@ export class ConversationVM {
  * checked=false 表示还没读到（启动瞬间）：**既不说有也不说无**，顶栏此刻什么都不显示。
  */
 @Observed
+/** 顶栏模型切换菜单（T0.9-10）的数据（点开时现取）。options 空 = 菜单不该出现。 */
+export class BrainMenuVM {
+  options: BrainOption[] = [];
+  /** 顶栏此刻解析到的 providerId（菜单里标「当前」） */
+  currentProviderId: string = '';
+  /** 会话级覆盖（'' = 未覆盖 = 自动）：决定「自动」项是否标「当前」 */
+  overrideProviderId: string = '';
+  /** 「自动」项的说明（清除覆盖后会解析到的模型名；无可用模型时空串） */
+  autoLabel: string = '';
+}
+
 export class BrainVM {
   /** 是否已经问过 core-agent（false 时不许渲染任何大脑断言） */
   checked: boolean = false;

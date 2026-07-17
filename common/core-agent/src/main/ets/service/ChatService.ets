@@ -316,6 +316,18 @@ function resolveProvider(providerId?: string): InferenceProvider | null {
   return registry.get(id);
 }
 
+/**
+ * 会话级模型覆盖的软解析（T0.9-10 顶栏切换菜单）：覆盖可解析 → 生效；模型已被删/停用 → 按未覆盖
+ * 处理（回落绑定/默认）。**不硬失败**：顶栏 currentBrain 与 send 同用本函数，用户看到的永远是
+ * 下一条消息真实会用的模型——不会出现"顶栏显示 A、发送却报 A 不可用"。
+ */
+function effectiveOverride(override: string | null): string | undefined {
+  if (override === null || override.length === 0) {
+    return undefined;
+  }
+  return resolveProvider(override) !== null ? override : undefined;
+}
+
 // ============================================================================
 // ChatTurn：一轮对话的句柄 + 执行体
 // ============================================================================
@@ -468,7 +480,9 @@ class ChatTurn implements ChatTurnHandle {
       }
 
       // ---- [3] Provider 裁决（显式 > Agent 绑定 > 默认；不可用即诚实失败，不静默降级） ----
-      const resolution: TurnProviderResolution = resolveTurnProvider(binding, explicitProviderId);
+      const resolution: TurnProviderResolution = resolveTurnProvider(binding,
+        explicitProviderId !== undefined && explicitProviderId.length > 0
+          ? explicitProviderId : effectiveOverride(conv.providerOverride));
       const provider: InferenceProvider | null = resolution.provider;
       const providerId: string = resolution.providerId;
       if (provider === null) {
@@ -1271,15 +1285,18 @@ export class ChatService {
    * 无可用 Provider → 返回 null（不是"空模型"对象）。null 是 UI 禁用输入区、
    * 给出「去模型页下载一个」行动邀请的唯一依据。
    */
-  async currentBrain(convId?: string): Promise<CurrentBrain | null> {
+  async currentBrain(convId?: string, ignoreOverride?: boolean): Promise<CurrentBrain | null> {
     // 会话感知：绑定智能体的会话按其绑定模型报大脑（与 send/ctxUsage 同一裁决函数，三处同源）。
     // 绑定的模型不可用 → null（顶栏警示 + 输入区禁用——发送必然失败，不装作能发）。
+    // ignoreOverride=true：切换菜单「自动」项的说明用——回答"清除覆盖后会解析到谁"（绑定/默认）。
     let provider: InferenceProvider | null = null;
     if (convId !== undefined && convId.length > 0 && this.repo !== null) {
       const conv: ConversationRow | null = await this.repo.getConversation(convId);
       if (conv !== null) {
         const binding: AgentBindingRow | null = await bindingOf(this.repo, conv);
-        provider = resolveTurnProvider(binding).provider;
+        // 覆盖 > 绑定 > 默认（与 send/ctxUsage 同一解析，三处同源）
+        provider = resolveTurnProvider(binding,
+          ignoreOverride === true ? undefined : effectiveOverride(conv.providerOverride)).provider;
       } else {
         provider = resolveProvider();
       }
@@ -1299,6 +1316,20 @@ export class ChatService {
       modelLabel: label
     };
     return brain;
+  }
+
+  /** 读会话级模型覆盖（'' = 未覆盖，跟随绑定/默认）。菜单据此标记「自动」项。 */
+  async getConversationProvider(convId: string): Promise<string> {
+    const conv: ConversationRow | null = await this.requireRepo().getConversation(convId);
+    return conv !== null && conv.providerOverride !== null ? conv.providerOverride : '';
+  }
+
+  /**
+   * 设会话级模型覆盖（T0.9-10 顶栏切换菜单）：providerId '' = 清除（回到跟随绑定/默认）。
+   * 只影响**下一条消息**起的解析（覆盖 > 绑定 > 默认）；已发消息的溯源永不改写。
+   */
+  async setConversationProvider(convId: string, providerId: string): Promise<void> {
+    await this.requireRepo().setProviderOverride(convId, providerId.length > 0 ? providerId : null);
   }
 
   // --- 发送 -------------------------------------------------------------------
@@ -1357,7 +1388,9 @@ export class ChatService {
     // 绑定 Agent 的会话按**它绑定的模型**算水位——tokenizer 和 ctx 上限都随模型变，
     // 用别的模型算出来的水位对这个会话就是假读数。
     const binding: AgentBindingRow | null = await bindingOf(repo, conv);
-    const resolution: TurnProviderResolution = resolveTurnProvider(binding, providerId);
+    const resolution: TurnProviderResolution = resolveTurnProvider(binding,
+      providerId !== undefined && providerId.length > 0
+        ? providerId : effectiveOverride(conv.providerOverride));
     const provider: InferenceProvider | null = resolution.provider;
     if (provider === null) {
       // 没有 Provider 就没有 tokenizer，也就没有诚实的水位可报——不编造一个 0%

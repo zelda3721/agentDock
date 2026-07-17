@@ -3,6 +3,7 @@
 
 import { AdBrainKind, AdCitation, AdFencedItem, AdMessageRole, AdMessageStatus, AdProvenance } from 'design-system';
 import {
+  AgentService,
   ChatCitation,
   ChatMessageRecord,
   ChatProvenance,
@@ -14,7 +15,7 @@ import {
   CurrentBrain,
   COMPACTION_TRIGGER_RATIO
 } from 'core-agent';
-import { BrainVM, ChatMessageVM, ConversationVM, CtxUsageVM, formatClock, MessageDataSource } from './ChatViewModel';
+import { BrainMenuVM, BrainVM, ChatMessageVM, ConversationVM, CtxUsageVM, formatClock, MessageDataSource } from './ChatViewModel';
 
 /**
  * 会话页的控制器：**唯一**与 core-agent 打交道的地方（三层合同 §2 ChatService）。
@@ -167,6 +168,54 @@ export class ChatController {
     // 模型刚就绪（用户下完模型回到聊天页）：水位线要立刻从"没有读数"变成真读数
     if (!wasAvailable && this.brainAvailable && this.convId.length > 0) {
       await this.refreshCtx();
+    }
+  }
+
+  // ——————————————— 模型切换菜单（T0.9-10） ———————————————
+
+  /**
+   * 组装顶栏切换菜单（点开时现取，注册表随下载/删除随时在变）。
+   * 返回可选模型 + 当前会话的覆盖状态；无会话选中时返回空数组（菜单不该出现）。
+   */
+  async loadBrainMenu(): Promise<BrainMenuVM> {
+    const vm: BrainMenuVM = new BrainMenuVM();
+    if (this.convId.length === 0) {
+      return vm;
+    }
+    try {
+      await this.service.whenReady();
+      // 可选清单复用 AgentService 的口（编辑器同源）：只列此刻真实可用的 Provider
+      vm.options = await AgentService.get().listBrainOptions();
+      vm.overrideProviderId = await this.service.getConversationProvider(this.convId);
+      const brain: CurrentBrain | null = await this.service.currentBrain(this.convId);
+      vm.currentProviderId = brain !== null ? brain.providerId : '';
+      // 「自动」项的说明：清除覆盖后会解析到谁（绑定/默认）——菜单文案给出真值，不让用户猜
+      const autoBrain: CurrentBrain | null = vm.overrideProviderId.length === 0
+        ? brain
+        : await this.autoBrainWithoutOverride();
+      vm.autoLabel = autoBrain !== null ? autoBrain.modelLabel : '';
+    } catch (err) {
+      this.host.onPageError(ChatController.reasonOf(err, '模型清单没能读出来'));
+    }
+    return vm;
+  }
+
+  /** 覆盖清除后的解析结果（绑定/默认）：service 的无覆盖口径——「自动」项的说明必须是真值。 */
+  private async autoBrainWithoutOverride(): Promise<CurrentBrain | null> {
+    return this.service.currentBrain(this.convId, true);
+  }
+
+  /** 选择模型（providerId '' = 自动：清除覆盖，回到跟随绑定/默认）。只影响下一条消息。 */
+  async selectBrain(providerId: string): Promise<void> {
+    if (this.convId.length === 0) {
+      return;
+    }
+    try {
+      await this.service.setConversationProvider(this.convId, providerId);
+      await this.refreshBrain();
+      await this.refreshCtx();   // tokenizer 与 ctx 上限随模型变，水位必须立刻重算
+    } catch (err) {
+      this.host.onPageError(ChatController.reasonOf(err, '模型没能切换'));
     }
   }
 

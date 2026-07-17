@@ -19,7 +19,7 @@ import {
   AdType
 } from 'design-system';
 import { ChatController, ChatHost } from '../model/ChatController';
-import { BrainVM, BreakpointKey, ChatMessageVM, ConversationVM, CtxUsageVM, LoadState } from '../model/ChatViewModel';
+import { BrainMenuVM, BrainVM, BreakpointKey, ChatMessageVM, ConversationVM, CtxUsageVM, LoadState } from '../model/ChatViewModel';
 import { ChatComposer } from './ChatComposer';
 import { ConversationListPane } from './ConversationListPane';
 import { InspectorPane } from './InspectorPane';
@@ -93,6 +93,9 @@ export struct ChatPage {
   @State private compressing: boolean = false;
   /** 工具循环进行中（T1.0-01）：非空 = 正在执行的工具名（「正在使用工具 …」），空 = 无 */
   @State private toolActivity: string = '';
+  /** 顶栏模型切换菜单（T0.9-10）：点开时现取（注册表随下载/删除在变），选择只影响下一条消息 */
+  @State private brainMenuOpen: boolean = false;
+  @State private brainMenu: BrainMenuVM = new BrainMenuVM();
   @State private ctx: CtxUsageVM = new CtxUsageVM();
   @State private pageError: string = '';
   /**
@@ -455,18 +458,60 @@ export struct ChatPage {
    * 而此刻这句话是假的（真机：一个模型都没有，顶栏仍写「本地 · local:qwen2.5-0.5b」）。
    * 尚未读到（checked=false）时同样什么都不显示：**既不说有，也不说无**。
    */
+  /** 点开时现取清单再开菜单：注册表随模型下载/删除随时在变，缓存会说谎 */
+  private openBrainMenu(): void {
+    this.controller.loadBrainMenu().then((menu: BrainMenuVM): void => {
+      if (menu.options.length === 0) {
+        return;   // 无会话选中或清单读取失败（后者已走 onPageError）——菜单不该出现
+      }
+      this.brainMenu = menu;
+      this.brainMenuOpen = true;
+    });
+  }
+
+  /** 菜单项：自动（跟随绑定/默认）在前，本地组、远程组随后；「（当前）」标记与顶栏同源 */
+  private brainMenuElements(): MenuElement[] {
+    const items: MenuElement[] = [];
+    const overrideSet: boolean = this.brainMenu.overrideProviderId.length > 0;
+    const autoSuffix: string = this.brainMenu.autoLabel.length > 0 ? ` · ${this.brainMenu.autoLabel}` : '';
+    items.push({
+      value: `自动${autoSuffix}${overrideSet ? '' : '（当前）'}`,
+      action: () => {
+        this.controller.selectBrain('');
+      }
+    });
+    for (const opt of this.brainMenu.options) {
+      const kindLabel: string = opt.kind === 'local' ? '本地' : '远程';
+      const mark: string = overrideSet && opt.providerId === this.brainMenu.currentProviderId ? '（当前）' : '';
+      const id: string = opt.providerId;
+      items.push({
+        value: `${kindLabel} · ${opt.label}${mark}`,
+        action: () => {
+          this.controller.selectBrain(id);
+        }
+      });
+    }
+    return items;
+  }
+
   @Builder
   brainSlot() {
     if (this.brainVM.available) {
-      AdBrainIndicator({
-        brain: this.brain,
-        modelName: this.brainModel,
-        tooltip: this.brainTooltip(),
-        onAction: () => {
-          // TODO(T0.9-10)：接模型切换菜单（本地 / 远程 / 不可运行三组）。
-          //               切换**只影响下一条消息**，不改写已发消息的溯源；
-          //               ChatService.send() 已支持 providerId 入参，缺的是 ModelRouter.current()
-          //               与可选模型清单的读取口（合同 §2 未含）。
+      Row() {
+        AdBrainIndicator({
+          brain: this.brain,
+          modelName: this.brainModel,
+          tooltip: this.brainTooltip(),
+          onAction: () => {
+            this.openBrainMenu();
+          }
+        })
+      }
+      // 模型切换菜单（T0.9-10）：受控打开；选择**只影响下一条消息**（会话级覆盖），
+      // 不改写已发消息的溯源。系统菜单（与记忆删除用系统对话框同一先例）。
+      .bindMenu(this.brainMenuOpen, this.brainMenuElements(), {
+        onDisappear: () => {
+          this.brainMenuOpen = false;
         }
       })
     } else if (this.brainVM.checked) {
