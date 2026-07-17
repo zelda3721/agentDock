@@ -49,6 +49,8 @@ export interface AgentListItem {
 export interface AgentDraftV09 {
   /** 空串表示新建。 */
   id: string;
+  /** 头像（emoji）。编辑器不暴露，仅随 draft 往返以免保存把既有头像冲成出厂默认。 */
+  avatar: string;
   /** 字段一：名称。 */
   name: string;
   /** 字段二：系统提示词。 */
@@ -101,6 +103,7 @@ export class AgentFacade {
     const def: AgentDef = await AgentService.get().getAgent(agentId);
     const draft: AgentDraftV09 = {
       id: def.id,
+      avatar: def.avatar ?? DEFAULT_AGENT_AVATAR,
       name: def.name,
       systemPrompt: def.systemPrompt,
       providerId: def.model.providerId,
@@ -133,7 +136,7 @@ export class AgentFacade {
     const def: AgentDef = {
       id: id,
       name: name,
-      avatar: DEFAULT_AGENT_AVATAR,
+      avatar: draft.avatar.length > 0 ? draft.avatar : DEFAULT_AGENT_AVATAR,
       systemPrompt: draft.systemPrompt,
       model: model,
       knowledge: knowledge,

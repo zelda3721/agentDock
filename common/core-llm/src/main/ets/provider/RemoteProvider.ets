@@ -49,6 +49,7 @@ import type {
   StreamDelta,
   StreamMetrics,
   ToolCall,
+  ToolSpec,
   TokenUsage
 } from './InferenceProvider';
 import { messageContentToText } from './InferenceProvider';
@@ -646,8 +647,16 @@ export class RemoteProvider implements InferenceProvider {
    * TODO(T1.0-06): 以响应中的 usage.prompt_tokens 做事后校准并写入 metrics 表（§10），
    *   用真实比值回填估算系数（当前系数取自中文/英文的经验值）。
    */
-  async countTokens(msgs: ChatMessage[]): Promise<number> {
-    return Promise.resolve(RemoteProvider.estimateMessageTokens(msgs));
+  async countTokens(msgs: ChatMessage[], tools?: ToolSpec[]): Promise<number> {
+    let total: number = RemoteProvider.estimateMessageTokens(msgs);
+    if (tools !== undefined && tools.length > 0) {
+      // 工具声明随请求进服务端 prompt（服务端模板注入）：按 JSON 体量估入预算，与 send 同源
+      for (const t of tools) {
+        total += RemoteProvider.estimateTextTokens(JSON.stringify(t));
+      }
+      total += 40;   // 服务端工具段样板开销（经验值，保守偏大）
+    }
+    return Promise.resolve(total);
   }
 
   /**

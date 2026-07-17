@@ -59,7 +59,7 @@ export struct AgentEditor {
   public onCancel: () => void = () => {};
 
   @State private draft: AgentDraftV09 = {
-    id: '', name: '', systemPrompt: '', providerId: '', libIds: []
+    id: '', avatar: '', name: '', systemPrompt: '', providerId: '', libIds: []
   };
   @State private providers: ProviderOption[] = [];
   @State private knowledgeBases: KbOption[] = [];
@@ -87,7 +87,7 @@ export struct AgentEditor {
       if (this.agentId.length > 0) {
         this.draft = await this.facade.loadDraft(this.agentId);
       } else {
-        const fresh: AgentDraftV09 = { id: '', name: '', systemPrompt: '', providerId: '', libIds: [] };
+        const fresh: AgentDraftV09 = { id: '', avatar: '', name: '', systemPrompt: '', providerId: '', libIds: [] };
         // 单模型现实：只有一个可选模型时直接预选——少一次必然的点击，不算替用户做主
         if (this.providers.length === 1) {
           fresh.providerId = this.providers[0].providerId;

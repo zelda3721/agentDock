@@ -350,7 +350,7 @@ export interface InferenceProvider {
   /** 本地由 llama_bridge 提供；远程走 OpenAI 兼容 /embeddings（受隐私围栏约束） */
   embed(texts: string[]): Promise<Float32Array[]>;
 
-  countTokens(msgs: ChatMessage[]): Promise<number>;
+  countTokens(msgs: ChatMessage[], tools?: ToolSpec[]): Promise<number>;
 
   healthCheck(): Promise<ProviderHealth>;
 

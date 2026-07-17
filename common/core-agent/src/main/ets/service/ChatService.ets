@@ -202,6 +202,37 @@ function resolveTurnProvider(binding: AgentBindingRow | null, explicitProviderId
   return r;
 }
 
+/** [3a] 的三关裁决结果：Agent 白名单 ∩ 注册表 ∩ Provider 能力（send 与 ctxUsage 共用，口径同源） */
+interface ResolvedTools {
+  allowed: Tool[];
+  specs: ToolSpec[];
+}
+
+function resolveTools(toolBus: ToolBus | null, binding: AgentBindingRow | null,
+                      provider: InferenceProvider): ResolvedTools {
+  const none: ResolvedTools = { allowed: [], specs: [] };
+  if (toolBus === null || binding === null || binding.tools.length === 0) {
+    return none;
+  }
+  if (!provider.capabilities().supportsTools) {
+    return none;
+  }
+  const allowed: Tool[] = toolBus.listFor(binding.tools);
+  const specs: ToolSpec[] = allowed.map((t: Tool): ToolSpec => {
+    const spec: ToolSpec = {
+      type: 'function',
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: toOpenAiParameters(t.jsonSchema)
+      }
+    };
+    return spec;
+  });
+  const r: ResolvedTools = { allowed: allowed, specs: specs };
+  return r;
+}
+
 /** 一步 LLM 生成的结果（generate 的返回；Run 循环据此记步账本并做终局裁决） */
 interface StepResult {
   finishReason: FinishReason;
@@ -451,27 +482,14 @@ class ChatTurn implements ChatTurnHandle {
       // ---- [3a] 工具声明（T1.0-01/02）：Agent 白名单 ∩ 注册表 ∩ Provider 能力 ----
       // 三关都过才带 tools：Agent 没声明/总线未装配/Provider 不支持工具调用（如本地模型的
       // tool-call 解析未落地）任一不满足即不带——模型看不到工具就不会调用，诚实缺席。
-      let allowedTools: Tool[] = [];
-      let toolSpecs: ToolSpec[] = [];
-      if (this.toolBus !== null && binding !== null && binding.tools.length > 0) {
-        if (provider.capabilities().supportsTools) {
-          allowedTools = this.toolBus.listFor(binding.tools);
-          toolSpecs = allowedTools.map((t: Tool): ToolSpec => {
-            const spec: ToolSpec = {
-              type: 'function',
-              function: {
-                name: t.name,
-                description: t.description,
-                parameters: toOpenAiParameters(t.jsonSchema)
-              }
-            };
-            return spec;
-          });
-        } else {
-          Logger.info(TAG, 'agent declares tools but provider does not support tool calls', [
-            { key: 'provider', value: providerId }, { key: 'tools', value: binding.tools.length }
-          ]);
-        }
+      const resolvedTools: ResolvedTools = resolveTools(this.toolBus, binding, provider);
+      const allowedTools: Tool[] = resolvedTools.allowed;
+      const toolSpecs: ToolSpec[] = resolvedTools.specs;
+      if (this.toolBus !== null && binding !== null && binding.tools.length > 0
+        && !provider.capabilities().supportsTools) {
+        Logger.info(TAG, 'agent declares tools but provider does not support tool calls', [
+          { key: 'provider', value: providerId }, { key: 'tools', value: binding.tools.length }
+        ]);
       }
 
       // ---- [3b] RAG 检索注入（T0.9-14）：Agent 绑定知识库时，本轮 query 检索 → 围栏 → 合成易变尾部 ----
@@ -639,7 +657,8 @@ class ChatTurn implements ChatTurnHandle {
       }
       const devCtxOverride: number = await this.repo.devCtxOverride();   // 仅开发用，见方法注释
       const budget: ChatBudgetSpec = budgetOf(provider.capabilities(), devCtxOverride);
-      let promptTokens: number = await provider.countTokens(assembly.messages);
+      let promptTokens: number = await provider.countTokens(assembly.messages,
+        toolSpecs.length > 0 ? toolSpecs : undefined);
 
       const compactor: ChatCompactor = new ChatCompactor(provider);
       const anchorTokens: number = await anchorTokensOf(provider, assembly);
@@ -1028,9 +1047,11 @@ class ChatTurn implements ChatTurnHandle {
 
     // ---- 中间态（tool_calls）：checkpoint 累计内容即返回，终态结算留给最后一步 ----
     if (finishReason === 'tool_calls') {
-      this.turnContent = contentBase + content + (content.length > 0 ? '\n\n' : '');
+      // 空白垫片（工具块间的分隔换行等）不算内容：不落库、不触发步间分隔
+      const stepHasText: boolean = content.trim().length > 0;
+      this.turnContent = contentBase + (stepHasText ? `${content}\n\n` : '');
       this.turnCompletionTokens += completionTokens;
-      if (content.length > 0) {
+      if (stepHasText) {
         this.events.push({ type: 'text', text: '\n\n' });   // 步间分隔，最终回答不与思考粘连
       }
       await this.repo.checkpointAssistant(this.assistantMessageId, this.turnContent);
@@ -1355,7 +1376,10 @@ export class ChatService {
 
     const devCtxOverride: number = await repo.devCtxOverride();   // 仅开发用
     const budget: ChatBudgetSpec = budgetOf(provider.capabilities(), devCtxOverride);
-    const used: number = await provider.countTokens(assembly.messages);
+    // 工具声明段计入水位（与 send 的预算同源，[R-18]）：带工具的 Agent 的 # Tools 段真实占 prompt
+    const rt: ResolvedTools = resolveTools(this.toolBus, binding, provider);
+    const used: number = await provider.countTokens(assembly.messages,
+      rt.specs.length > 0 ? rt.specs : undefined);
     const usage: CtxUsage = {
       usedTokens: used,
       totalTokens: budget.promptCapacity,

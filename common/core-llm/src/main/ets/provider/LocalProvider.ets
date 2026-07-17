@@ -33,6 +33,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { hidebug } from '@kit.PerformanceAnalysisKit';
 import { AsyncPushQueue } from '../stream/AsyncPushQueue';
 import { ThinkTagFilter } from '../stream/ThinkTagFilter';
+import { ToolCallTagFilter } from '../stream/ToolCallTagFilter';
 import { InferenceError, InferenceErrorCode } from './InferenceProvider';
 import type {
   AbortListener,
@@ -45,7 +46,9 @@ import type {
   ProviderKind,
   StreamDelta,
   StreamMetrics,
-  TokenUsage
+  TokenUsage,
+  ToolCall,
+  ToolSpec
 } from './InferenceProvider';
 import { messageContentToText } from './InferenceProvider';
 
@@ -202,9 +205,10 @@ export class LocalProvider implements InferenceProvider {
       // 已加载则报原生钳制后的**真实**窗口；未加载时用请求值（首轮短、不会溢出，加载后即转真值）。
       contextWindow: this.actualGenCtx > 0 ? this.actualGenCtx : this.contextSize(),
       maxOutputTokens: this.maxOutputTokens(),
-      // 工具调用依赖模型自身的 chat template；V0.9 单 Agent 无工具循环（§26.4），
-      // 故先按 false 暴露，待 V1.0 ToolBus（T1.0-02）联调后按模型能力位开启。
-      supportsTools: false,
+      // T1.0-01 本地半边：Hermes/Qwen 格式的 <tool_call> 注入与解析已落地（renderToolsBlock +
+      // ToolCallTagFilter），Qwen2.5/Qwen3 系（V0.9 分发的全部档位）按此模板训练。
+      // 模型**用得好不好**是模型质量问题（0.5B 可能写错 JSON——循环会以 schema_invalid 回填让它自纠）。
+      supportsTools: true,
       supportsJsonSchema: true,
       supportsEmbedding: true,
       embeddingDim: this.embeddingDimActual
@@ -250,8 +254,6 @@ export class LocalProvider implements InferenceProvider {
 
     const signal: AbortSignal | undefined = opts.signal;
     try {
-      LocalProvider.assertNoTools(opts);
-
       if (signal !== undefined && signal.aborted) {
         // 已被抢占/取消才轮到执行：直接以 aborted 收尾，不必加载模型
         this.generating = false;
@@ -280,7 +282,7 @@ export class LocalProvider implements InferenceProvider {
       return;
     }
 
-    const promptParts: string[] = LocalProvider.renderPrompt(msgs);
+    const promptParts: string[] = LocalProvider.renderPrompt(msgs, opts.tools);
     const promptTokens: number = this.tokenizeSafely(handle, promptParts.join(''));
     const maxTokens: number = opts.maxTokens === undefined ? this.maxOutputTokens() : opts.maxTokens;
 
@@ -298,6 +300,13 @@ export class LocalProvider implements InferenceProvider {
     let settled: boolean = false;
     // Qwen3 系思考模型把 <think>…</think> 内联在正文流里：归一化为不可见（与远程 reasoning_content 一致）
     const think: ThinkTagFilter = new ThinkTagFilter();
+    // 工具调用以 <tool_call> 内联在正文流里（Hermes/Qwen 格式）：摘出并归一为 tool_call 增量。
+    // 过滤顺序固定：先思考后工具（Qwen 输出顺序即 <think>…</think> 再 <tool_call>…）。
+    // **仅在本请求声明了 tools 时启用**：与远程契约一致（无 tools 请求绝不产生 tool_calls 终态）——
+    // 用户让模型"演示工具调用格式"时，示例文本应原样进气泡，而不是被捕获吞掉。
+    const toolsEnabled: boolean = opts.tools !== undefined && opts.tools.length > 0;
+    const toolFilter: ToolCallTagFilter | null = toolsEnabled ? new ToolCallTagFilter() : null;
+    let shownChars: number = 0;
 
     // 抢占/取消的实际生效点（红线 12）：signal → 原生 abort
     const onAbort: AbortListener = (reason: string): void => {
@@ -308,7 +317,7 @@ export class LocalProvider implements InferenceProvider {
       signal.addEventListener(onAbort);
     }
 
-    const finish = (finishReason: 'stop' | 'length' | 'aborted'): void => {
+    const finish = (finishReason: 'stop' | 'length' | 'aborted' | 'tool_calls'): void => {
       if (settled) {
         return;
       }
@@ -359,27 +368,48 @@ export class LocalProvider implements InferenceProvider {
         completionTokens++;   // usage 计原始 token（思考真实花了算力，不假装没花）
         const visible: string = think.feed(token);
         if (visible.length > 0) {
-          queue.push({ type: 'text', text: visible });
+          const shown: string = toolFilter !== null ? toolFilter.feed(visible) : visible;
+          if (shown.length > 0) {
+            shownChars += shown.length;
+            queue.push({ type: 'text', text: shown });
+          }
         }
         return;
       }
       if (event.type === 'done') {
-        const tail: string = think.flush();
-        if (tail.length > 0) {
-          queue.push({ type: 'text', text: tail });
-        } else if (!think.hasVisible() && think.fallbackThinkText().length > 0) {
-          // 全程只思考没答案：把思考全文交出（空气泡比看见草稿更糟）
+        const thinkTail: string = think.flush();
+        let shownTail: string = toolFilter !== null ? toolFilter.feed(thinkTail) : thinkTail;
+        if (toolFilter !== null) {
+          shownTail += toolFilter.flush();
+        }
+        if (shownTail.length > 0) {
+          shownChars += shownTail.length;
+          queue.push({ type: 'text', text: shownTail });
+        }
+        // 截断优先于 tool_calls（与 RemoteProvider.mapFinishReason 同一裁决）：maxTokens 截断的
+        // 回合不执行已捕获的调用——上层收到 'length' 如实收束，绝不带着截断状态续圈。
+        const truncated: boolean = completionTokens >= maxTokens;
+        const calls: ToolCall[] = toolFilter !== null && !truncated ? toolFilter.capturedCalls() : [];
+        if (calls.length === 0 && shownChars === 0 && think.fallbackThinkText().length > 0) {
+          // 全程只思考、没答案也没工具调用：把思考全文交出（空气泡比看见草稿更糟）
           queue.push({ type: 'text', text: think.fallbackThinkText() });
         }
-        finish(completionTokens >= maxTokens ? 'length' : 'stop');
+        for (const call of calls) {
+          queue.push({ type: 'tool_call', toolCall: call });
+        }
+        finish(truncated ? 'length' : (calls.length > 0 ? 'tool_calls' : 'stop'));
         return;
       }
       // event.type === 'error'
       const code: number = event.code === undefined ? LlamaErrorCode.INTERNAL : event.code;
       if (code === LlamaErrorCode.ABORTED) {
         // 中断是正常终态：保留已产出内容（[R-37]），不抛错。持留尾巴照吐；
-        // 思考兜底不做（中断时的半截思考是噪音，不冒充部分回答）
-        const tail: string = think.flush();
+        // 思考兜底与已捕获的调用都不发（中断的回合不执行工具，半截思考是噪音）
+        const thinkTail: string = think.flush();
+        let tail: string = toolFilter !== null ? toolFilter.feed(thinkTail) : thinkTail;
+        if (toolFilter !== null) {
+          tail += toolFilter.flush();
+        }
         if (tail.length > 0) {
           queue.push({ type: 'text', text: tail });
         }
@@ -432,9 +462,11 @@ export class LocalProvider implements InferenceProvider {
    * 精确 token 计数（走 llama_bridge.tokenize，非估算）。
    * ContextGovernor 的预算账本（§23.2）与 UI 的 ctx 水位线（AdCtxGauge）依赖此值的准确性。
    */
-  async countTokens(msgs: ChatMessage[]): Promise<number> {
+  async countTokens(msgs: ChatMessage[], tools?: ToolSpec[]): Promise<number> {
     const handle: number = await this.ensureGenSession();
-    return this.tokenizeSafely(handle, LocalProvider.renderPrompt(msgs).join(''));
+    // 与 chatStream 的渲染**同源**（含工具声明段）：预算账本少算 # Tools 段会让水位 <100% 却发送
+    // 时 CONTEXT_OVERFLOW（[R-18] 明令禁止的分叉）
+    return this.tokenizeSafely(handle, LocalProvider.renderPrompt(msgs, tools).join(''));
   }
 
   /**
@@ -663,12 +695,13 @@ export class LocalProvider implements InferenceProvider {
    * TODO(T1.0-04): 支持多模型族时，从 GGUF 元数据读取 chat_template 并按模板渲染，
    *   而不是继续扩大这里的 if/else。
    */
-  static renderPrompt(msgs: ChatMessage[]): string[] {
+  static renderPrompt(msgs: ChatMessage[], tools?: ToolSpec[]): string[] {
     const systemParts: string[] = [];
     const historyParts: string[] = [];
     const tailParts: string[] = [];
 
-    // 找到最后一条 user 消息的位置：它与其后的一切都属于"易变尾部"
+    // 找到最后一条 user 消息的位置：它与其后的一切都属于"易变尾部"。
+    // 工具循环续圈时其后跟着 assistant(tool_calls)/tool 结果——同属本回合易变段。
     let lastUserIdx: number = -1;
     for (let i: number = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].role === 'user') {
@@ -679,7 +712,22 @@ export class LocalProvider implements InferenceProvider {
 
     for (let i: number = 0; i < msgs.length; i++) {
       const msg: ChatMessage = msgs[i];
-      const rendered: string = LocalProvider.renderMessage(msg);
+      let rendered: string;
+      if (msg.role === 'tool') {
+        // Qwen 模板：**连续的** tool 结果合并进同一个 user 回合、并列多个 <tool_response>
+        // （官方模板仅在前一条非 tool 时开 <|im_start|>user、后一条非 tool 时闭 <|im_end|>）。
+        // 拆成多个相邻 user 回合偏离训练分布，小模型对并行调用的回应质量会掉。
+        const responses: string[] = [];
+        let j: number = i;
+        while (j < msgs.length && msgs[j].role === 'tool') {
+          responses.push(`<tool_response>\n${messageContentToText(msgs[j].content)}\n</tool_response>`);
+          j++;
+        }
+        rendered = `<|im_start|>user\n${responses.join('\n')}<|im_end|>\n`;
+        i = j - 1;
+      } else {
+        rendered = LocalProvider.renderMessage(msg);
+      }
       if (msg.role === 'system') {
         systemParts.push(rendered);
       } else if (lastUserIdx >= 0 && i >= lastUserIdx) {
@@ -688,17 +736,77 @@ export class LocalProvider implements InferenceProvider {
         historyParts.push(rendered);
       }
     }
+    // 工具声明注入稳定前缀（Qwen/Hermes 模板）：同一 Agent 的工具集跨轮不变，KV 前缀仍命中。
+    // 没有 system 消息时单独造一条只含工具段的 system。
+    if (tools !== undefined && tools.length > 0) {
+      const toolsBlock: string = LocalProvider.renderToolsBlock(tools);
+      if (systemParts.length > 0) {
+        // 拼进最后一条 system 的 <|im_end|> 之前。**不用 String.replace**：它只换第一处匹配
+        // （正文里含字面量 '<|im_end|>' 时会插错位置），且替换串走 GetSubstitution（工具描述里的
+        // '$$'/'$&' 会被静默改写）。每条 system 恒以固定后缀结尾，slice 拼接无歧义。
+        const last: string = systemParts[systemParts.length - 1];
+        const suffix: string = '<|im_end|>\n';
+        systemParts[systemParts.length - 1] =
+          `${last.substring(0, last.length - suffix.length)}\n\n${toolsBlock}${suffix}`;
+      } else {
+        systemParts.push(`<|im_start|>system\n${toolsBlock}<|im_end|>\n`);
+      }
+    }
     // 生成起点：模型从这里开始续写
     tailParts.push('<|im_start|>assistant\n');
 
     return [systemParts.join(''), historyParts.join(''), tailParts.join('')];
   }
 
+  /** Qwen/Hermes 工具声明段（与官方 chat template 的措辞一致，模型按训练分布输出 <tool_call>） */
+  private static renderToolsBlock(tools: ToolSpec[]): string {
+    const lines: string[] = [];
+    lines.push('# Tools');
+    lines.push('');
+    lines.push('You may call one or more functions to assist with the user query.');
+    lines.push('');
+    lines.push('You are provided with function signatures within <tools></tools> XML tags:');
+    lines.push('<tools>');
+    for (const t of tools) {
+      lines.push(JSON.stringify(t));
+    }
+    lines.push('</tools>');
+    lines.push('');
+    lines.push('For each function call, return a json object with function name and arguments within ' +
+      '<tool_call></tool_call> XML tags:');
+    lines.push('<tool_call>');
+    lines.push('{"name": <function-name>, "arguments": <args-json-object>}');
+    lines.push('</tool_call>');
+    return lines.join('\n');
+  }
+
   private static renderMessage(msg: ChatMessage): string {
     const text: string = messageContentToText(msg.content);
-    // tool 角色在 ChatML 下没有标准位；V0.9 无工具循环，按 user 侧的观察结果渲染
-    const role: string = msg.role === 'tool' ? 'user' : msg.role;
-    return `<|im_start|>${role}\n${text}<|im_end|>\n`;
+    if (msg.role === 'tool') {
+      // 单条兜底（renderPrompt 已对连续 tool 消息做合并渲染，正常不走到这里）
+      return `<|im_start|>user\n<tool_response>\n${text}\n</tool_response><|im_end|>\n`;
+    }
+    if (msg.role === 'assistant' && msg.toolCalls !== undefined && msg.toolCalls.length > 0) {
+      // 工具循环回放：assistant 消息把当时的调用以 <tool_call> 块重现（Qwen 格式 arguments 是对象）
+      const parts: string[] = [];
+      if (text.length > 0) {
+        parts.push(text);
+      }
+      for (const call of msg.toolCalls) {
+        let argsObj: Object = {} as Record<string, Object>;
+        try {
+          argsObj = JSON.parse(call.function.arguments.length > 0 ? call.function.arguments : '{}') as Object;
+        } catch (e) {
+          argsObj = {} as Record<string, Object>;
+        }
+        const inner: Record<string, Object> = {};
+        inner['name'] = call.function.name;
+        inner['arguments'] = argsObj;
+        parts.push(`<tool_call>\n${JSON.stringify(inner)}\n</tool_call>`);
+      }
+      return `<|im_start|>assistant\n${parts.join('\n')}<|im_end|>\n`;
+    }
+    return `<|im_start|>${msg.role}\n${text}<|im_end|>\n`;
   }
 
   /** ChatML 的结束标记必须作为 stop：否则模型会继续把下一轮 `<|im_start|>user` 也编出来 */
@@ -714,13 +822,6 @@ export class LocalProvider implements InferenceProvider {
     return merged;
   }
 
-  private static assertNoTools(opts: GenerateOptions): void {
-    if (opts.tools !== undefined && opts.tools.length > 0) {
-      // 静默丢弃工具声明会让上层以为模型"选择不调用工具"，是最难查的一类 bug
-      throw new InferenceError(InferenceErrorCode.UNSUPPORTED,
-        '本地 Provider 在 V0.9 不支持工具调用（capabilities().supportsTools === false）');
-    }
-  }
 
   // ==========================================================================
   // 错误翻译与工具函数
