@@ -64,6 +64,11 @@ export interface AgentBindingRow {
   requireCitation: boolean;
   /** 工具白名单（§5.1 tools；空数组 = 本 Agent 不用工具，T1.0-01 工具循环按此声明 tools） */
   tools: string[];
+  /**
+   * 挂载技能的注入块（T1.0-10②）：按挂载顺序、仅含**启用中**的 skill，已格式化为
+   * `## 技能：<名>\n<正文>`。装配时并入稳定前缀（system 尾部），随 anchor 预算计账。
+   */
+  skillBlocks: string[];
 }
 
 /** agent_defs.model 列 JSON 的最小读形（只取 send 路径需要的 providerId） */
@@ -451,8 +456,9 @@ export class ChatRepository {
    * enabled=0 / 已删除 → null（调用方回退默认 prompt + 默认 Provider，并在日志留痕）。
    */
   async agentBinding(agentId: string): Promise<AgentBindingRow | null> {
-    return this.rdb.queryOne<AgentBindingRow>(
-      `SELECT name, system_prompt, model, knowledge, tools FROM agent_defs WHERE id = ? AND enabled = 1;`,
+    let skillIds: string[] = [];
+    const row: AgentBindingRow | null = await this.rdb.queryOne<AgentBindingRow>(
+      `SELECT name, system_prompt, model, knowledge, tools, skills FROM agent_defs WHERE id = ? AND enabled = 1;`,
       [agentId] as Array<SqlArg>,
       (rs: relationalStore.ResultSet): AgentBindingRow => {
         let providerId: string = '';
@@ -493,18 +499,74 @@ export class ChatRepository {
         } catch (e) {
           // tools 列损坏按"无工具"处理，不让脏数据挡住发送
         }
-        const row: AgentBindingRow = {
+        try {
+          const parsedSkills: Object = JSON.parse(rs.getString(rs.getColumnIndex('skills'))) as Object;
+          if (Array.isArray(parsedSkills)) {
+            const ids: string[] = [];
+            for (const sid of parsedSkills as Object[]) {
+              if (typeof sid === 'string' && sid.length > 0) {
+                ids.push(sid);
+              }
+            }
+            skillIds = ids;
+          }
+        } catch (e) {
+          // skills 列损坏按"未挂载"处理，不让脏数据挡住发送
+        }
+        const bindingRow: AgentBindingRow = {
           name: rs.getString(rs.getColumnIndex('name')),
           systemPrompt: rs.getString(rs.getColumnIndex('system_prompt')),
           providerId: providerId,
           libIds: libIds,
           topK: topK,
           requireCitation: requireCitation,
-          tools: tools
+          tools: tools,
+          skillBlocks: []
         };
-        return row;
+        return bindingRow;
       }
     );
+    if (row !== null && skillIds.length > 0) {
+      row.skillBlocks = await this.loadSkillBlocks(skillIds);
+    }
+    return row;
+  }
+
+  /**
+   * 按挂载顺序取启用中 skill 的注入块（T1.0-10②）。被禁用/已删除的挂载项如实缺席
+   * （该能力包本轮不注入，不报错不编造）。
+   */
+  private async loadSkillBlocks(ids: string[]): Promise<string[]> {
+    const placeholders: string = ids.map((): string => '?').join(', ');
+    interface SkillBlockRow {
+      id: string;
+      name: string;
+      content: string;
+    }
+    const rows: SkillBlockRow[] = await this.rdb.queryRows<SkillBlockRow>(
+      `SELECT id, name, content FROM skills WHERE id IN (${placeholders}) AND enabled = 1;`,
+      ids.map((id: string): SqlArg => id as SqlArg),
+      (rs: relationalStore.ResultSet): SkillBlockRow => {
+        const r: SkillBlockRow = {
+          id: rs.getString(rs.getColumnIndex('id')),
+          name: rs.getString(rs.getColumnIndex('name')),
+          content: rs.getString(rs.getColumnIndex('content'))
+        };
+        return r;
+      }
+    );
+    const byId: Map<string, SkillBlockRow> = new Map<string, SkillBlockRow>();
+    for (const r of rows) {
+      byId.set(r.id, r);
+    }
+    const blocks: string[] = [];
+    for (const id of ids) {   // IN 不保序：按挂载顺序重排（注入顺序是 Agent 作者的表达）
+      const hit: SkillBlockRow | undefined = byId.get(id);
+      if (hit !== undefined && hit.content.length > 0) {
+        blocks.push(`## 技能：${hit.name}\n${hit.content}`);
+      }
+    }
+    return blocks;
   }
 
   /** 溯源条的 modelLabel：providers.name（未登记则由调用方回退为 providerId） */

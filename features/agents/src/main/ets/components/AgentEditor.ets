@@ -16,7 +16,7 @@ import {
   AdTextField,
   AdType
 } from 'design-system';
-import { AgentDraftV09, AgentFacade, BreakpointKey, KbOption, ProviderOption } from '../model/AgentViewModel';
+import { AgentDraftV09, AgentFacade, BreakpointKey, KbOption, ProviderOption, SkillOption } from '../model/AgentViewModel';
 
 /**
  * 智能体编辑器（T0.9-16 —— 开发计划 §5.1"编辑器极简化"：**只有四个字段**）。
@@ -59,10 +59,11 @@ export struct AgentEditor {
   public onCancel: () => void = () => {};
 
   @State private draft: AgentDraftV09 = {
-    id: '', avatar: '', name: '', systemPrompt: '', providerId: '', libIds: []
+    id: '', avatar: '', name: '', systemPrompt: '', providerId: '', libIds: [], skills: []
   };
   @State private providers: ProviderOption[] = [];
   @State private knowledgeBases: KbOption[] = [];
+  @State private skillOptions: SkillOption[] = [];
   @State private saving: boolean = false;
   /** 表单级错误（校验/保存失败）：AdTextField 的 errorText 三重冗余在字段侧，这里是提交侧 */
   @State private formError: string = '';
@@ -84,10 +85,11 @@ export struct AgentEditor {
     try {
       this.providers = await this.facade.listProviders();
       this.knowledgeBases = await this.facade.listKnowledgeBases();
+      this.skillOptions = await this.facade.listSkills();
       if (this.agentId.length > 0) {
         this.draft = await this.facade.loadDraft(this.agentId);
       } else {
-        const fresh: AgentDraftV09 = { id: '', avatar: '', name: '', systemPrompt: '', providerId: '', libIds: [] };
+        const fresh: AgentDraftV09 = { id: '', avatar: '', name: '', systemPrompt: '', providerId: '', libIds: [], skills: [] };
         // 单模型现实：只有一个可选模型时直接预选——少一次必然的点击，不算替用户做主
         if (this.providers.length === 1) {
           fresh.providerId = this.providers[0].providerId;
@@ -194,6 +196,15 @@ export struct AgentEditor {
             eyebrow: '知识库',
             content: () => {
               this.knowledgePicker()
+            }
+          })
+
+          // —— 字段五：技能挂载（T1.0-10②）——
+          AdCard({
+            variant: AdCardVariant.PLAIN,
+            eyebrow: '技能',
+            content: () => {
+              this.skillPicker()
             }
           })
         }
@@ -316,6 +327,39 @@ export struct AgentEditor {
           .editorNote(AdColor.warningFg)
           .width('100%')
       }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  skillPicker() {
+    Column({ space: AdSpace.s1 }) {
+      Text('技能是可复用的指令包：挂上后随每轮对话生效。挂得越多，占用的上下文越多。')
+        .editorNote(AdColor.inkTertiary)
+        .width('100%')
+      if (this.skillOptions.length === 0) {
+        Text('还没有可用技能。').editorNote(AdColor.inkSecondary).width('100%')
+      }
+      ForEach(this.skillOptions, (sk: SkillOption) => {
+        AdListItem({
+          title: sk.name,
+          subtitle: sk.description,
+          selected: this.draft.skills.includes(sk.skillId),
+          a11yText: `技能 ${sk.name}，${sk.description}，` +
+            (this.draft.skills.includes(sk.skillId) ? '已挂载。双击卸下。' : '未挂载。双击挂载。'),
+          onAction: () => {
+            const idx: number = this.draft.skills.indexOf(sk.skillId);
+            const next: string[] = this.draft.skills.slice();
+            if (idx >= 0) {
+              next.splice(idx, 1);
+            } else {
+              next.push(sk.skillId);
+            }
+            this.draft.skills = next;
+          }
+        })
+      }, (sk: SkillOption) => `${sk.skillId}|${this.draft.skills.includes(sk.skillId)}`)
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)

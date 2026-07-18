@@ -7,6 +7,7 @@ import { Logger } from 'core-infra';
 import { AgentDef } from '../model/AgentDef';
 import { AgentRunHandle } from '../runtime/AgentRun';
 import { AgentRepo } from './AgentRepo';
+import { Skill, SkillRepo } from './SkillRepo';
 import { RunRecorder } from '../runtime/RunRecorder';
 
 const TAG: string = 'AgentService';
@@ -87,6 +88,7 @@ export class AgentService {
 
   private repo: AgentRepositoryPort | null = null;
   private agentRepo: AgentRepo | null = null;
+  private skillRepo: SkillRepo | null = null;
   private recorder: RunRecorder | null = null;
 
   /** 就绪门闩（与 ChatService 同一纪律：UI 先 await whenReady，抢跑不靠错误态兜底） */
@@ -111,13 +113,21 @@ export class AgentService {
     const repo: AgentRepo = new AgentRepo(rdb);
     this.agentRepo = repo;
     this.repo = repo;
+    this.skillRepo = new SkillRepo(rdb);
     this.recorder = new RunRecorder(rdb);
-    // 先播种内置模板、再放行就绪门闩——保证 UI 首次读列表时内置智能体已在册（幂等，不冲用户改动）。
-    // 播种失败不挡启动：记一笔警告后照常放行（智能体功能仍可用，只是没有内置模板）。
+    // 先播种内置模板与内置技能、再放行就绪门闩——保证 UI 首次读列表时内置项已在册（幂等，不冲用户改动）。
+    // 播种失败不挡启动：记一笔警告后照常放行（智能体功能仍可用，只是没有内置项）。
+    const skills: SkillRepo = this.skillRepo;
     repo.seedBuiltins()
-      .then((n: number): void => {
+      .then((n: number): Promise<number> => {
         if (n > 0) {
           Logger.info(TAG, 'builtin agents seeded', [{ key: 'inserted', value: n }]);
+        }
+        return skills.seedBuiltins();
+      })
+      .then((n: number): void => {
+        if (n > 0) {
+          Logger.info(TAG, 'builtin skills seeded', [{ key: 'inserted', value: n }]);
         }
         this.markReady();
       })
@@ -201,6 +211,17 @@ export class AgentService {
       result.push({ def: def, lastRunAt: lastRunAt, providerAvailable: provider !== null });
     }
     return result;
+  }
+
+  /**
+   * 全部技能（编辑器挂载选择器的数据源，T1.0-10②）。features 不直连 SkillRepo——
+   * 与 listBrainOptions 同一分层纪律。
+   */
+  async listSkills(): Promise<Skill[]> {
+    if (this.skillRepo === null) {
+      throw new Error('AgentService 尚未初始化（entry 的 initCoreStack 还没跑完或已失败）');
+    }
+    return this.skillRepo.list();
   }
 
   /** 保存 Agent 定义（编辑器保存；anchor >25% 告警在 UI 侧按 §27.4 提示） */

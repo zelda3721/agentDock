@@ -85,6 +85,11 @@ export interface AgentDef {
   memoryPolicy?: AgentMemoryPolicy;
   /** 工具白名单；V0.9 恒为空数组（无工具循环，开发计划 §5.1 Won't） */
   tools: ToolName[];
+  /**
+   * 挂载的技能（skills 表 id，按挂载顺序注入稳定前缀，T1.0-10②）。
+   * skill=「怎么做事」的知识包，tool=「能做什么」的执行器（两者正交）。缺席视为空。
+   */
+  skills?: string[];
   loop: AgentLoopConfig;
   /** V2：定时/事件触发 */
   triggers?: AgentTrigger[];

@@ -121,6 +121,7 @@ function rowToDef(rs: relationalStore.ResultSet): AgentDef {
     model: parseModel(rs.getString(rs.getColumnIndex('model'))),
     knowledge: parseKnowledge(rs.getString(rs.getColumnIndex('knowledge'))),
     tools: parseTools(rs.getString(rs.getColumnIndex('tools'))),   // T1.0-01 工具循环按此白名单声明 tools
+    skills: parseTools(rs.getString(rs.getColumnIndex('skills'))), // 同为 JSON 字符串数组编解码（T1.0-10②）
     loop: parseLoop(rs.getString(rs.getColumnIndex('loop'))),
     createdAt: rs.getLong(rs.getColumnIndex('created_at')),
     updatedAt: rs.getLong(rs.getColumnIndex('updated_at'))
@@ -132,7 +133,7 @@ function rowToDef(rs: relationalStore.ResultSet): AgentDef {
 }
 
 const SELECT_COLUMNS: string =
-  `id, name, avatar, system_prompt, model, knowledge, tools, loop, builtin, enabled, def_version, created_at, updated_at`;
+  `id, name, avatar, system_prompt, model, knowledge, tools, skills, loop, builtin, enabled, def_version, created_at, updated_at`;
 
 /** 内置模板未绑定具体模型：providerId 留空 = 跟随用户当前激活的默认模型（本地/远程皆可）。 */
 const UNBOUND_MODEL: AgentModelConfig = { providerId: '' };
@@ -247,20 +248,21 @@ export class AgentRepo implements AgentRepositoryPort {
         `SELECT COUNT(*) FROM agent_defs WHERE id = ?;`,
         [def.id] as Array<SqlArg>
       );
+      const skillsJson: string = JSON.stringify(def.skills ?? []);
       if (exists !== null && exists > 0) {
         await this.rdb.exec(
           `UPDATE agent_defs
-              SET name = ?, avatar = ?, system_prompt = ?, model = ?, knowledge = ?,
+              SET name = ?, avatar = ?, system_prompt = ?, model = ?, knowledge = ?, skills = ?,
                   def_version = def_version + 1, updated_at = ?
             WHERE id = ?;`,
-          [def.name, avatar, def.systemPrompt, modelJson, knowledgeJson, now, def.id] as Array<SqlArg>
+          [def.name, avatar, def.systemPrompt, modelJson, knowledgeJson, skillsJson, now, def.id] as Array<SqlArg>
         );
         return;
       }
       await this.rdb.exec(
-        `INSERT INTO agent_defs (id, name, avatar, system_prompt, model, knowledge, loop, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`,
-        [def.id, def.name, avatar, def.systemPrompt, modelJson, knowledgeJson, loopJson, now, now] as Array<SqlArg>
+        `INSERT INTO agent_defs (id, name, avatar, system_prompt, model, knowledge, skills, loop, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+        [def.id, def.name, avatar, def.systemPrompt, modelJson, knowledgeJson, skillsJson, loopJson, now, now] as Array<SqlArg>
       );
     });
   }

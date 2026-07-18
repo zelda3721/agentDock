@@ -20,7 +20,9 @@ import { Logger } from 'core-infra';
 import {
   FTS_ROUTE,
   SCHEMA_VERSION,
+  SQL_ALTER_AGENT_DEFS_ADD_SKILLS,
   SQL_ALTER_MODELS_LOCAL_ADD_FAILURE_KIND,
+  SQL_CREATE_SKILLS,
   initialSchemaSqls
 } from './Schema';
 
@@ -66,6 +68,13 @@ export const MIGRATIONS: Migration[] = [
     version: 2,
     name: 'models_local_failure_kind',
     sqls: [SQL_ALTER_MODELS_LOCAL_ADD_FAILURE_KIND]
+  },
+  {
+    // #3 Skills 机制（T1.0-10②）：skills 表 + agent_defs.skills 挂载列。
+    // 新列不进 migration #1 的建表常量（规则 1：已发布不可改）——新库与老库同走本迁移。
+    version: 3,
+    name: 'skills_mechanism',
+    sqls: [SQL_CREATE_SKILLS, SQL_ALTER_AGENT_DEFS_ADD_SKILLS]
   }
 ];
 

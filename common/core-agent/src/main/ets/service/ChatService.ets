@@ -151,12 +151,19 @@ async function bindingOf(repo: ChatRepository, conv: ConversationRow): Promise<A
   return repo.agentBinding(conv.agentId);
 }
 
-/** 【稳定前缀】的 system prompt：Agent 的 system_prompt（空则默认值）——R2 顺序里 system+Agent 定义同段 */
+/**
+ * 【稳定前缀】的 system prompt：Agent 的 system_prompt（空则默认值）+ 挂载技能块（T1.0-10②）。
+ * 技能并入 system 消息尾部 ⇒ 同段进 anchor 预算（anchorTokensOf 取 messages[0]），
+ * 且同一 Agent 的技能集跨轮不变 ⇒ KV 前缀仍命中（红线 11：每轮都变的内容不得入稳定前缀）。
+ */
 function systemPromptFrom(binding: AgentBindingRow | null): string {
-  if (binding === null || binding.systemPrompt.length === 0) {
-    return DEFAULT_SYSTEM_PROMPT;
+  const base: string = binding === null || binding.systemPrompt.length === 0
+    ? DEFAULT_SYSTEM_PROMPT
+    : binding.systemPrompt;
+  if (binding === null || binding.skillBlocks.length === 0) {
+    return base;
   }
-  return binding.systemPrompt;
+  return `${base}\n\n${binding.skillBlocks.join('\n\n')}`;
 }
 
 /** Provider 解析的结论（send 与 ctxUsage 共用同一裁决，[R-18] 同源） */

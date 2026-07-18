@@ -18,7 +18,8 @@ import {
   AgentSummary,
   BrainOption,
   DEFAULT_KNOWLEDGE_TOP_K,
-  DEFAULT_LOOP_CONFIG
+  DEFAULT_LOOP_CONFIG,
+  Skill
 } from 'core-agent';
 
 /** 断点标识（设计文档 §8）。 */
@@ -59,6 +60,16 @@ export interface AgentDraftV09 {
   providerId: string;
   /** 字段四：知识库绑定（§5.1 knowledge.libIds）。 */
   libIds: string[];
+  /** 字段五：挂载技能（skills 表 id，按挂载顺序注入稳定前缀，T1.0-10②）。 */
+  skills: string[];
+}
+
+/** 技能选择项（编辑器挂载选择器；清单出自 AgentService.listSkills，分层同 KbOption）。 */
+export interface SkillOption {
+  skillId: string;
+  name: string;
+  description: string;
+  enabled: boolean;
 }
 
 /** 知识库选择项。由 core-rag 提供，不经由 features/knowledge（features 之间不得互相依赖）。 */
@@ -107,7 +118,8 @@ export class AgentFacade {
       name: def.name,
       systemPrompt: def.systemPrompt,
       providerId: def.model.providerId,
-      libIds: def.knowledge !== undefined ? def.knowledge.libIds : []
+      libIds: def.knowledge !== undefined ? def.knowledge.libIds : [],
+      skills: def.skills ?? []
     };
     return draft;
   }
@@ -121,9 +133,8 @@ export class AgentFacade {
     if (name.length === 0) {
       throw new Error('名称不能为空');
     }
-    if (draft.providerId.length === 0) {
-      throw new Error('请选择一个模型');
-    }
+    // providerId 空 = 未绑定（跟随全局默认模型）——内置模板的出厂形态，合法可保存。
+    // 发送/顶栏/水位都会解析到默认 Provider（resolveTurnProvider 的 fallback 分支）。
     await AgentService.get().whenReady();
     const now: number = Date.now();
     const id: string = draft.id.length > 0 ? draft.id : AgentService.get().newAgentId();
@@ -140,13 +151,29 @@ export class AgentFacade {
       systemPrompt: draft.systemPrompt,
       model: model,
       knowledge: knowledge,
-      tools: [],   // V0.9 无工具循环（开发计划 §5.1 Won't）
+      tools: [],   // 编辑器不暴露 tools（更新路径不触碰该列，既有白名单不被冲掉）
+      skills: draft.skills,
       loop: DEFAULT_LOOP_CONFIG,
       createdAt: now,
       updatedAt: now
     };
     await AgentService.get().saveAgent(def);
     return id;
+  }
+
+  /** 技能清单（编辑器挂载选择器；内置在前）。 */
+  public async listSkills(): Promise<SkillOption[]> {
+    await AgentService.get().whenReady();
+    const skills: Skill[] = await AgentService.get().listSkills();
+    return skills.map((sk: Skill): SkillOption => {
+      const option: SkillOption = {
+        skillId: sk.id,
+        name: sk.name,
+        description: sk.description,
+        enabled: sk.enabled
+      };
+      return option;
+    });
   }
 
   /** 删除（内置不可删；会话解绑不删除——语义见 core-agent AgentRepo.remove）。 */

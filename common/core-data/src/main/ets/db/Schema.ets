@@ -25,7 +25,7 @@
 // ---------------------------------------------------------------------------
 
 /** 当前 schema 版本号（每次新增迁移脚本时 +1，与 Migrations.ets 的最大编号一致）。 */
-export const SCHEMA_VERSION: number = 2;
+export const SCHEMA_VERSION: number = 3;
 
 /** RDB 库名。 */
 export const DB_NAME: string = 'agentdock.db';
@@ -578,6 +578,28 @@ CREATE TABLE IF NOT EXISTS models_local (
  */
 export const SQL_ALTER_MODELS_LOCAL_ADD_FAILURE_KIND: string =
   `ALTER TABLE models_local ADD COLUMN failure_kind TEXT;`;
+
+/**
+ * v3：Skills 机制（T1.0-10②，开发计划 §6.2 三件套之二）。
+ * skill = 可复用的指令/能力包（Markdown 指令正文）：Agent 可挂多个，装配时并入稳定前缀
+ * （system 消息尾部），随 anchor 预算计账。与 tools 正交——skill 是「怎么做事」的知识包，
+ * tool 是「能做什么」的执行器。builtin=1 出厂内置不可删（与 agent_defs.builtin 同护栏）。
+ */
+export const SQL_CREATE_SKILLS: string = `
+CREATE TABLE IF NOT EXISTS skills (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  content     TEXT NOT NULL DEFAULT '',       -- Markdown 指令正文（装配进稳定前缀的部分）
+  builtin     INTEGER NOT NULL DEFAULT 0,     -- 内置不可删
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);`;
+
+/** v3：agent_defs 追加 skills 列（JSON 字符串数组，挂载的 skill id 清单；缺省 '[]'）。 */
+export const SQL_ALTER_AGENT_DEFS_ADD_SKILLS: string =
+  `ALTER TABLE agent_defs ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';`;
 
 // ---------------------------------------------------------------------------
 // 基础设施表（§4.2 / §7 / §10）
