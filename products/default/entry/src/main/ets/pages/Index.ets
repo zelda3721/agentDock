@@ -19,7 +19,7 @@
 import { AdButton, AdButtonSize, AdButtonVariant, AdColor, AdSpace, AdStroke, AdType } from 'design-system';
 import { ChatPage } from 'chat';
 import { ModelFacade, ModelListPage, ProviderConfigPage } from 'models';
-import { AgentEditor, AgentListPage } from 'agents';
+import { AgentEditor, AgentListPage, SkillManagerPane } from 'agents';
 import { KbDocumentList, KbListPage } from 'knowledge';
 import { LicensePage, SettingsPage } from 'settings';
 import { MemoryPage } from 'memory';
@@ -58,6 +58,8 @@ struct Index {
   // ---- agents Tab 的装配状态（T0.9-16：sm 列表↔编辑器切换；md/lg 主从双栏） ----
   @State private agentSelectedId: string = '';
   @State private agentEditorOpen: boolean = false;
+  /** 技能管理面板（T1.0-10②）：开着时占满智能体 Tab（短暂管理任务，不做主从常驻） */
+  @State private skillManagerOpen: boolean = false;
   /** 列表刷新信号：编辑器保存/删除后 +1，AgentListPage @Watch 重拉 */
   @State private agentsRefreshTick: number = 0;
   /** 跨 Tab 指令：用智能体新建的会话 id，ChatPage @Watch 收到即打开（T0.9-16） */
@@ -127,7 +129,15 @@ struct Index {
    */
   @Builder
   AgentsPane() {
-    if (this.breakpoint === Breakpoint.SM) {
+    if (this.skillManagerOpen) {
+      SkillManagerPane({
+        onClose: (): void => {
+          this.skillManagerOpen = false;
+          // 技能改动可能影响编辑器的挂载选择器与已挂载 Agent 的注入——列表侧顺手重拉
+          this.agentsRefreshTick++;
+        }
+      })
+    } else if (this.breakpoint === Breakpoint.SM) {
       if (this.agentEditorOpen) {
         AgentEditor({
           breakpoint: 'sm',
@@ -161,6 +171,9 @@ struct Index {
           },
           onChatWithAgent: (id: string): void => {
             this.chatWithAgent(id);
+          },
+          onManageSkills: (): void => {
+            this.skillManagerOpen = true;
           }
         })
       }
@@ -181,6 +194,9 @@ struct Index {
             },
             onChatWithAgent: (id: string): void => {
               this.chatWithAgent(id);
+            },
+            onManageSkills: (): void => {
+              this.skillManagerOpen = true;
             }
           })
         }

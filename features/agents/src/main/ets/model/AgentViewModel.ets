@@ -19,8 +19,13 @@ import {
   BrainOption,
   DEFAULT_KNOWLEDGE_TOP_K,
   DEFAULT_LOOP_CONFIG,
-  Skill
+  Skill,
+  SkillMdCodec,
+  SkillMdParseResult
 } from 'core-agent';
+
+// 组件层不直连 core-agent（与 KbOption/BrainOption 同一分层纪律）——类型经此再导出
+export { SkillMdParseResult } from 'core-agent';
 
 /** 断点标识（设计文档 §8）。 */
 export type BreakpointKey = 'sm' | 'md' | 'lg';
@@ -69,6 +74,16 @@ export interface SkillOption {
   skillId: string;
   name: string;
   description: string;
+  enabled: boolean;
+}
+
+/** 技能管理页的完整视图（含正文；SkillManagerPane 用）。 */
+export interface SkillFullVM {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+  builtin: boolean;
   enabled: boolean;
 }
 
@@ -174,6 +189,54 @@ export class AgentFacade {
       };
       return option;
     });
+  }
+
+  /** 技能管理页：全部技能（含正文）。 */
+  public async listSkillsFull(): Promise<SkillFullVM[]> {
+    await AgentService.get().whenReady();
+    const skills: Skill[] = await AgentService.get().listSkills();
+    return skills.map((sk: Skill): SkillFullVM => {
+      const vm: SkillFullVM = {
+        id: sk.id, name: sk.name, description: sk.description, content: sk.content,
+        builtin: sk.builtin, enabled: sk.enabled
+      };
+      return vm;
+    });
+  }
+
+  /** 保存技能（新建 id 为空时由此生成；内置技能仅 enabled 可改——护栏在 core-agent）。 */
+  public async saveSkill(vm: SkillFullVM): Promise<string> {
+    const name: string = vm.name.trim();
+    if (name.length === 0) {
+      throw new Error('名称不能为空');
+    }
+    if (vm.content.trim().length === 0) {
+      throw new Error('正文不能为空：技能就是这段指令');
+    }
+    await AgentService.get().whenReady();
+    const id: string = vm.id.length > 0 ? vm.id : AgentService.get().newSkillId();
+    const skill: Skill = {
+      id: id, name: name, description: vm.description.trim(), content: vm.content,
+      builtin: vm.builtin, enabled: vm.enabled, createdAt: 0, updatedAt: 0
+    };
+    await AgentService.get().saveSkill(skill);
+    return id;
+  }
+
+  /** 删除技能（内置不可删）。 */
+  public async removeSkill(skillId: string): Promise<void> {
+    await AgentService.get().whenReady();
+    await AgentService.get().removeSkill(skillId);
+  }
+
+  /** 解析粘贴的 SKILL.md（agentskills.io 标准；Claude Skills / OpenClaw / Hermes 同格式）。 */
+  public parseSkillMd(text: string): SkillMdParseResult {
+    return SkillMdCodec.parse(text);
+  }
+
+  /** 序列化为 SKILL.md 文本（导出复制用）。 */
+  public serializeSkillMd(vm: SkillFullVM): string {
+    return SkillMdCodec.serialize(vm.name, vm.description, vm.content);
   }
 
   /** 删除（内置不可删；会话解绑不删除——语义见 core-agent AgentRepo.remove）。 */

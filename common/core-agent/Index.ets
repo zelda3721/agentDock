@@ -29,6 +29,7 @@ export * from './src/main/ets/context/ContextGovernor';
 export * from './src/main/ets/service/AgentService';
 export * from './src/main/ets/service/AgentRepo';
 export * from './src/main/ets/service/SkillRepo';
+export * from './src/main/ets/service/SkillMdCodec';
 
 // 聊天链路（V0.9 三层合同 §二：features/chat 的唯一依赖点；T0.9-16 的前身，无工具循环/RAG/记忆）
 // ChatTypes 同时再导出 core-llm 的 TokenUsage / FinishReason，使 features/chat 不必直连 core-llm。

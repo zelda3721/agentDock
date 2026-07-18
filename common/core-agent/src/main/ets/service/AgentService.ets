@@ -224,6 +224,27 @@ export class AgentService {
     return this.skillRepo.list();
   }
 
+  /** 保存技能（新建/编辑；内置技能仅 enabled 可改——护栏在 SkillRepo）。 */
+  async saveSkill(skill: Skill): Promise<void> {
+    if (this.skillRepo === null) {
+      throw new Error('AgentService 尚未初始化（entry 的 initCoreStack 还没跑完或已失败）');
+    }
+    await this.skillRepo.save(skill);
+  }
+
+  /** 删除技能（内置不可删——护栏在 SkillRepo）。挂载它的 Agent 侧如实缺席，不悬挂报错。 */
+  async removeSkill(skillId: string): Promise<void> {
+    if (this.skillRepo === null) {
+      throw new Error('AgentService 尚未初始化（entry 的 initCoreStack 还没跑完或已失败）');
+    }
+    await this.skillRepo.remove(skillId);
+  }
+
+  /** 生成新技能 id。 */
+  newSkillId(): string {
+    return SkillRepo.newId();
+  }
+
   /** 保存 Agent 定义（编辑器保存；anchor >25% 告警在 UI 侧按 §27.4 提示） */
   saveAgent(def: AgentDef): Promise<void> {
     return this.requireRepo().save(def);

@@ -57,6 +57,8 @@ export struct AgentListPage {
   public onCreateAgent: () => void = () => {};
   /** 「聊天」：用此智能体新建会话（entry 负责切到会话 Tab 并绑定，跨 HSP 路由）。 */
   public onChatWithAgent: (agentId: string) => void = () => {};
+  /** 「技能」：打开技能管理面板（T1.0-10②），entry 侧整面切换。 */
+  public onManageSkills: () => void = () => {};
 
   @State private agents: AgentListItem[] = [];
   @State private loadState: string = 'loading';   // loading | ready | failed
@@ -104,6 +106,15 @@ export struct AgentListPage {
     Column({ space: AdSpace.s2 }) {
       Row({ space: AdSpace.s2 }) {
         Text('智能体').listHeaderTitle().layoutWeight(1)
+        AdButton({
+          label: '技能',
+          variant: AdButtonVariant.GHOST,
+          btnSize: AdButtonSize.SM,
+          a11yText: '管理技能：新建、编辑、导入 SKILL.md',
+          onAction: () => {
+            this.onManageSkills();
+          }
+        })
         AdButton({
           label: '新建',
           variant: AdButtonVariant.SECONDARY,
