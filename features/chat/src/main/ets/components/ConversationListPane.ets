@@ -120,7 +120,10 @@ export struct ConversationListPane {
                 }
               })
             }
-          }, (item: ConversationVM) => `${item.id}-${item.timestamp}`)
+          }, (item: ConversationVM) =>
+            // key 覆盖行上渲染的全部事实：timestamp 只精确到分钟，同一分钟内消息数/标题/
+            // 来源芯片变了若不进 key，ForEach 复用旧 item 闭包，行照旧陈旧
+            `${item.id}|${item.title}|${item.subtitle}|${item.timestamp}|${item.brainKnown}|${item.local}|${item.agentName}`)
         }
         .layoutWeight(1)
         .width('100%')

@@ -474,6 +474,9 @@ export class ChatController {
     this.refreshBrain();
     this.refreshCtx();
     this.reloadProvenance();
+    // 会话列表的消息数/时间戳在本轮里变了（md/lg 双栏它一直可见，没有"重新可见"时机）：
+    // 落定即重拉——列表是真值仪表，停在旧计数上等于说谎。任何落定状态（含失败/中止）都刷。
+    this.loadConversations(50);
   }
 
   /**

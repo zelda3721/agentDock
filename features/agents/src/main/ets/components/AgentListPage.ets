@@ -180,7 +180,10 @@ export struct AgentListPage {
                 }
               })
             }
-          }, (item: AgentListItem) => `${item.id}|${item.name}|${item.providerAvailable}`)
+          }, (item: AgentListItem) =>
+            // key 必须覆盖行上渲染的全部事实：漏掉 lastUsedAt 时 ForEach 复用旧 item 闭包，
+            // 重拉后「最近使用」照旧陈旧（选中态不受影响——它依赖父状态，不走 item）
+            `${item.id}|${item.name}|${item.avatar}|${item.providerId}|${item.providerAvailable}|${item.lastUsedAt}`)
         }
         .layoutWeight(1)
         .width('100%')
