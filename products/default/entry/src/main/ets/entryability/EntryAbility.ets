@@ -27,7 +27,7 @@ import {
 import { KnowledgeService } from 'core-rag';
 import { ModelFacade } from 'models';
 import { InferenceProvider, LocalProvider, ProviderRegistry } from 'core-llm';
-import { AgentService, ChatService, DatetimeTool, KbSearchTool, ToolBus } from 'core-agent';
+import { AgentService, ChatService, CalcTool, DatetimeTool, KbSearchTool, ToolBus } from 'core-agent';
 import { MemoryService, pickLocalMemoryProvider } from 'core-memory';
 import { BreakpointSystem } from '../common/BreakpointSystem';
 
@@ -111,6 +111,7 @@ export default class EntryAbility extends UIAbility {
       const toolBus: ToolBus = new ToolBus();
       toolBus.register(new DatetimeTool());
       toolBus.register(new KbSearchTool());
+      toolBus.register(new CalcTool());
       ChatService.get().attachTools(toolBus);
       // 技能编辑器的工具声明选择器读同一实例（T1.0-10③）——两处清单必须同源
       AgentService.get().attachTools(toolBus);

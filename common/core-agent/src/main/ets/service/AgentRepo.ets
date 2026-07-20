@@ -29,7 +29,7 @@ import {
   DEFAULT_KNOWLEDGE_TOP_K,
   DEFAULT_LOOP_CONFIG
 } from '../model/AgentDef';
-import { TOOL_DATETIME, TOOL_KB_SEARCH } from '../tools/ToolBus';
+import { TOOL_CALC, TOOL_DATETIME, TOOL_KB_SEARCH } from '../tools/ToolBus';
 import { AgentRepositoryPort } from './AgentService';
 
 /** tools 列的 JSON 编解码（字符串数组；损坏/缺失 → 空数组 = 无工具，不让脏数据挡住列表） */
@@ -143,7 +143,7 @@ const UNBOUND_MODEL: AgentModelConfig = { providerId: '' };
  * 本地安全工具。模型自行决定用不用（翻译类场景通常不会调用）；工具是否真正生效还取决于
  * 当前 Provider 是否支持工具调用（ChatService 按 capabilities 判定）。
  */
-const BUILTIN_SEED_TOOLS: string[] = [TOOL_KB_SEARCH, TOOL_DATETIME];
+const BUILTIN_SEED_TOOLS: string[] = [TOOL_KB_SEARCH, TOOL_DATETIME, TOOL_CALC];
 
 /**
  * 内置智能体模板种子（T1.0-10①）。首启/版本升级时 INSERT OR IGNORE 播种，builtin=1 不可删。
