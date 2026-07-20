@@ -102,12 +102,14 @@ export class RunRecorder {
    * 约束的是日志明文，轨迹落库是可回放性的一部分）；结果全文不内联（大结果 L1 外置随 T1.0-04）。
    */
   async recordToolStep(runId: string, seq: number, toolName: string, toolArgs: string,
-                       latencyMs: number, state: 'done' | 'failed', error: string | null): Promise<void> {
+                       latencyMs: number, state: 'done' | 'failed', error: string | null,
+                       resultSummary: string | null): Promise<void> {
     const now: number = Date.now();
     await this.rdb.exec(
-      `INSERT INTO run_steps (id, run_id, seq, type, tool_name, tool_args, latency_ms, state, error, created_at)
-       VALUES (?, ?, ?, 'tool', ?, ?, ?, ?, ?, ?);`,
-      [util.generateRandomUUID(true), runId, seq, toolName, toolArgs, latencyMs, state, error, now] as Array<SqlArg>
+      `INSERT INTO run_steps (id, run_id, seq, type, tool_name, tool_args, tool_result, latency_ms, state, error, created_at)
+       VALUES (?, ?, ?, 'tool', ?, ?, ?, ?, ?, ?, ?);`,
+      [util.generateRandomUUID(true), runId, seq, toolName, toolArgs, resultSummary,
+        latencyMs, state, error, now] as Array<SqlArg>
     );
   }
 

@@ -177,6 +177,8 @@ export enum AdToolStatus {
 export class AdToolCall {
   /** 工具名，如 kb.search */
   name: string = '';
+  /** 工具调用 id（流式期间定位/更新同一张卡；本地合成 call_local_N）。持久化重建时可空。 */
+  callId: string = '';
   status: AdToolStatus = AdToolStatus.DONE;
   /** 入参 JSON（原样字符串，走仪表体展示） */
   argsJson: string = '';

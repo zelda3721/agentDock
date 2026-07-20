@@ -1,7 +1,7 @@
 // Copyright (c) 2026 AgentDock Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { AdBrainKind, AdMessageRole, AdMessageStatus, AdProvenance } from 'design-system';
+import { AdBrainKind, AdMessageRole, AdMessageStatus, AdProvenance, AdToolCall, AdToolStatus } from 'design-system';
 import { BrainOption } from 'core-agent';
 
 /**
@@ -44,6 +44,23 @@ export class ChatMessageVM {
   generatedTokens: number = -1;
   /** 错误文案：具体、不道歉（§5.3） */
   errorText: string = '';
+  /**
+   * 本条 assistant 回答里的工具执行卡片（T1.0-04a）。按发生序；流式中累积、落定后从 run_steps 重建。
+   * 用户消息恒空。渲染在正文上方（工具先用、答案后出）。
+   */
+  toolCalls: AdToolCall[] = [];
+
+  /** LazyForEach key 的工具签名：条数 + 各卡状态——卡片增删或落定时 key 变，只重建这一行。 */
+  toolSig(): string {
+    if (this.toolCalls.length === 0) {
+      return '';
+    }
+    let sig: string = `${this.toolCalls.length}`;
+    for (const c of this.toolCalls) {
+      sig += `:${c.status}`;
+    }
+    return sig;
+  }
 
   constructor(id: string, role: AdMessageRole, roleLabel: string) {
     this.id = id;

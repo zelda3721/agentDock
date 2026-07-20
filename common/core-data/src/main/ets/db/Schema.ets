@@ -25,7 +25,7 @@
 // ---------------------------------------------------------------------------
 
 /** 当前 schema 版本号（每次新增迁移脚本时 +1，与 Migrations.ets 的最大编号一致）。 */
-export const SCHEMA_VERSION: number = 4;
+export const SCHEMA_VERSION: number = 5;
 
 /** RDB 库名。 */
 export const DB_NAME: string = 'agentdock.db';
@@ -610,6 +610,15 @@ export const SQL_ALTER_AGENT_DEFS_ADD_SKILLS: string =
  */
 export const SQL_ALTER_SKILLS_ADD_ALLOWED_TOOLS: string =
   `ALTER TABLE skills ADD COLUMN allowed_tools TEXT NOT NULL DEFAULT '[]';`;
+
+/**
+ * v5：run_steps 追加 tool_result 列（T1.0-04a 工具执行卡片的持久化）。
+ * 存工具结果的**有界摘要**（截断，非全文——全文外置 run_artifacts.result_ref 仍随 T1.0-04）。
+ * 卡片跨会话重开要能重建：入参已在 tool_args，出参摘要落这里，二者齐活即可离线还原卡片。
+ * 与 tool_args「小体积可内联」同一类别；红线 20 约束的是明文日志，加密轨迹库的可回放摘要不在其列。
+ */
+export const SQL_ALTER_RUN_STEPS_ADD_TOOL_RESULT: string =
+  `ALTER TABLE run_steps ADD COLUMN tool_result TEXT;`;
 
 // ---------------------------------------------------------------------------
 // 基础设施表（§4.2 / §7 / §10）

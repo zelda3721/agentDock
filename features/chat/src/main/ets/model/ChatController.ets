@@ -1,7 +1,7 @@
 // Copyright (c) 2026 AgentDock Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { AdBrainKind, AdCitation, AdFencedItem, AdMessageRole, AdMessageStatus, AdProvenance } from 'design-system';
+import { AdBrainKind, AdCitation, AdFencedItem, AdMessageRole, AdMessageStatus, AdProvenance, AdToolCall, AdToolStatus } from 'design-system';
 import {
   AgentService,
   ChatCitation,
@@ -13,7 +13,8 @@ import {
   ConversationSummary,
   CtxUsage,
   CurrentBrain,
-  COMPACTION_TRIGGER_RATIO
+  COMPACTION_TRIGGER_RATIO,
+  ToolStepRecord
 } from 'core-agent';
 import { BrainMenuVM, BrainVM, ChatMessageVM, ConversationVM, CtxUsageVM, formatClock, MessageDataSource } from './ChatViewModel';
 
@@ -257,7 +258,9 @@ export class ChatController {
     this.refreshBrain();
     try {
       const records: ChatMessageRecord[] = await this.service.listMessages(convId, 200);
-      this.messages.reset(records.map((r: ChatMessageRecord): ChatMessageVM => ChatController.toMessageVM(r)));
+      const vms: ChatMessageVM[] = records.map((r: ChatMessageRecord): ChatMessageVM => ChatController.toMessageVM(r));
+      await this.attachToolCards(vms);   // 工具卡片从 run_steps 重建，重开会话不丢
+      this.messages.reset(vms);
       this.host.onMessageCountChanged(this.messages.totalCount());
       await this.refreshCtx();
     } catch (err) {
@@ -419,10 +422,12 @@ export class ChatController {
       return;
     }
     if (ev.type === 'tool') {
-      // 工具循环进展（T1.0-01）：running 点亮「正在使用工具 …」，done/failed 熄灭。
-      // 先把已到的文本增量刷出去——工具执行可能耗秒级，不能让已生成的思考文字压在缓冲里。
+      // 工具循环进展（T1.0-01/04a）：running 点亮「正在使用工具 …」状态行 + 建占位卡片；
+      // done/failed 熄灭状态行 + 落定卡片。先把已到的文本增量刷出去——工具执行可能耗秒级，
+      // 不能让已生成的思考文字压在缓冲里。
       this.flushPending();
       this.host.onToolActivity(ev.toolPhase === 'running' ? (ev.toolName ?? '') : '');
+      this.applyToolEvent(ev);
       return;
     }
     if (ev.type === 'usage') {
@@ -498,6 +503,7 @@ export class ChatController {
         }
         return vm;
       });
+      await this.attachToolCards(list);   // 落定重读会 reset 全表，工具卡片同样从 run_steps 重建挂回
       this.messages.reset(list);
       this.host.onMessageCountChanged(this.messages.totalCount());
     } catch (err) {
@@ -563,6 +569,90 @@ export class ChatController {
     vm.local = s.lastProviderKind !== 'remote';
     vm.agentName = s.agentName !== undefined ? s.agentName : '';
     return vm;
+  }
+
+  /**
+   * 把工具事件落到当前流式消息的卡片列表（T1.0-04a）。
+   * running：建占位卡片（或幂等跳过已存在的）；done/failed：更新对应卡片（缺则补建，
+   * 覆盖未执行分支——它们没有 running 相位）。按 toolCallId 定位。
+   */
+  private applyToolEvent(ev: ChatTurnEvent): void {
+    if (this.streamingIndex < 0) {
+      return;
+    }
+    const msg: ChatMessageVM | null = this.messages.itemAt(this.streamingIndex);
+    if (msg === null) {
+      return;
+    }
+    const callId: string = ev.toolCallId ?? '';
+    const name: string = ev.toolName ?? '';
+    let card: AdToolCall | null = null;
+    for (const c of msg.toolCalls) {
+      if (c.callId === callId && callId.length > 0) {
+        card = c;
+        break;
+      }
+    }
+    if (ev.toolPhase === 'running') {
+      if (card === null) {
+        const fresh: AdToolCall = new AdToolCall(name, AdToolStatus.RUNNING);
+        fresh.callId = callId;
+        msg.toolCalls.push(fresh);
+      }
+    } else {
+      const ok: boolean = ev.toolPhase === 'done';
+      if (card === null) {
+        card = new AdToolCall(name, ok ? AdToolStatus.DONE : AdToolStatus.FAILED);
+        card.callId = callId;
+        msg.toolCalls.push(card);
+      } else {
+        card.status = ok ? AdToolStatus.DONE : AdToolStatus.FAILED;
+      }
+      card.argsJson = ev.toolArgsJson ?? '';
+      card.resultSummary = ev.toolResultSummary ?? '';
+      card.latencyMs = ev.toolLatencyMs ?? 0;
+      card.errorText = ok ? '' : (ev.toolResultSummary ?? '工具执行失败');
+    }
+    this.messages.notifyChanged(this.streamingIndex);
+  }
+
+  /**
+   * 从 run_steps 记录重建卡片并挂到对应消息（T1.0-04a；selectConversation / reloadProvenance 共用）。
+   * 一次查询取全会话工具步，按 messageId 分组、按发生序还原——重开会话卡片不丢。
+   */
+  private async attachToolCards(vms: ChatMessageVM[]): Promise<void> {
+    if (this.convId.length === 0) {
+      return;
+    }
+    let steps: ToolStepRecord[];
+    try {
+      steps = await this.service.listToolSteps(this.convId);
+    } catch (err) {
+      return;   // 卡片是增强不是主链路：读不出就不挂，不拖垮消息渲染
+    }
+    if (steps.length === 0) {
+      return;
+    }
+    const byMsg: Map<string, AdToolCall[]> = new Map<string, AdToolCall[]>();
+    for (const st of steps) {
+      const card: AdToolCall = new AdToolCall(st.toolName, st.ok ? AdToolStatus.DONE : AdToolStatus.FAILED);
+      card.argsJson = st.argsJson;
+      card.resultSummary = st.resultSummary;
+      card.latencyMs = st.latencyMs;
+      card.errorText = st.ok ? '' : (st.error.length > 0 ? st.error : st.resultSummary);
+      const list: AdToolCall[] | undefined = byMsg.get(st.messageId);
+      if (list === undefined) {
+        byMsg.set(st.messageId, [card]);
+      } else {
+        list.push(card);
+      }
+    }
+    for (const vm of vms) {
+      const hit: AdToolCall[] | undefined = byMsg.get(vm.id);
+      if (hit !== undefined) {
+        vm.toolCalls = hit;
+      }
+    }
   }
 
   static toMessageVM(r: ChatMessageRecord): ChatMessageVM {

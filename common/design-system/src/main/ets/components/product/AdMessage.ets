@@ -10,7 +10,8 @@ import { AdCurve, AdDuration, AD_REDUCE_MOTION_KEY } from '../../theme/Motion';
 import { AdGlyph, AdGlyphKind } from '../base/AdGlyph';
 import { AdButton, AdButtonSize, AdButtonVariant } from '../base/AdButton';
 import { AdProvenanceRail } from './AdProvenanceRail';
-import { AdBrainKind, AdMessageRole, AdMessageStatus, AdProvenance } from '../../model/Provenance';
+import { AdToolCard } from './AdToolCard';
+import { AdBrainKind, AdMessageRole, AdMessageStatus, AdProvenance, AdToolCall } from '../../model/Provenance';
 
 /**
  * B4. AdMessage —— **非气泡结构**（UI 设计规范 §3 B4）。
@@ -95,6 +96,11 @@ export struct AdMessage {
   @Prop generatedTokens: number = 0;
   /** 错误文案：不道歉、不含糊，说清发生了什么（如"远程 Provider 返回 429（限流）"） */
   @Prop errorText: string = '';
+  /**
+   * 工具执行卡片（T1.0-04a）：本条 assistant 回答里用过的工具，按发生序渲染在**正文上方**
+   * （工具先用、答案后出，符合阅读序）。用户消息恒空。
+   */
+  @Prop toolCalls: AdToolCall[] = [];
 
   /** [R-37] 中断：必须在生成开始的同一帧可用 */
   onAbort: () => void = () => {
@@ -168,6 +174,13 @@ export struct AdMessage {
         .width('100%')
         .alignItems(VerticalAlign.Bottom)
       }
+
+        // 工具执行卡片（正文上方；折叠展开由卡片自理）
+        if (this.role === AdMessageRole.ASSISTANT && this.toolCalls.length > 0) {
+          ForEach(this.toolCalls, (call: AdToolCall) => {
+            AdToolCard({ call: call })
+          }, (call: AdToolCall, index: number) => `${index}-${call.name}-${call.status}`)
+        }
 
         // 正文 + 流式光标（同一行尾）
         Row({ space: AdSpace.hairline }) {

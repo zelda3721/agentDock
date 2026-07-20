@@ -23,6 +23,7 @@ import {
   SQL_ALTER_AGENT_DEFS_ADD_SKILLS,
   SQL_ALTER_MODELS_LOCAL_ADD_FAILURE_KIND,
   SQL_ALTER_SKILLS_ADD_ALLOWED_TOOLS,
+  SQL_ALTER_RUN_STEPS_ADD_TOOL_RESULT,
   SQL_CREATE_SKILLS,
   initialSchemaSqls
 } from './Schema';
@@ -82,6 +83,12 @@ export const MIGRATIONS: Migration[] = [
     version: 4,
     name: 'skill_allowed_tools',
     sqls: [SQL_ALTER_SKILLS_ADD_ALLOWED_TOOLS]
+  },
+  {
+    // #5 工具执行卡片持久化（T1.0-04a）：run_steps.tool_result 存出参摘要，卡片可离线重建。
+    version: 5,
+    name: 'run_steps_tool_result',
+    sqls: [SQL_ALTER_RUN_STEPS_ADD_TOOL_RESULT]
   }
 ];
 

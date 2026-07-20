@@ -44,11 +44,35 @@ export interface ChatTurnEvent {
    */
   compressing?: boolean;
   /**
-   * type==='tool'：工具循环的执行进展（T1.0-01）。工具执行**必须显示，不许静默**（与压缩同一纪律）：
-   * running 在开始执行时发出，done/failed 在结束时发出——UI 据此显示「正在使用工具 kb.search…」。
+   * type==='tool'：工具循环的执行进展（T1.0-01/04a）。工具执行**必须显示，不许静默**（与压缩同一纪律）：
+   * running 在开始执行时发出（仅 toolName+toolCallId，点亮状态行与占位卡片）；
+   * done/failed 在结束时发出，附带卡片全量数据（入参/出参摘要/耗时）——UI 据此渲染 AdToolCard。
    */
   toolName?: string;
   toolPhase?: 'running' | 'done' | 'failed';
+  /** 工具调用 id（同一 assistant 消息内定位/更新对应卡片；本地合成 call_local_N） */
+  toolCallId?: string;
+  /** 入参 JSON 原文（done/failed 时带） */
+  toolArgsJson?: string;
+  /** 出参摘要（done/failed 时带；失败为错误说明） */
+  toolResultSummary?: string;
+  /** 工具执行墙钟耗时 ms（done/failed 时带） */
+  toolLatencyMs?: number;
+}
+
+/**
+ * 工具执行卡片记录（T1.0-04a）——回读会话时从 run_steps 重建卡片的数据源。
+ * 出参全文外置随 T1.0-04；此处 resultSummary 为有界摘要（run_steps.tool_result）。
+ */
+export interface ToolStepRecord {
+  /** 归属的 assistant 消息 id（agent_runs.message_id） */
+  messageId: string;
+  toolName: string;
+  argsJson: string;
+  resultSummary: string;
+  latencyMs: number;
+  ok: boolean;
+  error: string;
 }
 
 /**

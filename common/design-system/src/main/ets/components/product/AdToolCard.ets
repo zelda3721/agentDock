@@ -73,14 +73,10 @@ export struct AdToolCard {
   @State private expanded: boolean = false;
 
   build() {
+    // 左语义带用 **border-left**（而非兄弟 Column + height('100%')）：后者在 LazyForEach 的
+    // 自适应高度父容器里会按父的最大约束把带子撑成整屏高（AdMessage 同款教训，见其 build 注释）。
+    // border 与内容盒天然等高，零测量成本。失败 = danger；权限确认 = remote；其余 = inkTertiary。
     Row() {
-      // 左语义带：失败 = danger；权限确认 = remote（出端）；其余 = inkTertiary
-      Column()
-        .width(AdStroke.marker)
-        .height('100%')
-        .backgroundColor(this.bandColor())
-        .hitTestBehavior(HitTestMode.None)
-
       Column({ space: AdSpace.s2 }) {
         // 头行
         Row({ space: AdSpace.s2 }) {
@@ -138,11 +134,31 @@ export struct AdToolCard {
     .alignItems(VerticalAlign.Top)
     .backgroundColor(AdColor.surfaceSunken)
     .borderRadius(AdRadius.md)
-    .border({
-      width: this.call.status === AdToolStatus.NEEDS_CONFIRM ? AdStroke.control : 0,
-      color: AdColor.remoteBorder,
+    // 左带恒在（border 等高不撑高）；权限确认态额外描出端边框（remote 琥珀）
+    .border(this.call.status === AdToolStatus.NEEDS_CONFIRM ? this.confirmBorder() : this.bandBorder())
+  }
+
+  /** 常态：仅左语义带（border-left）。 */
+  private bandBorder(): BorderOptions {
+    const opts: BorderOptions = {
+      width: { left: AdStroke.marker },
+      color: { left: this.bandColor() },
       style: BorderStyle.Solid
-    })
+    };
+    return opts;
+  }
+
+  /** 权限确认态：左带 + 出端提醒边框（三侧 remoteBorder）。 */
+  private confirmBorder(): BorderOptions {
+    const opts: BorderOptions = {
+      width: { left: AdStroke.marker, top: AdStroke.control, right: AdStroke.control, bottom: AdStroke.control },
+      color: {
+        left: this.bandColor(), top: AdColor.remoteBorder,
+        right: AdColor.remoteBorder, bottom: AdColor.remoteBorder
+      },
+      style: BorderStyle.Solid
+    };
+    return opts;
   }
 
   /** 权限确认：默认焦点在 [拒绝]（[R-51]）；出端提醒必须显示 */

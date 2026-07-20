@@ -108,6 +108,7 @@ export struct MessageStream {
                   // 真实计数由 core-agent 的 usage 事件提供
                   generatedTokens: item.generatedTokens > 0 ? item.generatedTokens : 0,
                   errorText: item.errorText,
+                  toolCalls: item.toolCalls,
                   onAbort: () => {
                     this.onAbort();
                   },
@@ -136,7 +137,8 @@ export struct MessageStream {
             .margin({ top: this.gapAbove(item, index) })
             // key 里带上 text.length 与 status：控制器每批提交后 key 变化，LazyForEach 只重建**这一条**，
             // 其余行不参与 diff —— 这正是攒批的收益落地处（S1 §5.4）
-          }, (item: ChatMessageVM) => `${item.id}-${item.status}-${item.text.length}`)
+            // 工具签名进 key：卡片增删或落定（running→done）时 key 变，LazyForEach 只重建这一条
+          }, (item: ChatMessageVM) => `${item.id}-${item.status}-${item.text.length}-${item.toolSig()}`)
         }
         .layoutWeight(1)
         .width('100%')

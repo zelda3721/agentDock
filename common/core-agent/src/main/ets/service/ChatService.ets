@@ -73,7 +73,8 @@ import {
   CtxUsage,
   CurrentBrain,
   DEFAULT_SYSTEM_PROMPT,
-  TITLE_MAX_CHARS
+  TITLE_MAX_CHARS,
+  ToolStepRecord
 } from '../chat/ChatTypes';
 
 const TAG: string = 'ChatService';
@@ -88,6 +89,8 @@ const CHECKPOINT_INTERVAL_MS: number = 2000;
 
 /** 单步 tool_calls 执行上限（T1.0-01）：超出部分回填「超限」结果保住协议配对，不执行 */
 const MAX_TOOL_CALLS_PER_STEP: number = 5;
+/** 工具出参摘要落库/上屏的字符上限（全文外置随 T1.0-04；卡片只需摘要） */
+const TOOL_RESULT_SUMMARY_MAX: number = 800;
 
 // ============================================================================
 // 模块级工具函数
@@ -878,7 +881,7 @@ class ChatTurn implements ChatTurnHandle {
           } else {
             executedCount++;
             // 工具执行必须显示，不许静默（与压缩同一纪律）
-            this.events.push({ type: 'tool', toolName: toolName, toolPhase: 'running' });
+            this.events.push({ type: 'tool', toolName: toolName, toolPhase: 'running', toolCallId: call.id });
             let parsedArgs: Record<string, Object> = {};
             try {
               const parsed: Object | null = JSON.parse(
@@ -900,9 +903,22 @@ class ChatTurn implements ChatTurnHandle {
               kbLibIds: binding !== null ? binding.libIds : []
             };
             result = await this.toolBus.execute(toolName, parsedArgs, toolCtx);
-            this.events.push({ type: 'tool', toolName: toolName, toolPhase: result.ok ? 'done' : 'failed' });
           }
           const toolLatencyMs: number = Date.now() - toolStartedAt;
+          // 出参摘要：成功取 content，失败取错误说明（content 已是面向用户/模型的可读文本）；有界截断
+          const rawSummary: string = result.ok
+            ? result.content
+            : (result.content.length > 0 ? result.content : (result.errorMessage ?? result.errorCode ?? '工具执行失败'));
+          const resultSummary: string = rawSummary.length > TOOL_RESULT_SUMMARY_MAX
+            ? `${rawSummary.substring(0, TOOL_RESULT_SUMMARY_MAX)}…` : rawSummary;
+          // 卡片落定事件：**所有分支**统一发（执行成功/失败、未授权、超限、超时、已取消都出卡片，
+          // 与 run_steps 落库一致 ⇒ 实时渲染与重开会话重建同源，不会「实时有卡片、重开就没」）。
+          // running 占位卡片只在真执行分支发过；未执行分支这里一步到位出 failed 卡片。
+          this.events.push({
+            type: 'tool', toolName: toolName, toolPhase: result.ok ? 'done' : 'failed',
+            toolCallId: call.id, toolArgsJson: call.function.arguments,
+            toolResultSummary: resultSummary, toolLatencyMs: toolLatencyMs
+          });
           Logger.info(TAG, `PERF|tool run=${this.runId} name=${toolName} ok=${result.ok ? 1 : 0}` +
             ` code=${result.errorCode ?? ''} cost_ms=${toolLatencyMs}`);
           // 工具步进轨迹（append-only；落账失败不拖垮聊天）
@@ -911,7 +927,8 @@ class ChatTurn implements ChatTurnHandle {
             try {
               await this.recorder.recordToolStep(this.runId, stepSeq, toolName, call.function.arguments,
                 toolLatencyMs, result.ok ? 'done' : 'failed',
-                result.ok ? null : (result.errorMessage ?? result.errorCode ?? 'failed'));
+                result.ok ? null : (result.errorMessage ?? result.errorCode ?? 'failed'),
+                resultSummary);
             } catch (e) {
               Logger.error(TAG, 'record tool step failed', [{ key: 'err', value: (e as Error).message }]);
             }
@@ -1274,6 +1291,11 @@ export class ChatService {
       }
     }
     await this.requireRepo().deleteConversation(convId);
+  }
+
+  /** 会话内工具执行步（T1.0-04a 卡片重建；features 侧映射为 AdToolCall）。 */
+  listToolSteps(convId: string): Promise<ToolStepRecord[]> {
+    return this.requireRepo().listToolSteps(convId);
   }
 
   listMessages(convId: string, limit: number): Promise<ChatMessageRecord[]> {

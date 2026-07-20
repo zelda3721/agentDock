@@ -30,6 +30,7 @@ import {
   ChatProvenance,
   ChatSummaryState,
   ConversationSummary,
+  ToolStepRecord,
   ProvenanceCodec,
   fromDbStatus,
   toDbStatus
@@ -436,6 +437,36 @@ export class ChatRepository {
   }
 
   /**
+   * 会话内全部工具执行步（T1.0-04a 卡片重建）。归属到**产生该轮回答的 assistant 消息**——
+   * 经 messages.run_id 直连（不是 agent_runs.message_id，那记的是触发轮的 user 消息，见 schema 注释）。
+   * 按发生序（seq）返回；调用方按 messageId 分组、按序还原卡片。tool_result 为出参摘要（可能 null）。
+   */
+  async listToolSteps(convId: string): Promise<ToolStepRecord[]> {
+    return this.rdb.queryRows<ToolStepRecord>(
+      `SELECT m.id AS message_id, rs.tool_name AS tool_name, rs.tool_args AS tool_args,
+              rs.tool_result AS tool_result, rs.latency_ms AS latency_ms, rs.state AS state, rs.error AS error
+         FROM run_steps rs
+         JOIN messages m ON m.run_id = rs.run_id AND m.role = 'assistant'
+        WHERE m.conv_id = ? AND rs.type = 'tool'
+        ORDER BY rs.created_at ASC, rs.seq ASC;`,
+      [convId] as Array<SqlArg>,
+      (rs: relationalStore.ResultSet): ToolStepRecord => {
+        const state: string = rs.getString(rs.getColumnIndex('state'));
+        const rec: ToolStepRecord = {
+          messageId: rs.getString(rs.getColumnIndex('message_id')),
+          toolName: rs.getString(rs.getColumnIndex('tool_name')),
+          argsJson: rs.getString(rs.getColumnIndex('tool_args')),
+          resultSummary: ChatRepository.nullableString(rs, 'tool_result'),
+          latencyMs: rs.getLong(rs.getColumnIndex('latency_ms')),
+          ok: state === 'done',
+          error: ChatRepository.nullableString(rs, 'error')
+        };
+        return rec;
+      }
+    );
+  }
+
+  /**
    * 组 prompt 用的历史（全量、升序）。
    * 只取 user/assistant，且跳过 assistant 的空内容（失败/刚中断且没产出的轮次不该污染上下文）。
    * 超窗时的处理在 ChatService：**诚实报错，不静默掐头**（§23.3）。
@@ -620,6 +651,12 @@ export class ChatRepository {
       [convId] as Array<SqlArg>
     );
     return ChatRepository.parseMeta(json ?? '');
+  }
+
+  /** nullable TEXT 列取值：NULL → 空串（卡片摘要/错误列缺省不显示，不编造） */
+  private static nullableString(rs: relationalStore.ResultSet, col: string): string {
+    const idx: number = rs.getColumnIndex(col);
+    return rs.isColumnNull(idx) ? '' : rs.getString(idx);
   }
 
   private static mapMessage(rs: relationalStore.ResultSet): ChatMessageRecord {
