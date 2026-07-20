@@ -25,7 +25,7 @@
 // ---------------------------------------------------------------------------
 
 /** 当前 schema 版本号（每次新增迁移脚本时 +1，与 Migrations.ets 的最大编号一致）。 */
-export const SCHEMA_VERSION: number = 3;
+export const SCHEMA_VERSION: number = 4;
 
 /** RDB 库名。 */
 export const DB_NAME: string = 'agentdock.db';
@@ -600,6 +600,16 @@ CREATE TABLE IF NOT EXISTS skills (
 /** v3：agent_defs 追加 skills 列（JSON 字符串数组，挂载的 skill id 清单；缺省 '[]'）。 */
 export const SQL_ALTER_AGENT_DEFS_ADD_SKILLS: string =
   `ALTER TABLE agent_defs ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';`;
+
+/**
+ * v4：skills 追加 allowed_tools 列（T1.0-10③ 与 SKILL.md 标准对齐）。
+ * JSON 字符串数组 = 该技能声明「做事所需的工具」（SKILL.md frontmatter 的 allowed-tools）。
+ * 语义：挂载技能 = 注入指令 + 按声明**并集授予**工具（装配时与 Agent 白名单取并，
+ * 经 注册表∩Provider 能力 三关，执行点二次校验同源）；端上不存在的声明名如实缺席、
+ * 原样保留（导出无损）——外部生态技能声明的 Bash/Read 等系统专用工具永不落地执行。
+ */
+export const SQL_ALTER_SKILLS_ADD_ALLOWED_TOOLS: string =
+  `ALTER TABLE skills ADD COLUMN allowed_tools TEXT NOT NULL DEFAULT '[]';`;
 
 // ---------------------------------------------------------------------------
 // 基础设施表（§4.2 / §7 / §10）

@@ -22,6 +22,7 @@ import {
   SCHEMA_VERSION,
   SQL_ALTER_AGENT_DEFS_ADD_SKILLS,
   SQL_ALTER_MODELS_LOCAL_ADD_FAILURE_KIND,
+  SQL_ALTER_SKILLS_ADD_ALLOWED_TOOLS,
   SQL_CREATE_SKILLS,
   initialSchemaSqls
 } from './Schema';
@@ -75,6 +76,12 @@ export const MIGRATIONS: Migration[] = [
     version: 3,
     name: 'skills_mechanism',
     sqls: [SQL_CREATE_SKILLS, SQL_ALTER_AGENT_DEFS_ADD_SKILLS]
+  },
+  {
+    // #4 技能工具声明（T1.0-10③）：skills.allowed_tools ——SKILL.md allowed-tools 对齐。
+    version: 4,
+    name: 'skill_allowed_tools',
+    sqls: [SQL_ALTER_SKILLS_ADD_ALLOWED_TOOLS]
   }
 ];
 

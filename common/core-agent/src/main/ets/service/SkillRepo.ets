@@ -23,6 +23,12 @@ export interface Skill {
   description: string;
   /** Markdown 指令正文（装配进稳定前缀的部分；写短——它逐字占 anchor 预算） */
   content: string;
+  /**
+   * 工具声明（SKILL.md frontmatter 的 allowed-tools，T1.0-10③）：本技能做事所需的工具名。
+   * 挂载 = 注入指令 + 按声明并集授予工具（装配时对注册表解析；端上不存在的名字如实缺席、
+   * 原样保留——导出无损，外部技能声明的 Bash/Read 等系统专用工具永不执行）。
+   */
+  allowedTools: string[];
   builtin: boolean;
   enabled: boolean;
   createdAt: number;
@@ -38,30 +44,47 @@ const BUILTIN_SKILL_SEEDS: Skill[] = [
     name: '结构化回答',
     description: '先结论后展开，长回答分点分节',
     content: '回答时先用一句话给出结论，再分点展开细节；步骤类内容用编号列表；超过三段的回答加小标题。',
-    builtin: true, enabled: true, createdAt: 0, updatedAt: 0
+    allowedTools: [], builtin: true, enabled: true, createdAt: 0, updatedAt: 0
   },
   {
     id: 'builtin-skill-cite',
     name: '标注来源',
     description: '用了资料要注明出处，推断要声明',
     content: '引用知识库资料时，在对应句末标注来源《文档名》；没有资料支撑、靠推断得出的内容，要明确说明这是推断。',
-    builtin: true, enabled: true, createdAt: 0, updatedAt: 0
+    allowedTools: [], builtin: true, enabled: true, createdAt: 0, updatedAt: 0
   },
   {
     id: 'builtin-skill-clarify',
     name: '先问后答',
     description: '请求含糊时先澄清再作答',
     content: '用户请求含糊或缺少关键信息时，先提出一到两个澄清问题，等用户回答后再给方案；不要猜测需求直接开写。',
-    builtin: true, enabled: true, createdAt: 0, updatedAt: 0
+    allowedTools: [], builtin: true, enabled: true, createdAt: 0, updatedAt: 0
   },
   {
     id: 'builtin-skill-concise',
     name: '简洁优先',
     description: '直答要点，不铺垫不客套',
     content: '直接回答问题本身：不复述问题、不加铺垫和免责声明、不在结尾追问「还需要什么帮助」。能一句话说清的不用三句。',
-    builtin: true, enabled: true, createdAt: 0, updatedAt: 0
+    allowedTools: [], builtin: true, enabled: true, createdAt: 0, updatedAt: 0
   }
 ];
+
+function parseToolsJson(raw: string): string[] {
+  const result: string[] = [];
+  try {
+    const parsed: Object = JSON.parse(raw) as Object;
+    if (Array.isArray(parsed)) {
+      for (const t of parsed as Object[]) {
+        if (typeof t === 'string' && t.length > 0) {
+          result.push(t);
+        }
+      }
+    }
+  } catch (e) {
+    // 列损坏按「无声明」处理，不让脏数据挡住读取
+  }
+  return result;
+}
 
 function rowToSkill(rs: relationalStore.ResultSet): Skill {
   const skill: Skill = {
@@ -69,6 +92,7 @@ function rowToSkill(rs: relationalStore.ResultSet): Skill {
     name: rs.getString(rs.getColumnIndex('name')),
     description: rs.getString(rs.getColumnIndex('description')),
     content: rs.getString(rs.getColumnIndex('content')),
+    allowedTools: parseToolsJson(rs.getString(rs.getColumnIndex('allowed_tools'))),
     builtin: rs.getLong(rs.getColumnIndex('builtin')) === 1,
     enabled: rs.getLong(rs.getColumnIndex('enabled')) === 1,
     createdAt: rs.getLong(rs.getColumnIndex('created_at')),
@@ -77,7 +101,7 @@ function rowToSkill(rs: relationalStore.ResultSet): Skill {
   return skill;
 }
 
-const SELECT_COLUMNS: string = `id, name, description, content, builtin, enabled, created_at, updated_at`;
+const SELECT_COLUMNS: string = `id, name, description, content, allowed_tools, builtin, enabled, created_at, updated_at`;
 
 export class SkillRepo {
   private readonly rdb: AppRdbStore;
@@ -134,9 +158,10 @@ export class SkillRepo {
       );
       if (exists !== null && exists > 0) {
         await this.rdb.exec(
-          `UPDATE skills SET name = ?, description = ?, content = ?, enabled = ?, updated_at = ?
+          `UPDATE skills SET name = ?, description = ?, content = ?, allowed_tools = ?, enabled = ?, updated_at = ?
             WHERE id = ? AND builtin = 0;`,
-          [skill.name, skill.description, skill.content, skill.enabled ? 1 : 0, now, skill.id] as Array<SqlArg>
+          [skill.name, skill.description, skill.content, JSON.stringify(skill.allowedTools),
+            skill.enabled ? 1 : 0, now, skill.id] as Array<SqlArg>
         );
         // 内置行只允许改 enabled（禁用/启用）与正文微调延后；先保底不动
         await this.rdb.exec(
@@ -146,9 +171,10 @@ export class SkillRepo {
         return;
       }
       await this.rdb.exec(
-        `INSERT INTO skills (id, name, description, content, builtin, enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 0, ?, ?, ?);`,
-        [skill.id, skill.name, skill.description, skill.content, skill.enabled ? 1 : 0, now, now] as Array<SqlArg>
+        `INSERT INTO skills (id, name, description, content, allowed_tools, builtin, enabled, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?);`,
+        [skill.id, skill.name, skill.description, skill.content, JSON.stringify(skill.allowedTools),
+          skill.enabled ? 1 : 0, now, now] as Array<SqlArg>
       );
     });
   }

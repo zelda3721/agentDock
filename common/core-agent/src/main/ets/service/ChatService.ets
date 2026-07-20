@@ -58,6 +58,7 @@ import { RunFinishReason } from '../runtime/AgentRun';
 import { adjudicateAfterStep, decideNext, GateDecision, RunBudgetSpec, runStateOf } from '../runtime/RunGate';
 import { RunRecorder } from '../runtime/RunRecorder';
 import { Tool, ToolBus, ToolContext, ToolResult, toOpenAiParameters } from '../tools/ToolBus';
+import { normalizeToolNames } from '../tools/ToolAliases';
 import {
   CHAT_DEFAULT_MAX_OUTPUT_TOKENS,
   ChatCitation,
@@ -209,7 +210,13 @@ function resolveTurnProvider(binding: AgentBindingRow | null, explicitProviderId
   return r;
 }
 
-/** [3a] 的三关裁决结果：Agent 白名单 ∩ 注册表 ∩ Provider 能力（send 与 ctxUsage 共用，口径同源） */
+/**
+ * [3a] 的三关裁决结果：(Agent 白名单 ∪ 挂载技能声明) ∩ 注册表 ∩ Provider 能力
+ * （send 与 ctxUsage 共用，口径同源；执行点白名单从 allowed 派生，同一来源）。
+ * 技能声明（T1.0-10③）：挂载技能 = 指令 + 所需工具一起到位——声明名经别名表归一
+ * （WebFetch→http.fetch 等）后对注册表求交，端上不存在的如实缺席（Bash/Read 等
+ * 系统专用名永远解析不到，也就永不执行）。
+ */
 interface ResolvedTools {
   allowed: Tool[];
   specs: ToolSpec[];
@@ -218,13 +225,18 @@ interface ResolvedTools {
 function resolveTools(toolBus: ToolBus | null, binding: AgentBindingRow | null,
                       provider: InferenceProvider): ResolvedTools {
   const none: ResolvedTools = { allowed: [], specs: [] };
-  if (toolBus === null || binding === null || binding.tools.length === 0) {
+  if (toolBus === null || binding === null) {
+    return none;
+  }
+  if (binding.tools.length === 0 && binding.skillTools.length === 0) {
     return none;
   }
   if (!provider.capabilities().supportsTools) {
     return none;
   }
-  const allowed: Tool[] = toolBus.listFor(binding.tools);
+  // Agent 白名单 ∪ 技能声明（归一 + 去重，保序：Agent 自配在前——它是作者的显式表达）
+  const names: string[] = normalizeToolNames(binding.tools.concat(binding.skillTools));
+  const allowed: Tool[] = toolBus.listFor(names);
   const specs: ToolSpec[] = allowed.map((t: Tool): ToolSpec => {
     const spec: ToolSpec = {
       type: 'function',

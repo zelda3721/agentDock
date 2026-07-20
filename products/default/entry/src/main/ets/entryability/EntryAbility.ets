@@ -112,6 +112,8 @@ export default class EntryAbility extends UIAbility {
       toolBus.register(new DatetimeTool());
       toolBus.register(new KbSearchTool());
       ChatService.get().attachTools(toolBus);
+      // 技能编辑器的工具声明选择器读同一实例（T1.0-10③）——两处清单必须同源
+      AgentService.get().attachTools(toolBus);
 
       // 5) 任务队列 + 知识库服务（T0.9-13/14/18）：
       //    handler 必须在 start() 前注册（KnowledgeService.init 内注册 KB_INGEST_DOC）；

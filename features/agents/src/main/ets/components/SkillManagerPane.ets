@@ -18,7 +18,7 @@ import {
   AdTextField,
   AdType
 } from 'design-system';
-import { AgentFacade, SkillFullVM, SkillMdParseResult } from '../model/AgentViewModel';
+import { AgentFacade, SkillFullVM, SkillMdParseResult, ToolAvailability, ToolPickOption } from '../model/AgentViewModel';
 
 /**
  * 技能管理面板（T1.0-10② 后半：新建/编辑/导入/导出）。
@@ -69,16 +69,51 @@ export struct SkillManagerPane {
   @State private importError: string = '';
   /** 导入成功后带进编辑视图的如实提示（被忽略的 frontmatter 键） */
   @State private importNote: string = '';
+  /** 端上真实注册的工具（声明选择器数据源；空 = 装配未完成，如实显示） */
+  @State private toolOptions: ToolPickOption[] = [];
 
   private facade: AgentFacade = new AgentFacade();
 
   private static emptyDraft(): SkillFullVM {
-    const d: SkillFullVM = { id: '', name: '', description: '', content: '', builtin: false, enabled: true };
+    const d: SkillFullVM = {
+      id: '', name: '', description: '', content: '', allowedTools: [], builtin: false, enabled: true
+    };
     return d;
   }
 
   aboutToAppear(): void {
+    this.toolOptions = this.facade.listToolOptions();
     this.reload();
+  }
+
+  /** 声明名逐条可用性（与装配同一口径：别名归一 → 注册表求交） */
+  private availability(): ToolAvailability[] {
+    return this.facade.toolAvailability(this.draft.allowedTools);
+  }
+
+  /** 端上工具 id 是否已被声明覆盖（含别名归一命中） */
+  private toolDeclared(toolId: string): boolean {
+    return this.availability().some((a: ToolAvailability): boolean => a.resolved === toolId);
+  }
+
+  /** 声明中端上不存在的原文名（display 用） */
+  private unavailableDeclared(): string[] {
+    return this.availability().filter((a: ToolAvailability): boolean => !a.available)
+      .map((a: ToolAvailability): string => a.declared);
+  }
+
+  private toggleTool(toolId: string): void {
+    if (this.toolDeclared(toolId)) {
+      const keep: string[] = [];
+      for (const a of this.availability()) {
+        if (a.resolved !== toolId) {
+          keep.push(a.declared);
+        }
+      }
+      this.draft.allowedTools = keep;
+    } else {
+      this.draft.allowedTools = this.draft.allowedTools.concat([toolId]);
+    }
   }
 
   private async reload(): Promise<void> {
@@ -94,7 +129,7 @@ export struct SkillManagerPane {
   private openEdit(skill: SkillFullVM): void {
     const copy: SkillFullVM = {
       id: skill.id, name: skill.name, description: skill.description, content: skill.content,
-      builtin: skill.builtin, enabled: skill.enabled
+      allowedTools: skill.allowedTools.slice(), builtin: skill.builtin, enabled: skill.enabled
     };
     this.draft = copy;
     this.draftIsBuiltin = skill.builtin;
@@ -188,14 +223,30 @@ export struct SkillManagerPane {
     }
     const imported: SkillFullVM = {
       id: '', name: result.name, description: result.description, content: result.content,
-      builtin: false, enabled: true
+      allowedTools: result.allowedTools, builtin: false, enabled: true
     };
     this.draft = imported;
     this.draftIsBuiltin = false;
     this.formError = '';
-    this.importNote = result.ignoredKeys.length > 0
-      ? `frontmatter 中的 ${result.ignoredKeys.join(' / ')} 字段本机不使用，已忽略。检查内容后保存。`
-      : '解析成功。检查内容后保存。';
+    const notes: string[] = [];
+    if (result.allowedTools.length > 0) {
+      // 工具声明如实分账：真授予的 / 端上没有的，一句话说清
+      const avail: ToolAvailability[] = this.facade.toolAvailability(result.allowedTools);
+      const granted: string[] = avail.filter((a: ToolAvailability): boolean => a.available)
+        .map((a: ToolAvailability): string => a.resolved);
+      const missing: string[] = avail.filter((a: ToolAvailability): boolean => !a.available)
+        .map((a: ToolAvailability): string => a.declared);
+      if (granted.length > 0) {
+        notes.push(`声明的工具 ${granted.join('、')} 端上可用，挂载后生效`);
+      }
+      if (missing.length > 0) {
+        notes.push(`${missing.join('、')} 端上不提供，不会执行（导出时原样带回）`);
+      }
+    }
+    if (result.ignoredKeys.length > 0) {
+      notes.push(`frontmatter 中的 ${result.ignoredKeys.join(' / ')} 字段本机不使用，已忽略`);
+    }
+    this.importNote = notes.length > 0 ? `${notes.join('；')}。检查内容后保存。` : '解析成功。检查内容后保存。';
     this.view = 'edit';
   }
 
@@ -382,6 +433,10 @@ export struct SkillManagerPane {
           }
         })
 
+        if (!this.draftIsBuiltin || this.draft.allowedTools.length > 0) {
+          this.toolsSection()
+        }
+
         AdSwitch({
           label: '启用',
           helper: '停用后，挂载它的智能体从下一轮对话起不再注入这段指令。',
@@ -443,6 +498,38 @@ export struct SkillManagerPane {
     .padding({ left: AdSpace.s4, right: AdSpace.s4, bottom: AdSpace.s3 })
   }
 
+  @Builder
+  toolsSection() {
+    Column({ space: AdSpace.s1 }) {
+      Text('工具声明').skillNote(AdColor.ink).width('100%')
+      Text('技能做事所需的工具（对应 SKILL.md 的 allowed-tools）。挂载本技能的智能体在对话中将获得这些工具。')
+        .skillNote(AdColor.inkTertiary).width('100%')
+      if (this.toolOptions.length === 0) {
+        Text('端上工具尚未装配完成，暂无可选项。').skillNote(AdColor.inkTertiary).width('100%')
+      }
+      ForEach(this.toolOptions, (opt: ToolPickOption) => {
+        AdListItem({
+          title: opt.toolId,
+          subtitle: opt.description,
+          selected: this.toolDeclared(opt.toolId),
+          a11yText: `工具 ${opt.toolId}，${this.toolDeclared(opt.toolId) ? '已声明' : '未声明'}` +
+            (this.draftIsBuiltin ? '，内置技能不可修改' : '。双击切换。'),
+          onAction: () => {
+            if (!this.draftIsBuiltin) {
+              this.toggleTool(opt.toolId);
+            }
+          }
+        })
+      }, (opt: ToolPickOption) => `${opt.toolId}|${this.toolDeclared(opt.toolId)}`)
+      if (this.unavailableDeclared().length > 0) {
+        Text(`声明了端上不提供的工具：${this.unavailableDeclared().join('、')}——不会执行；导出时原样带回。`)
+          .skillNote(AdColor.inkTertiary).width('100%')
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
   // —— 导入视图 ——
 
   @Builder
@@ -472,7 +559,7 @@ export struct SkillManagerPane {
         AdTextField({
           label: 'SKILL.md 全文',
           text: this.importText,
-          placeholder: '---\nname: my-skill\ndescription: 它做什么\n---\n\n指令正文……',
+          placeholder: '---\nname: my-skill\ndescription: 它做什么\nallowed-tools: kb.search\n---\n\n指令正文……',
           multiline: true,
           areaHeight: 280,
           errorText: this.importError,

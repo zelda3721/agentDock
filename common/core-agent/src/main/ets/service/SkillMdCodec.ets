@@ -9,8 +9,9 @@
  * AgentDock 以它为技能交换格式，外部生态的 skill 粘贴即用。
  *
  * 取舍（如实）：
- * · 只解析单行 `key: value` 的 frontmatter（标准示例即此形态）；name/description 之外的键
- *   （version/author/license/allowed-tools/metadata…）**忽略并如实报告**，不静默丢弃。
+ * · 解析单行 `key: value` 的 frontmatter（标准示例即此形态）。识别 name / description /
+ *   allowed-tools（逗号分隔的工具声明，T1.0-10③ 起进域模型）；其余键
+ *   （version/author/license/metadata…）**忽略并如实报告**，不静默丢弃。
  * · 标准的 skill 是**文件夹**（SKILL.md + scripts/references/assets）；端侧只取 SKILL.md 的
  *   指令正文——渐进披露的附属资源不在本机执行语境内（导入 UI 文案说明此点）。
  * · 导出为单文件 SKILL.md 文本（复制到剪贴板）；name 原样输出，不强制目录名式 slug。
@@ -22,6 +23,8 @@ export interface SkillMdParseResult {
   name: string;
   description: string;
   content: string;
+  /** allowed-tools 声明（原文名，逗号分隔拆开；归一/可用性解析在装配层，不在导入时固化） */
+  allowedTools: string[];
   /** frontmatter 中被忽略的键（如实告知，不静默） */
   ignoredKeys: string[];
   error: string;
@@ -39,7 +42,9 @@ export class SkillMdCodec {
   /** 解析 SKILL.md 全文（宽容换行风格；BOM 剥离）。 */
   static parse(text: string): SkillMdParseResult {
     const bad = (msg: string): SkillMdParseResult => {
-      const r: SkillMdParseResult = { ok: false, name: '', description: '', content: '', ignoredKeys: [], error: msg };
+      const r: SkillMdParseResult = {
+        ok: false, name: '', description: '', content: '', allowedTools: [], ignoredKeys: [], error: msg
+      };
       return r;
     };
     let s: string = text;
@@ -69,6 +74,7 @@ export class SkillMdCodec {
 
     let name: string = '';
     let description: string = '';
+    let allowedTools: string[] = [];
     const ignored: string[] = [];
     for (const line of fm.split('\n')) {
       const t: string = line.trim();
@@ -85,6 +91,11 @@ export class SkillMdCodec {
         name = value;
       } else if (key === 'description') {
         description = value;
+      } else if (key === 'allowed-tools' || key === 'allowed_tools' || key === 'allowedtools') {
+        // 标准写法逗号分隔；单项内的空格保留（如 `Bash(git:*)`）
+        allowedTools = value.split(',')
+          .map((t: string): string => t.trim())
+          .filter((t: string): boolean => t.length > 0);
       } else if (ignored.indexOf(key) < 0) {
         ignored.push(key);
       }
@@ -96,13 +107,14 @@ export class SkillMdCodec {
       return bad('正文为空：--- 之后应是技能的 Markdown 指令');
     }
     const r: SkillMdParseResult = {
-      ok: true, name: name, description: description, content: body, ignoredKeys: ignored, error: ''
+      ok: true, name: name, description: description, content: body,
+      allowedTools: allowedTools, ignoredKeys: ignored, error: ''
     };
     return r;
   }
 
   /** 序列化为 SKILL.md 文本（agentskills.io 形态；值含冒号/井号时加引号护住）。 */
-  static serialize(name: string, description: string, content: string): string {
+  static serialize(name: string, description: string, content: string, allowedTools?: string[]): string {
     const quoteIfNeeded = (v: string): string => {
       return v.indexOf(':') >= 0 || v.indexOf('#') >= 0 ? `"${v.replace(/"/g, '\\"')}"` : v;
     };
@@ -110,6 +122,10 @@ export class SkillMdCodec {
     lines.push('---');
     lines.push(`name: ${quoteIfNeeded(name)}`);
     lines.push(`description: ${quoteIfNeeded(description)}`);
+    if (allowedTools !== undefined && allowedTools.length > 0) {
+      // 原样带回（含未归一的外部名）——导出无损，别家还能吃
+      lines.push(`allowed-tools: ${allowedTools.join(', ')}`);
+    }
     lines.push('---');
     lines.push('');
     lines.push(content.trimEnd());

@@ -69,6 +69,18 @@ export interface AgentBindingRow {
    * `## 技能：<名>\n<正文>`。装配时并入稳定前缀（system 尾部），随 anchor 预算计账。
    */
   skillBlocks: string[];
+  /**
+   * 挂载技能声明的工具（T1.0-10③，skills.allowed_tools 并集、原文名未归一）。
+   * resolveTools 归一后与 Agent 白名单取并——挂载技能 = 指令 + 所需工具一起到位；
+   * 端上不存在的声明如实缺席。
+   */
+  skillTools: string[];
+}
+
+/** loadSkillBlocks 的返回：注入块 + 工具声明并集（原文名，归一在 resolveTools） */
+interface LoadedSkills {
+  blocks: string[];
+  tools: string[];
 }
 
 /** agent_defs.model 列 JSON 的最小读形（只取 send 路径需要的 providerId） */
@@ -521,36 +533,41 @@ export class ChatRepository {
           topK: topK,
           requireCitation: requireCitation,
           tools: tools,
-          skillBlocks: []
+          skillBlocks: [],
+          skillTools: []
         };
         return bindingRow;
       }
     );
     if (row !== null && skillIds.length > 0) {
-      row.skillBlocks = await this.loadSkillBlocks(skillIds);
+      const loaded: LoadedSkills = await this.loadSkillBlocks(skillIds);
+      row.skillBlocks = loaded.blocks;
+      row.skillTools = loaded.tools;
     }
     return row;
   }
 
   /**
-   * 按挂载顺序取启用中 skill 的注入块（T1.0-10②）。被禁用/已删除的挂载项如实缺席
-   * （该能力包本轮不注入，不报错不编造）。
+   * 按挂载顺序取启用中 skill 的注入块 + 工具声明并集（T1.0-10②/③）。
+   * 被禁用/已删除的挂载项如实缺席（该能力包本轮不注入、其工具声明也不授予，不报错不编造）。
    */
-  private async loadSkillBlocks(ids: string[]): Promise<string[]> {
+  private async loadSkillBlocks(ids: string[]): Promise<LoadedSkills> {
     const placeholders: string = ids.map((): string => '?').join(', ');
     interface SkillBlockRow {
       id: string;
       name: string;
       content: string;
+      allowedToolsJson: string;
     }
     const rows: SkillBlockRow[] = await this.rdb.queryRows<SkillBlockRow>(
-      `SELECT id, name, content FROM skills WHERE id IN (${placeholders}) AND enabled = 1;`,
+      `SELECT id, name, content, allowed_tools FROM skills WHERE id IN (${placeholders}) AND enabled = 1;`,
       ids.map((id: string): SqlArg => id as SqlArg),
       (rs: relationalStore.ResultSet): SkillBlockRow => {
         const r: SkillBlockRow = {
           id: rs.getString(rs.getColumnIndex('id')),
           name: rs.getString(rs.getColumnIndex('name')),
-          content: rs.getString(rs.getColumnIndex('content'))
+          content: rs.getString(rs.getColumnIndex('content')),
+          allowedToolsJson: rs.getString(rs.getColumnIndex('allowed_tools'))
         };
         return r;
       }
@@ -560,13 +577,30 @@ export class ChatRepository {
       byId.set(r.id, r);
     }
     const blocks: string[] = [];
+    const tools: string[] = [];
     for (const id of ids) {   // IN 不保序：按挂载顺序重排（注入顺序是 Agent 作者的表达）
       const hit: SkillBlockRow | undefined = byId.get(id);
-      if (hit !== undefined && hit.content.length > 0) {
+      if (hit === undefined) {
+        continue;
+      }
+      if (hit.content.length > 0) {
         blocks.push(`## 技能：${hit.name}\n${hit.content}`);
       }
+      try {
+        const parsed: Object = JSON.parse(hit.allowedToolsJson) as Object;
+        if (Array.isArray(parsed)) {
+          for (const t of parsed as Object[]) {
+            if (typeof t === 'string' && t.length > 0 && tools.indexOf(t) < 0) {
+              tools.push(t);
+            }
+          }
+        }
+      } catch (e) {
+        // allowed_tools 列损坏按「无声明」处理，不让脏数据挡住发送
+      }
     }
-    return blocks;
+    const loaded: LoadedSkills = { blocks: blocks, tools: tools };
+    return loaded;
   }
 
   /** 溯源条的 modelLabel：providers.name（未登记则由调用方回退为 providerId） */

@@ -21,7 +21,8 @@ import {
   DEFAULT_LOOP_CONFIG,
   Skill,
   SkillMdCodec,
-  SkillMdParseResult
+  SkillMdParseResult,
+  ToolOption as CoreToolOption
 } from 'core-agent';
 
 // 组件层不直连 core-agent（与 KbOption/BrainOption 同一分层纪律）——类型经此再导出
@@ -75,6 +76,11 @@ export interface SkillOption {
   name: string;
   description: string;
   enabled: boolean;
+  /**
+   * 挂载后实际授予的工具（声明经归一后∩端上注册表；空 = 不带工具）。
+   * 只列真授予的——声明里端上没有的名字不在此处装点门面。
+   */
+  grantedTools: string[];
 }
 
 /** 技能管理页的完整视图（含正文；SkillManagerPane 用）。 */
@@ -83,8 +89,26 @@ export interface SkillFullVM {
   name: string;
   description: string;
   content: string;
+  /** 工具声明（原文名；可用性由 ToolAvailability 逐项判定） */
+  allowedTools: string[];
   builtin: boolean;
   enabled: boolean;
+}
+
+/** 端上工具项（技能编辑器的声明选择器）。 */
+export interface ToolPickOption {
+  toolId: string;
+  description: string;
+}
+
+/** 一条声明名的可用性判定（如实三态：可用 id / 归一后可用 / 端上不提供）。 */
+export interface ToolAvailability {
+  /** 声明原文（导出时原样带回） */
+  declared: string;
+  /** 归一后的端上 id（未命中别名 = 原文） */
+  resolved: string;
+  /** 端上注册表里真实存在 */
+  available: boolean;
 }
 
 /** 知识库选择项。由 core-rag 提供，不经由 features/knowledge（features 之间不得互相依赖）。 */
@@ -180,12 +204,22 @@ export class AgentFacade {
   public async listSkills(): Promise<SkillOption[]> {
     await AgentService.get().whenReady();
     const skills: Skill[] = await AgentService.get().listSkills();
+    const availableIds: string[] = AgentService.get().listToolOptions()
+      .map((t: CoreToolOption): string => t.toolId);
     return skills.map((sk: Skill): SkillOption => {
+      const granted: string[] = [];
+      for (const declared of sk.allowedTools) {
+        const resolved: string = AgentService.get().normalizeToolName(declared);
+        if (availableIds.indexOf(resolved) >= 0 && granted.indexOf(resolved) < 0) {
+          granted.push(resolved);
+        }
+      }
       const option: SkillOption = {
         skillId: sk.id,
         name: sk.name,
         description: sk.description,
-        enabled: sk.enabled
+        enabled: sk.enabled,
+        grantedTools: granted
       };
       return option;
     });
@@ -198,9 +232,30 @@ export class AgentFacade {
     return skills.map((sk: Skill): SkillFullVM => {
       const vm: SkillFullVM = {
         id: sk.id, name: sk.name, description: sk.description, content: sk.content,
-        builtin: sk.builtin, enabled: sk.enabled
+        allowedTools: sk.allowedTools, builtin: sk.builtin, enabled: sk.enabled
       };
       return vm;
+    });
+  }
+
+  /** 端上真实注册的工具清单（技能编辑器的声明选择器）。 */
+  public listToolOptions(): ToolPickOption[] {
+    return AgentService.get().listToolOptions().map((t: CoreToolOption): ToolPickOption => {
+      const o: ToolPickOption = { toolId: t.toolId, description: t.description };
+      return o;
+    });
+  }
+
+  /** 逐条判定声明名的可用性（UI 展示与装配同一口径：别名归一 → 注册表求交）。 */
+  public toolAvailability(declared: string[]): ToolAvailability[] {
+    const availableIds: string[] = AgentService.get().listToolOptions()
+      .map((t: CoreToolOption): string => t.toolId);
+    return declared.map((d: string): ToolAvailability => {
+      const resolved: string = AgentService.get().normalizeToolName(d);
+      const a: ToolAvailability = {
+        declared: d, resolved: resolved, available: availableIds.indexOf(resolved) >= 0
+      };
+      return a;
     });
   }
 
@@ -217,7 +272,7 @@ export class AgentFacade {
     const id: string = vm.id.length > 0 ? vm.id : AgentService.get().newSkillId();
     const skill: Skill = {
       id: id, name: name, description: vm.description.trim(), content: vm.content,
-      builtin: vm.builtin, enabled: vm.enabled, createdAt: 0, updatedAt: 0
+      allowedTools: vm.allowedTools, builtin: vm.builtin, enabled: vm.enabled, createdAt: 0, updatedAt: 0
     };
     await AgentService.get().saveSkill(skill);
     return id;
@@ -234,9 +289,9 @@ export class AgentFacade {
     return SkillMdCodec.parse(text);
   }
 
-  /** 序列化为 SKILL.md 文本（导出复制用）。 */
+  /** 序列化为 SKILL.md 文本（导出复制用；工具声明原样带回——导出无损）。 */
   public serializeSkillMd(vm: SkillFullVM): string {
-    return SkillMdCodec.serialize(vm.name, vm.description, vm.content);
+    return SkillMdCodec.serialize(vm.name, vm.description, vm.content, vm.allowedTools);
   }
 
   /** 删除（内置不可删；会话解绑不删除——语义见 core-agent AgentRepo.remove）。 */

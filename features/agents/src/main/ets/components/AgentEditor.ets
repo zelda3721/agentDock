@@ -245,7 +245,7 @@ export struct AgentEditor {
           variant: AdButtonVariant.PRIMARY,
           btnSize: AdButtonSize.MD,
           loading: this.saving,
-          btnEnabled: this.draft.name.trim().length > 0 && this.draft.providerId.length > 0,
+          btnEnabled: this.draft.name.trim().length > 0,
           onAction: () => {
             this.save();
           }
@@ -344,9 +344,13 @@ export struct AgentEditor {
       ForEach(this.skillOptions, (sk: SkillOption) => {
         AdListItem({
           title: sk.name,
-          subtitle: sk.description,
+          // 带工具的技能在挂载点如实披露：挂上它 = 智能体获得这些工具（T1.0-10③）
+          subtitle: sk.grantedTools.length > 0
+            ? `${sk.description} · 授予工具：${sk.grantedTools.join('、')}`
+            : sk.description,
           selected: this.draft.skills.includes(sk.skillId),
           a11yText: `技能 ${sk.name}，${sk.description}，` +
+            (sk.grantedTools.length > 0 ? `挂载后授予工具 ${sk.grantedTools.join('、')}，` : '') +
             (this.draft.skills.includes(sk.skillId) ? '已挂载。双击卸下。' : '未挂载。双击挂载。'),
           onAction: () => {
             const idx: number = this.draft.skills.indexOf(sk.skillId);

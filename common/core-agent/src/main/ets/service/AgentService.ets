@@ -8,6 +8,8 @@ import { AgentDef } from '../model/AgentDef';
 import { AgentRunHandle } from '../runtime/AgentRun';
 import { AgentRepo } from './AgentRepo';
 import { Skill, SkillRepo } from './SkillRepo';
+import { Tool, ToolBus } from '../tools/ToolBus';
+import { normalizeToolName } from '../tools/ToolAliases';
 import { RunRecorder } from '../runtime/RunRecorder';
 
 const TAG: string = 'AgentService';
@@ -68,6 +70,13 @@ export interface BrainOption {
   kind: string;
 }
 
+/** 端上工具项（技能编辑器的工具声明选择器；features 不直连 ToolBus——分层同 BrainOption） */
+export interface ToolOption {
+  /** 端上工具 id（datetime / kb.search / …） */
+  toolId: string;
+  description: string;
+}
+
 /** 列表页条目（含"最近使用"真值——来自 agent_runs，从未用过为 0） */
 export interface AgentSummary {
   def: AgentDef;
@@ -90,6 +99,7 @@ export class AgentService {
   private agentRepo: AgentRepo | null = null;
   private skillRepo: SkillRepo | null = null;
   private recorder: RunRecorder | null = null;
+  private toolBus: ToolBus | null = null;
 
   /** 就绪门闩（与 ChatService 同一纪律：UI 先 await whenReady，抢跑不靠错误态兜底） */
   private readyResolve: (() => void) | null = null;
@@ -243,6 +253,27 @@ export class AgentService {
   /** 生成新技能 id。 */
   newSkillId(): string {
     return SkillRepo.newId();
+  }
+
+  /** entry 装配时注入 ToolBus（与 ChatService.attachTools 同一时机、同一实例）。 */
+  attachTools(bus: ToolBus): void {
+    this.toolBus = bus;
+  }
+
+  /** 端上真实注册的工具清单（技能编辑器的声明选择器；未装配 = 空清单，如实）。 */
+  listToolOptions(): ToolOption[] {
+    if (this.toolBus === null) {
+      return [];
+    }
+    return this.toolBus.listAll().map((t: Tool): ToolOption => {
+      const o: ToolOption = { toolId: t.name, description: t.description };
+      return o;
+    });
+  }
+
+  /** 声明名归一（别名表：WebFetch→http.fetch 等）——UI 判可用性与装配同一口径。 */
+  normalizeToolName(declared: string): string {
+    return normalizeToolName(declared);
   }
 
   /** 保存 Agent 定义（编辑器保存；anchor >25% 告警在 UI 侧按 §27.4 提示） */
