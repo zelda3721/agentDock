@@ -27,7 +27,7 @@ import {
 import { KnowledgeService } from 'core-rag';
 import { ModelFacade } from 'models';
 import { InferenceProvider, LocalProvider, ProviderRegistry } from 'core-llm';
-import { AgentService, ChatService, CalcTool, DatetimeTool, HttpFetchTool, KbSearchTool, ToolBus } from 'core-agent';
+import { AgentService, ChatService, CalcTool, DatetimeTool, HttpFetchTool, KbSearchTool, TOOL_HTTP_FETCH, ToolBus, toolGrantKey } from 'core-agent';
 import { MemoryService, pickLocalMemoryProvider } from 'core-memory';
 import { BreakpointSystem } from '../common/BreakpointSystem';
 
@@ -112,9 +112,13 @@ export default class EntryAbility extends UIAbility {
       toolBus.register(new DatetimeTool());
       toolBus.register(new KbSearchTool());
       toolBus.register(new CalcTool());
-      // http.fetch：白名单即授权（默认全拒）。白名单读取器绑到 KvConfig——用户在设置里增删，
-      // 抓取时现读（授权可随时撤销即时生效，不吃进程内缓存）。
-      toolBus.register(new HttpFetchTool((): Promise<string[]> => this.readHttpFetchWhitelist(kv)));
+      // http.fetch（§9.4）：白名单（设置页预信任）∪ 按 Agent 授权（交互式「始终允许该域名」）。
+      // 三个访问器都绑 KvConfig 且抓取时现读——增删/撤销即时生效，不吃进程内缓存。
+      toolBus.register(new HttpFetchTool(
+        (): Promise<string[]> => this.readHttpFetchWhitelist(kv),
+        (agentId: string): Promise<string[]> => this.readHttpFetchGrants(kv, agentId),
+        (agentId: string, domain: string): Promise<void> => this.addHttpFetchGrant(kv, agentId, domain)
+      ));
       ChatService.get().attachTools(toolBus);
       // 技能编辑器的工具声明选择器读同一实例（T1.0-10③）——两处清单必须同源
       AgentService.get().attachTools(toolBus);
@@ -180,6 +184,38 @@ export default class EntryAbility extends UIAbility {
       return result;
     } catch (e) {
       return [];
+    }
+  }
+
+  /** 按 Agent 的 http.fetch 授权域名读取器（kv_config: tool_grant:<agentId>:http.fetch，JSON 数组）。 */
+  private async readHttpFetchGrants(kv: KvConfig, agentId: string): Promise<string[]> {
+    try {
+      const json: string | null = await kv.getJson(toolGrantKey(agentId, TOOL_HTTP_FETCH));
+      if (json === null || json.length === 0) {
+        return [];
+      }
+      const parsed: Object = JSON.parse(json) as Object;
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+      const result: string[] = [];
+      for (const item of parsed as Object[]) {
+        if (typeof item === 'string' && item.trim().length > 0) {
+          result.push(item.trim());
+        }
+      }
+      return result;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /** 记一条按 Agent 的域名授权（去重）。用户选「始终允许该域名」时由工具复跑触发。 */
+  private async addHttpFetchGrant(kv: KvConfig, agentId: string, domain: string): Promise<void> {
+    const list: string[] = await this.readHttpFetchGrants(kv, agentId);
+    if (list.indexOf(domain) < 0) {
+      list.push(domain);
+      await kv.setJson(toolGrantKey(agentId, TOOL_HTTP_FETCH), JSON.stringify(list));
     }
   }
 

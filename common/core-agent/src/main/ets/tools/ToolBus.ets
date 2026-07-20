@@ -69,6 +69,14 @@ export interface ToolContext {
   targetProviderIsRemote: boolean;
   /** 当前 Agent 绑定的知识库（kb.search 的检索范围；未绑定 = 空数组，工具如实说明） */
   kbLibIds?: string[];
+  /**
+   * 交互式确认已获批（§9.4）：由 ChatService 在用户批准后**重新调用**工具时置 true。
+   * confirm 类工具（http.fetch）首次以未确认态运行 ⇒ 返回 needs_confirmation 哨兵；
+   * 循环挂起弹卡询问，获批后带此标志复跑，工具据此放行执行。
+   */
+  confirmed?: boolean;
+  /** 用户选了「始终允许该域名」：工具据此把本次主体（域名）记进按 Agent 的授权（下次免询问）。 */
+  rememberGrant?: boolean;
 }
 
 /** 工具执行结果 */
@@ -369,10 +377,12 @@ export class ToolBus {
       };
       return missing;
     }
-    if (tool.permission !== 'none') {
+    // confirm 类工具自门控（未授权返回 needs_confirmation 哨兵，由 ChatService 循环弹卡编排，§9.4）；
+    // none 直接放行；always_ask（每次必问、不记忆）暂未实现，仍如实拒绝。
+    if (tool.permission !== 'none' && tool.permission !== 'confirm') {
       const denied: ToolResult = {
         ok: false,
-        content: `工具 ${name} 需要用户授权，当前版本尚未支持授权流程，无法执行`,
+        content: `工具 ${name} 需要用户授权，当前版本尚未支持该授权模式，无法执行`,
         errorCode: 'permission_denied',
         errorMessage: `permission '${tool.permission}' not yet supported`
       };

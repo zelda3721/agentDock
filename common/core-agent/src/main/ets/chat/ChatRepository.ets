@@ -423,6 +423,28 @@ export class ChatRepository {
   }
 
   /** 最近 limit 条消息（返回时按时间升序，UI 直接从上往下渲染） */
+  /**
+   * 启动对账（T1.0-02d）：把上个进程遗留的中间态收敛为诚实终态。
+   * 进程在流式/工具确认挂起期间被系统杀死时，消息行会永久停在 'streaming'（气泡永远转圈、
+   * 已无 handle 可取消），agent_runs 永久停在 'running'。交互式确认把这个窗口从秒级放大成
+   * 「等待人类」的无界时长——必须在 init 时一次性清扫。幂等：无残留即空操作。
+   */
+  async reconcileStale(): Promise<void> {
+    const now: number = Date.now();
+    // 流式/发送中的消息 → cancelled（渲染为 ABORTED 终态，不再转圈），附如实说明
+    await this.rdb.exec(
+      `UPDATE messages SET status = 'cancelled', error = ?, updated_at = ?
+        WHERE status IN ('streaming', 'sending');`,
+      ['上次未完成（应用已关闭）', now] as Array<SqlArg>
+    );
+    // 运行中的 Run → cancelled 终态（canTransition 允许 running→cancelled）
+    await this.rdb.exec(
+      `UPDATE agent_runs SET state = 'cancelled', ended_at = ?, updated_at = ?
+        WHERE state = 'running';`,
+      [now, now] as Array<SqlArg>
+    );
+  }
+
   async listMessages(convId: string, limit: number): Promise<ChatMessageRecord[]> {
     const rows: ChatMessageRecord[] = await this.rdb.queryRows<ChatMessageRecord>(
       `SELECT id, conv_id, seq, role, content, status, error, citations, created_at

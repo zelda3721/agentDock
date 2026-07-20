@@ -4,13 +4,12 @@
 /**
  * http.fetch —— 受控网络抓取工具（T1.0-02c；设计 §5.2 内置工具集 / §9.4 / 红线 19）。
  *
- * 授权模型（本版）：**域名白名单即授权边界**。出厂白名单为空 = 默认拒绝一切外域；
- * 用户在设置里显式添加受信域名后，对该域名（及其子域）的抓取才放行。白名单由用户在
- * 设置页管理，是持久、可见、可撤销的授权——比每次弹窗更适合「反复抓同一批站点」的用法。
- *
- * 与设计 §9.4「每 Agent 首次调用弹确认」的关系：交互式确认卡片（AdToolCard 的 NEEDS_CONFIRM
- * 相位 + 允许/拒绝/记住域名）是**增强**，需工具循环支持中途挂起等待 UI 决策——留待后续。
- * 在那之前，白名单硬门控提供真实的授权边界（默认全拒），不是占位、不是敷衍。
+ * 授权模型（§9.4，两条互补路径）：
+ * · **设置白名单**——用户在设置页预先信任的域名（及其子域），免询问直接放行。持久、可见、可撤销。
+ * · **交互式确认**——遇到既不在白名单、也未按 Agent 授权过的域名时，工具返回 needs_confirmation
+ *   哨兵，ChatService 循环挂起弹出确认卡（拒绝 / 仅本次允许 / 始终允许该域名）。选「始终允许」
+ *   即把该域名记进**按 Agent** 的授权（下次免询问，禁止通配「记住全部 Agent」——红线：授权按 Agent）。
+ * 二者取并集：域名 ∈ 白名单 ∪ 本 Agent 已授权域名 ⇒ 直接抓；否则询问。出厂空 ⇒ 首次访问必问。
  *
  * 安全护栏（逐条硬性）：
  * · 仅 http/https；file:// data:// 等非网络协议一律拒（防 SSRF 式协议绕过）。
@@ -43,32 +42,61 @@ const URL_PARAM: ToolParamSchema = {
 const HTTP_SCHEMA_PROPS: Record<string, ToolParamSchema> = { 'url': URL_PARAM };
 const HTTP_FETCH_SCHEMA: ToolJsonSchema = { type: 'object', properties: HTTP_SCHEMA_PROPS, required: ['url'] };
 
-/** 从 URL 取小写主机名；非 http/https 或结构非法返回空串。 */
-function hostOf(url: string): string {
-  const lower: string = url.trim();
+/** URL 解析结果：授权/连接都以 host 为准；hasUserinfo 用于拒绝带凭据的网址。 */
+interface ParsedUrl {
+  ok: boolean;
+  host: string;
+  hasUserinfo: boolean;
+}
+
+/**
+ * 解析 http/https URL 的主机名（RFC3986 authority 次序：**先剥 userinfo，再去端口**）。
+ *
+ * 安全关键（对抗审查确认）：必须在定位端口 ':' 之前先剥掉 `userinfo@`，否则
+ * `http://example.com:1@attacker.test/` 会被错误解析成 host=example.com（userinfo 的用户名），
+ * 而真实连接落到 attacker.test——授权主体与连接目标分叉，绕过白名单与确认卡。
+ * 另：带 `@` 凭据的抓取网址一律拒绝（凭据入 URL 是异味，且徒增解析歧义）。
+ */
+function parseUrl(url: string): ParsedUrl {
+  const bad: ParsedUrl = { ok: false, host: '', hasUserinfo: false };
+  const t: string = url.trim();
   let rest: string;
-  if (lower.startsWith('http://')) {
-    rest = lower.substring(7);
-  } else if (lower.startsWith('https://')) {
-    rest = lower.substring(8);
+  if (t.startsWith('http://')) {
+    rest = t.substring(7);
+  } else if (t.startsWith('https://')) {
+    rest = t.substring(8);
   } else {
-    return '';
+    return bad;
   }
-  // 主机名 = 到第一个 / ? # : 之前的部分（去掉可能的 user@）
-  let end: number = rest.length;
+  // authority = 到第一个 / ? # 之前（端口的 ':' 属于 authority 内部，此处不能当分隔符）
+  let authEnd: number = rest.length;
   for (let i = 0; i < rest.length; i++) {
     const c: string = rest.charAt(i);
-    if (c === '/' || c === '?' || c === '#' || c === ':') {
-      end = i;
+    if (c === '/' || c === '?' || c === '#') {
+      authEnd = i;
       break;
     }
   }
-  let host: string = rest.substring(0, end);
-  const at: number = host.indexOf('@');
-  if (at >= 0) {
-    host = host.substring(at + 1);
+  let authority: string = rest.substring(0, authEnd);
+  const hasUserinfo: boolean = authority.indexOf('@') >= 0;
+  if (hasUserinfo) {
+    // 剥 userinfo：取最后一个 '@' 之后（用户名/密码里也可能含 '@'）
+    authority = authority.substring(authority.lastIndexOf('@') + 1);
   }
-  return host.toLowerCase();
+  // 去端口：IPv6 字面量 [::1]:port 先取方括号内，其余取第一个 ':' 之前
+  let host: string;
+  if (authority.startsWith('[')) {
+    const close: number = authority.indexOf(']');
+    host = close >= 0 ? authority.substring(1, close) : authority;
+  } else {
+    const colon: number = authority.indexOf(':');
+    host = colon >= 0 ? authority.substring(0, colon) : authority;
+  }
+  if (host.length === 0) {
+    return bad;
+  }
+  const r: ParsedUrl = { ok: true, host: host.toLowerCase(), hasUserinfo: hasUserinfo };
+  return r;
 }
 
 /** 主机是否被白名单授权：精确命中，或为白名单条目的子域（host endsWith '.'+entry）。 */
@@ -121,44 +149,81 @@ export class HttpFetchTool implements Tool {
     '抓取一个网页/接口的文本内容（仅限设置白名单内的域名）。用于查证实时信息或读取指定网址。' +
     '只支持 http/https 且返回文本；二进制内容不支持。';
   readonly jsonSchema: ToolJsonSchema = HTTP_FETCH_SCHEMA;
-  // 白名单即授权边界（见文件头）；permission='none' 让 ToolBus 放行到本工具，由本工具硬门控域名。
-  readonly permission: ToolPermission = 'none';
+  // confirm 类：ToolBus 放行到本工具，由本工具判定授权——命中白名单/已授权直接抓，否则返回
+  // needs_confirmation 哨兵让循环弹卡（§9.4）。ctx.confirmed=true 时说明用户已批准，直接抓。
+  readonly permission: ToolPermission = 'confirm';
   readonly timeoutMs: number = 12000;
 
-  /** 白名单读取器（entry 注入，源自 KvConfig）；未注入 = 恒空 = 默认全拒。 */
+  /** 白名单读取器（entry 注入，源自 KvConfig）；未注入 = 恒空。 */
   private readonly readWhitelist: () => Promise<string[]>;
+  /** 按 Agent 已授权域名读取器（entry 注入，源自 KvConfig 的 tool_grant:<agentId>:http.fetch）。 */
+  private readonly readGrants: (agentId: string) => Promise<string[]>;
+  /** 记一条按 Agent 的域名授权（用户选「始终允许该域名」时由确认复跑触发）。 */
+  private readonly addGrant: (agentId: string, domain: string) => Promise<void>;
 
-  constructor(readWhitelist: () => Promise<string[]>) {
+  constructor(readWhitelist: () => Promise<string[]>,
+              readGrants: (agentId: string) => Promise<string[]>,
+              addGrant: (agentId: string, domain: string) => Promise<void>) {
     this.readWhitelist = readWhitelist;
+    this.readGrants = readGrants;
+    this.addGrant = addGrant;
   }
 
-  async execute(args: ToolArgs, _ctx: ToolContext): Promise<ToolResult> {
+  async execute(args: ToolArgs, ctx: ToolContext): Promise<ToolResult> {
     const url: string = typeof args.url === 'string' ? args.url.trim() : '';
     if (url.length === 0) {
       return {
         ok: false, content: 'url 不能为空', errorCode: 'schema_invalid', errorMessage: 'empty url'
       };
     }
-    const host: string = hostOf(url);
-    if (host.length === 0) {
+    const parsed: ParsedUrl = parseUrl(url);
+    if (!parsed.ok) {
       return {
         ok: false,
-        content: '只支持 http:// 或 https:// 网址，其他协议不予抓取。',
-        errorCode: 'invalid_url', errorMessage: `unsupported scheme: ${url}`
+        content: '只支持 http:// 或 https:// 的普通网址，其他协议或格式不予抓取。',
+        errorCode: 'invalid_url', errorMessage: `unsupported or malformed url: ${url}`
       };
     }
-    let whitelist: string[];
-    try {
-      whitelist = await this.readWhitelist();
-    } catch (e) {
-      whitelist = [];
-    }
-    if (!isHostAllowed(host, whitelist)) {
+    if (parsed.hasUserinfo) {
+      // 带 user@host 凭据的网址一律拒绝（安全：授权主体须与连接目标一致，凭据入 URL 是异味）
       return {
         ok: false,
-        content: `域名 ${host} 未在白名单授权，未抓取。如需允许，请到「设置 → 网络抓取白名单」把它加进去。`,
-        errorCode: 'permission_denied', errorMessage: `domain not whitelisted: ${host}`
+        content: '网址不能包含用户名（http://用户@主机 形式），出于安全考虑不予抓取。',
+        errorCode: 'invalid_url', errorMessage: 'url contains userinfo'
       };
+    }
+    const host: string = parsed.host;
+
+    // 授权判定：未确认态先查白名单 ∪ 本 Agent 已授权域名；都不命中 ⇒ 返回哨兵请求确认。
+    // ctx.confirmed=true = 用户已在卡片上批准本次访问，跳过判定直接抓（allow_once 也走这里）。
+    if (ctx.confirmed !== true) {
+      let authorized: boolean = false;
+      try {
+        authorized = isHostAllowed(host, await this.readWhitelist());
+      } catch (e) {
+        authorized = false;
+      }
+      if (!authorized) {
+        try {
+          authorized = isHostAllowed(host, await this.readGrants(ctx.agentId));
+        } catch (e) {
+          authorized = false;
+        }
+      }
+      if (!authorized) {
+        // 哨兵：content 载明域名，供循环组织确认卡与授权复跑（§9.4）
+        return {
+          ok: false, content: host,
+          errorCode: 'needs_confirmation', errorMessage: `confirmation required for domain: ${host}`
+        };
+      }
+    } else if (ctx.rememberGrant === true) {
+      // 用户选了「始终允许该域名」：先落授权（失败不挡本次抓取，只影响下次是否再问）
+      try {
+        await this.addGrant(ctx.agentId, host);
+      } catch (e) {
+        // 记账失败仅记日志级别，不阻断——本次已获批，抓取照常
+      }
     }
 
     const httpRequest: http.HttpRequest = http.createHttp();
@@ -167,9 +232,19 @@ export class HttpFetchTool implements Tool {
         method: http.RequestMethod.GET,
         connectTimeout: HTTP_CONNECT_TIMEOUT_MS,
         readTimeout: HTTP_READ_TIMEOUT_MS,
+        // 安全关键（对抗审查确认）：禁止跟随 3xx 重定向。否则受信主机 302→内网/攻击者主机
+        // 即成开放重定向（SSRF），且返回体会被冒名为原主机——授权只认原始 host，重定向目标未再校验。
+        maxRedirects: 0,
         expectDataType: http.HttpDataType.STRING
       });
       const code: number = response.responseCode;
+      if (code >= 300 && code < 400) {
+        return {
+          ok: false,
+          content: `该地址返回了重定向（HTTP ${code}），出于安全未跟随。请直接提供最终网址。`,
+          errorCode: 'redirect_blocked', errorMessage: `redirect not followed: ${code}`
+        };
+      }
       if (code < 200 || code >= 300) {
         return {
           ok: false,

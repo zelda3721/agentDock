@@ -372,6 +372,17 @@ export class ChatController {
     // 状态落定交给流的 done(finishReason='aborted') 事件；此处只停按钮抖动，不抢先改文案
   }
 
+  /**
+   * 回应工具的交互式确认（§9.4）：用户在 NEEDS_CONFIRM 卡片上选择后由 UI 调用。
+   * decision：'deny' | 'allow_once' | 'allow_domain'。透传给运行中的 turn，其余由 core-agent 编排。
+   */
+  confirmTool(toolCallId: string, decision: string): void {
+    if (this.handle === null) {
+      return;
+    }
+    this.handle.confirmTool(toolCallId, decision);
+  }
+
   /** 中断 / 失败后重发同一句（AdMessage 的 [重试] / [重新生成]）。 */
   retryLast(): void {
     if (this.lastUserText.length === 0 || this.handle !== null) {
@@ -599,6 +610,17 @@ export class ChatController {
         fresh.callId = callId;
         msg.toolCalls.push(fresh);
       }
+    } else if (ev.toolPhase === 'confirm') {
+      // 交互式确认（§9.4）：把卡片切到 NEEDS_CONFIRM，带上请求域名与出端提醒
+      if (card === null) {
+        card = new AdToolCall(name, AdToolStatus.NEEDS_CONFIRM);
+        card.callId = callId;
+        msg.toolCalls.push(card);
+      } else {
+        card.status = AdToolStatus.NEEDS_CONFIRM;
+      }
+      card.requestedDomain = ev.requestedDomain ?? '';
+      card.requestLeavesDevice = ev.requestLeavesDevice === true;
     } else {
       const ok: boolean = ev.toolPhase === 'done';
       if (card === null) {

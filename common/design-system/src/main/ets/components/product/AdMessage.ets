@@ -115,6 +115,12 @@ export struct AdMessage {
   };
   onRailSegment: (segment: number) => void = () => {
   };
+  /**
+   * 工具确认决策回调（§9.4）：NEEDS_CONFIRM 卡片上「拒绝/仅本次/始终允许该域名」触发。
+   * decision：'deny' | 'allow_once' | 'allow_domain'；callId 定位具体调用。
+   */
+  onToolConfirm: (callId: string, decision: string) => void = () => {
+  };
 
   /** 附加槽：AdToolCard / 多模态附件等 */
   @BuilderParam extra: () => void = this.emptySlot;
@@ -178,7 +184,18 @@ export struct AdMessage {
         // 工具执行卡片（正文上方；折叠展开由卡片自理）
         if (this.role === AdMessageRole.ASSISTANT && this.toolCalls.length > 0) {
           ForEach(this.toolCalls, (call: AdToolCall) => {
-            AdToolCard({ call: call })
+            AdToolCard({
+              call: call,
+              onDeny: () => {
+                this.onToolConfirm(call.callId, 'deny');
+              },
+              onAllowOnce: () => {
+                this.onToolConfirm(call.callId, 'allow_once');
+              },
+              onAllowDomain: () => {
+                this.onToolConfirm(call.callId, 'allow_domain');
+              }
+            })
           }, (call: AdToolCall, index: number) => `${index}-${call.name}-${call.status}`)
         }
 

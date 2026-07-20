@@ -49,9 +49,13 @@ export interface ChatTurnEvent {
    * done/failed 在结束时发出，附带卡片全量数据（入参/出参摘要/耗时）——UI 据此渲染 AdToolCard。
    */
   toolName?: string;
-  toolPhase?: 'running' | 'done' | 'failed';
+  toolPhase?: 'running' | 'done' | 'failed' | 'confirm';
   /** 工具调用 id（同一 assistant 消息内定位/更新对应卡片；本地合成 call_local_N） */
   toolCallId?: string;
+  /** confirm 相位（§9.4）：请求访问的域名（卡片展示 + 出端提醒判定） */
+  requestedDomain?: string;
+  /** confirm 相位：该请求是否出端（远程域名恒 true，触发琥珀 + 空心云弧出端提醒） */
+  requestLeavesDevice?: boolean;
   /** 入参 JSON 原文（done/failed 时带） */
   toolArgsJson?: string;
   /** 出参摘要（done/failed 时带；失败为错误说明） */
@@ -212,6 +216,12 @@ export interface ChatTurnHandle {
   readonly assistantMessageId: string;
   stream(): AsyncIterable<ChatTurnEvent>;
   cancel(): void;
+  /**
+   * 回应工具的交互式确认（§9.4）：UI 在 NEEDS_CONFIRM 卡片上做出选择后调用。
+   * decision：'deny' 拒绝 / 'allow_once' 仅本次 / 'allow_domain' 始终允许该域名。
+   * toolCallId 必须与 confirm 事件里的一致；不匹配或无挂起确认则忽略（幂等）。
+   */
+  confirmTool(toolCallId: string, decision: string): void;
 }
 
 // ---------------------------------------------------------------------------

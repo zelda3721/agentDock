@@ -52,6 +52,9 @@ export struct MessageStream {
   /** 溯源条某段被点：lg 推入检视栏；md/sm 由 AdProvenanceRail 就地展开（组件自理） */
   onRailSegment: (messageId: string, segment: number) => void = () => {
   };
+  /** 工具确认决策（§9.4）：NEEDS_CONFIRM 卡片上选择后透传给控制器 */
+  onToolConfirm: (callId: string, decision: string) => void = () => {
+  };
   /** 空态里的行动邀请 */
   onCreateConversation: () => void = () => {
   };
@@ -128,6 +131,9 @@ export struct MessageStream {
                   },
                   onRailSegment: (segment: number) => {
                     this.onRailSegment(item.id, segment);
+                  },
+                  onToolConfirm: (callId: string, decision: string) => {
+                    this.onToolConfirm(callId, decision);
                   }
                 })
               }

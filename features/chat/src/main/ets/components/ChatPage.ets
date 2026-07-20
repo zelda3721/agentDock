@@ -398,6 +398,9 @@ export struct ChatPage {
         onRailSegment: (messageId: string, segment: number): void => {
           this.inspectMessage(messageId);
         },
+        onToolConfirm: (callId: string, decision: string): void => {
+          this.controller.confirmTool(callId, decision);
+        },
         onCreateConversation: (): void => {
           this.createConversation();
         }

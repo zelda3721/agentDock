@@ -377,6 +377,9 @@ class ChatTurn implements ChatTurnHandle {
   private readonly events: AsyncEventQueue<ChatTurnEvent> = new AsyncEventQueue<ChatTurnEvent>();
   /** 是否被用户中断/被抢占（区分 aborted 与 failed：落库状态与 UI 呈现都不同） */
   private aborted: boolean = false;
+  /** 交互式确认（§9.4）：挂起中确认的 resolver 与其 toolCallId（同一时刻至多一个待确认） */
+  private confirmResolve: ((decision: string) => void) | null = null;
+  private confirmCallId: string = '';
   /** 本轮实际注入的 RAG 引用数 / 被围栏拦截数（溯源真值，T0.9-14；未走检索恒 0） */
   private ragCitations: number = 0;
   private ragBlocked: number = 0;
@@ -412,6 +415,41 @@ class ChatTurn implements ChatTurnHandle {
     }
     this.aborted = true;
     this.controller.abort('user_cancelled');
+    // 取消时若有挂起的工具确认，按拒绝落定——否则循环会永远等在那个 await 上
+    this.settleConfirmation('deny');
+  }
+
+  /**
+   * 回应工具确认（§9.4，ChatTurnHandle）：UI 在 NEEDS_CONFIRM 卡片上选择后调用。
+   * toolCallId 不匹配当前挂起项则忽略（幂等——重复点击/过期卡片不误触发）。
+   */
+  confirmTool(toolCallId: string, decision: string): void {
+    if (this.confirmResolve === null || toolCallId !== this.confirmCallId) {
+      return;
+    }
+    this.settleConfirmation(decision);
+  }
+
+  /** 挂起等待用户对某工具调用的确认决策；已取消则立即按拒绝返回。 */
+  private awaitConfirmation(toolCallId: string): Promise<string> {
+    return new Promise<string>((resolve: (decision: string) => void): void => {
+      if (this.aborted) {
+        resolve('deny');
+        return;
+      }
+      this.confirmCallId = toolCallId;
+      this.confirmResolve = resolve;
+    });
+  }
+
+  /** 落定挂起中的确认（一次性）；无挂起则空操作。 */
+  private settleConfirmation(decision: string): void {
+    const resolve: ((decision: string) => void) | null = this.confirmResolve;
+    this.confirmResolve = null;
+    this.confirmCallId = '';
+    if (resolve !== null) {
+      resolve(decision);
+    }
   }
 
   // --- 执行体 -----------------------------------------------------------------
@@ -427,7 +465,7 @@ class ChatTurn implements ChatTurnHandle {
    */
   async run(text: string, explicitProviderId: string | undefined,
             onFinished: (runId: string) => void): Promise<void> {
-    const startedAt: number = Date.now();
+    let startedAt: number = Date.now();
 
     // ---- Run 账本状态（settle 用；stepSeq 是 llm+compaction 共用的单调步号） ----
     let runBegun: boolean = false;
@@ -859,7 +897,7 @@ class ChatTurn implements ChatTurnHandle {
         for (const call of step.toolCalls) {
           const toolName: string = call.function.name;
           let result: ToolResult;
-          const toolStartedAt: number = Date.now();
+          let toolStartedAt: number = Date.now();
           if (this.aborted) {
             // 用户已取消：不再执行，但仍回填占位结果保住协议配对；下一圈①的取消裁决负责落定
             result = { ok: false, content: '本轮已取消，工具未执行', errorCode: 'cancelled', errorMessage: 'cancelled' };
@@ -903,6 +941,33 @@ class ChatTurn implements ChatTurnHandle {
               kbLibIds: binding !== null ? binding.libIds : []
             };
             result = await this.toolBus.execute(toolName, parsedArgs, toolCtx);
+            // 交互式确认（§9.4）：工具对未授权域名返回 needs_confirmation 哨兵 →
+            // 弹确认卡、挂起本轮等用户决策，获批后带 confirmed 复跑。
+            if (result.errorCode === 'needs_confirmation') {
+              const domain: string = result.content;
+              this.events.push({
+                type: 'tool', toolName: toolName, toolPhase: 'confirm', toolCallId: call.id,
+                requestedDomain: domain, requestLeavesDevice: true
+              });
+              const waitStart: number = Date.now();
+              const decision: string = await this.awaitConfirmation(call.id);
+              // 用户思考时间不计入：Run 墙钟预算与本工具耗时读数都要抵消这段等待——
+              // 否则卡片/run_step/PERF 会把 30s 斟酌算进一次 2s 抓取（对抗审查确认的读数说谎）。
+              const confirmWaitMs: number = Date.now() - waitStart;
+              startedAt += confirmWaitMs;
+              toolStartedAt += confirmWaitMs;
+              if (decision === 'allow_once' || decision === 'allow_domain') {
+                toolCtx.confirmed = true;
+                toolCtx.rememberGrant = decision === 'allow_domain';
+                result = await this.toolBus.execute(toolName, parsedArgs, toolCtx);
+              } else {
+                // deny 与任何未知决策（安全默认）：不抓取，如实回填
+                result = {
+                  ok: false, content: `已按你的选择拒绝访问 ${domain}，未抓取。`,
+                  errorCode: 'permission_denied', errorMessage: 'user denied confirmation'
+                };
+              }
+            }
           }
           const toolLatencyMs: number = Date.now() - toolStartedAt;
           // 出参摘要：成功取 content，失败取错误说明（content 已是面向用户/模型的可读文本）；有界截断
@@ -1230,8 +1295,17 @@ export class ChatService {
 
   /** entry 启动时装配一次：注入**已打开**的 RDB（开库与迁移是 core-data 的事，本层不碰） */
   async init(rdb: AppRdbStore): Promise<void> {
-    this.repo = new ChatRepository(rdb);
+    const repo: ChatRepository = new ChatRepository(rdb);
+    this.repo = repo;
     this.recorder = new RunRecorder(rdb);
+    // 启动对账：把上个进程被杀时遗留的 streaming 消息 / running 运行收敛为终态
+    // （交互式确认的无界挂起把这类残留从边角变成高概率，见 reconcileStale 注释）。
+    // 对账失败不挡启动——最坏是残留一条转圈气泡，比整个聊天不可用轻。
+    try {
+      await repo.reconcileStale();
+    } catch (e) {
+      Logger.warn(TAG, 'reconcile stale on init failed', [{ key: 'err', value: (e as Error).message }]);
+    }
     this.ready = true;
     if (this.readyResolve !== null) {
       this.readyResolve();
