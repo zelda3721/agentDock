@@ -10,6 +10,9 @@ import {
   AdCtxGauge,
   AdGlyph,
   AdGlyphKind,
+  AdIconButton,
+  AdIconButtonVariant,
+  AdRadius,
   AdSpace,
   AdTextField,
   AdType,
@@ -115,6 +118,8 @@ export struct ChatComposer {
             multiline: true,
             areaHeight: this.areaHeight(),
             fieldEnabled: this.composerEnabled,
+            // 混合现代方向：输入井取更柔的 lg 圆角
+            radius: AdRadius.lg,
             // token 计数由 countTokens() 异步返回；未接线时 AdTextField 显示 `~—— tok`（**不显示 0**）
             // TODO(T0.9-15)：接 ChatService 的 countTokens 防抖（300ms）后回填 tokenCount / tokenBudget
             onTextChange: (value: string) => {
@@ -138,10 +143,12 @@ export struct ChatComposer {
             }
           })
         } else {
-          AdButton({
-            label: '发送',
-            variant: AdButtonVariant.PRIMARY,
-            btnSize: AdButtonSize.MD,
+          // 混合现代方向：圆形发送键（青底 + 上箭头）——[R-38a] 的文字发送键退居精修仪表方案 A。
+          AdIconButton({
+            glyph: AdGlyphKind.ARROW_UP,
+            variant: AdIconButtonVariant.SOLID,
+            circular: true,
+            visualSize: 40,
             // 空文本不可发送；无模型 / 无会话时 composerEnabled 已为 false
             btnEnabled: this.composerEnabled && this.draft.trim().length > 0,
             // TODO(T1.0-15)：PC 快捷键（Ctrl+Enter 发送 / Esc 中断）由页面注册，见 §7.2

@@ -164,12 +164,48 @@ export struct AdMessage {
   }
 
   build() {
-    // 左 3vp 语义色带用 **border-left** 实现（assistant 的色带**就是**这条回答的来源）。
-    // 不用「兄弟 Column + height('100%')」：百分比高度在自适应高度的父容器里按父的**最大约束**解析，
-    // 真机（T0.9-15 打磨）上它把每条消息的 ListItem 撑成整个视口高——一条消息一整屏，
-    // 「一个块一个块」的卡片墙即源于此。border 天然与内容盒等高，零测量成本。
+    if (this.isUser()) {
+      this.userMessage();
+    } else {
+      this.assistantMessage();
+    }
+  }
+
+  /**
+   * 用户消息（混合现代方向）：右对齐柔角卡片，hug 内容、最宽 82%，中性 surface_sunken 底
+   * （**不用青琥珀**，避免蹭来源语义轴）。用户轮次无工具/溯源/流式，只有时间戳 + 正文。
+   */
+  @Builder
+  userMessage() {
+    Column() {
+      Column({ space: AdSpace.hairline }) {
+        if (this.showHeader && this.timestamp.length > 0) {
+          Text(this.timestamp).msgTimestamp()
+        }
+        Text(this.text).msgBody()
+      }
+      .alignItems(HorizontalAlign.Start)
+      .constraintSize({ maxWidth: '82%' })
+      .padding({ left: AdSpace.s3, right: AdSpace.s3, top: AdSpace.s2, bottom: AdSpace.s2 })
+      .backgroundColor(AdColor.surfaceSunken)
+      .borderRadius(AdRadius.lg)
+      .border({ width: AdStroke.hairline, color: AdColor.border })
+      .accessibilityGroup(true)
+      .accessibilityText(this.a11y())
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.End)
+  }
+
+  /**
+   * 助手消息：全宽通栏 + 左 3vp 语义色带（**就是**这条回答的来源）。结构与原版一致，
+   * 仅眉标加来源头像（现代化触点）。border 只画左边、不设标量 style——否则会退化成整框（卡片墙）。
+   */
+  @Builder
+  assistantMessage() {
     Column({ space: AdSpace.s2 }) {
-      // 眉标行：角色 + 时间戳（显隐由 showHeader 裁决，见其注释）
+      // 眉标行：角色 + 时间戳（助手 showHeader 恒为 false——身份由左色带 + 溯源条承担；
+      // 混合现代方向若要 AI 头像/智能体名，需把 agent avatar/name 接进 message VM，见 backlog）
       if (this.showHeader) {
         Row() {
           Text(this.roleLabel).msgEyebrow(this.bandColor()).layoutWeight(1)
@@ -324,16 +360,21 @@ export struct AdMessage {
     }
     .alignItems(HorizontalAlign.Start)
     .width('100%')
-    // 聊天正文最大宽度 720vp：超宽窗口下居中，不铺满（长行破坏阅读）
+    // 聊天正文最大宽度 720vp：超宽窗口下正文居中，不铺满（长行破坏阅读）
     .constraintSize({ maxWidth: AdBreakpoints.readingMaxVp })
     .padding({ left: AdSpace.s3, right: AdSpace.s3, top: AdSpace.s2, bottom: AdSpace.s2 })
-    // 3vp 语义色带（B4）：border 与内容盒等高，背景与圆角照常生效
+    // 3vp 左语义色带（B4）：只给 left width、**不设标量 style**（否则 ArkUI 施加到四边 → 整框卡片墙）
     .border({ width: { left: AdStroke.marker }, color: this.bandColor() })
     .backgroundColor(this.surfaceOf())
     .borderRadius(this.role === AdMessageRole.TOOL ? AdRadius.md : AdRadius.none)
     .accessibilityGroup(true)
     .accessibilityText(this.a11y())
   }
+
+  private isUser(): boolean {
+    return this.role === AdMessageRole.USER;
+  }
+
 
   /**
    * 消息底色（§4.2 [R-38a] + §3 B4 表）：

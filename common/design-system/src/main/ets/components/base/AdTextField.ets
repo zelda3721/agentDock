@@ -67,6 +67,8 @@ export struct AdTextField {
   @Prop tokenCount: number = -1;
   /** token 预算；<=0 表示不显示预算分母 */
   @Prop tokenBudget: number = 0;
+  /** 圆角（默认 AdRadius.sm；聊天输入区在混合现代方向用 AdRadius.lg 取更柔的观感） */
+  @Prop radius: number = AdRadius.sm;
 
   onTextChange: (value: string) => void = () => {
   };
@@ -91,7 +93,7 @@ export struct AdTextField {
           .placeholderColor(AdColor.inkTertiary)
           .caretColor(AdColor.brandFg)
           .backgroundColor(AdColor.surface)
-          .borderRadius(AdRadius.sm)
+          .borderRadius(this.radius)
           .border({ width: this.resolveBorderWidth(), color: this.resolveBorderColor(), style: BorderStyle.Solid })
           .padding(this.innerPadding())
           .onFocus(() => {
@@ -115,7 +117,7 @@ export struct AdTextField {
           .placeholderColor(AdColor.inkTertiary)
           .caretColor(AdColor.brandFg)
           .backgroundColor(AdColor.surface)
-          .borderRadius(AdRadius.sm)
+          .borderRadius(this.radius)
           .border({ width: this.resolveBorderWidth(), color: this.resolveBorderColor(), style: BorderStyle.Solid })
           .padding(this.innerPadding())
           .onFocus(() => {

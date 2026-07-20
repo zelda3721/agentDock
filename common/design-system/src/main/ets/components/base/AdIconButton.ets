@@ -20,7 +20,9 @@ import { AdGlyph, AdGlyphKind } from './AdGlyph';
 export enum AdIconButtonVariant {
   GHOST,
   TONAL,
-  DANGER
+  DANGER,
+  /** 实心品牌填充（青底 + brandOn 图标）：圆形发送键等主操作，混合现代方向 */
+  SOLID
 }
 
 @Component
@@ -144,6 +146,9 @@ export struct AdIconButton {
   }
 
   private getBackground(): ResourceColor {
+    if (this.variant === AdIconButtonVariant.SOLID) {
+      return this.btnEnabled ? AdColor.brandFg : AdColor.surfaceSunken;
+    }
     if (this.variant === AdIconButtonVariant.TONAL) {
       return AdColor.surfaceSunken;
     }
@@ -153,6 +158,9 @@ export struct AdIconButton {
   private foreground(): Resource {
     if (!this.btnEnabled) {
       return AdColor.inkDisabled;
+    }
+    if (this.variant === AdIconButtonVariant.SOLID) {
+      return AdColor.brandOn;   // 青底上的前景（发送箭头）
     }
     return this.variant === AdIconButtonVariant.DANGER ? AdColor.dangerFg : AdColor.ink;
   }

@@ -46,7 +46,9 @@ export enum AdGlyphKind {
   /** ⌃ */
   CHEVRON_UP,
   /** ⚙：工具调用 */
-  GEAR
+  GEAR,
+  /** ↑：发送（圆形发送键的箭头，T1.0-UI 混合现代方向） */
+  ARROW_UP
 }
 
 @Component
@@ -200,6 +202,18 @@ export struct AdGlyph {
           .strokeLineCap(LineCapStyle.Round)
           .strokeLineJoin(LineJoinStyle.Round)
           .antiAlias(true)
+      } else if (this.kind === AdGlyphKind.ARROW_UP) {
+        // 竖线 + 上箭头头：发送键（形状冗余，语义由 a11yText「发送」承担）
+        Path()
+          .width(this.glyphSize)
+          .height(this.glyphSize)
+          .commands(this.arrowUpCommands())
+          .fill(Color.Transparent)
+          .stroke(this.color)
+          .strokeWidth(this.strokeWidth)
+          .strokeLineCap(LineCapStyle.Round)
+          .strokeLineJoin(LineJoinStyle.Round)
+          .antiAlias(true)
       } else {
         // GEAR：工具调用。八齿轮廓的简化实心环 + 中心镂空
         Path()
@@ -298,6 +312,12 @@ export struct AdGlyph {
       return `M${s * 0.20} ${s * 0.64} L${s / 2} ${s * 0.34} L${s * 0.80} ${s * 0.64}`;
     }
     return `M${s * 0.20} ${s * 0.36} L${s / 2} ${s * 0.66} L${s * 0.80} ${s * 0.36}`;
+  }
+  private arrowUpCommands(): string {
+    const s: number = this.glyphSize;
+    // 竖轴 + 上箭头（对称箭头头，比 chevron 更明确表达「发送」）
+    return `M${s / 2} ${s * 0.82} L${s / 2} ${s * 0.22} ` +
+      `M${s * 0.26} ${s * 0.46} L${s / 2} ${s * 0.20} L${s * 0.74} ${s * 0.46}`;
   }
 
   /** 齿轮：外圈方齿环（简化为八边形）+ 中心圆（另绘） */
