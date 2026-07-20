@@ -84,8 +84,10 @@ export struct AdToolCard {
           Text(this.call.name).toolName(AdColor.ink).layoutWeight(1)
 
           if (this.call.status === AdToolStatus.FAILED) {
+            // 失败原因五花八门（超时/未授权/网络错误/参数非法…），头行只给中性「失败」+ 耗时，
+            // **不假称超时**（UI 不许说谎）；具体原因由下方 errorText 如实呈现。
             AdGlyph({ kind: AdGlyphKind.TRIANGLE, glyphSize: 12, color: AdColor.dangerFg })
-            Text(`超时 · ${this.call.latencyMs}ms`).toolStat(AdColor.dangerFg)
+            Text(`失败 · ${this.call.latencyMs}ms`).toolStat(AdColor.dangerFg)
           } else if (this.call.status !== AdToolStatus.NEEDS_CONFIRM) {
             Text(`${this.call.latencyMs}ms · ${this.call.tokensIn + this.call.tokensOut} tok`)
               .toolStat(AdColor.inkTertiary)

@@ -639,7 +639,8 @@ export class ChatController {
       card.argsJson = st.argsJson;
       card.resultSummary = st.resultSummary;
       card.latencyMs = st.latencyMs;
-      card.errorText = st.ok ? '' : (st.error.length > 0 ? st.error : st.resultSummary);
+      // 失败卡片的错误行优先用**面向用户的出参摘要**（与实时卡片一致），技术码 error 兜底
+      card.errorText = st.ok ? '' : (st.resultSummary.length > 0 ? st.resultSummary : st.error);
       const list: AdToolCall[] | undefined = byMsg.get(st.messageId);
       if (list === undefined) {
         byMsg.set(st.messageId, [card]);

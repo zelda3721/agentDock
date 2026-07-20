@@ -11,6 +11,7 @@ import {
   AdDivider,
   AdSpace,
   AdSwitch,
+  AdTextField,
   AdType,
   AD_REDUCE_MOTION_KEY
 } from 'design-system';
@@ -61,8 +62,12 @@ export struct SettingsPage {
 
   @State private settings: AppSettings = {
     remoteOnWifiOnly: true,
-    crashReportingEnabled: false
+    crashReportingEnabled: false,
+    httpFetchWhitelist: []
   };
+  /** 网络抓取白名单：待添加的域名输入 + 行内错误 */
+  @State private newDomain: string = '';
+  @State private domainError: string = '';
   @State private loadState: string = 'loading';   // loading | ready | failed
   @State private errorText: string = '';
   /** 备份忙碌态：'' | 'export' | 'import'（进行中禁双发） */
@@ -89,10 +94,34 @@ export struct SettingsPage {
   }
 
   /** 保存并即时生效；失败回滚 UI 状态并如实提示（写穿失败=没保存成，UI 不许说谎）。 */
+  /** 添加白名单域名（规范化 + 校验在 facade；成功清空输入，失败留原文 + 行内报错）。 */
+  private addDomain(): void {
+    const input: string = this.newDomain.trim();
+    if (input.length === 0) {
+      return;
+    }
+    this.domainError = '';
+    this.facade.addHttpFetchDomain(input).then((list: string[]): void => {
+      this.settings.httpFetchWhitelist = list;
+      this.newDomain = '';
+    }).catch((e: Error): void => {
+      this.domainError = e.message;
+    });
+  }
+
+  private removeDomain(domain: string): void {
+    this.facade.removeHttpFetchDomain(domain).then((list: string[]): void => {
+      this.settings.httpFetchWhitelist = list;
+    }).catch((e: Error): void => {
+      this.domainError = e.message;
+    });
+  }
+
   private saveSettings(mutate: (s: AppSettings) => void): void {
     const next: AppSettings = {
       remoteOnWifiOnly: this.settings.remoteOnWifiOnly,
-      crashReportingEnabled: this.settings.crashReportingEnabled
+      crashReportingEnabled: this.settings.crashReportingEnabled,
+      httpFetchWhitelist: this.settings.httpFetchWhitelist
     };
     mutate(next);
     const previous: AppSettings = this.settings;
@@ -250,6 +279,62 @@ export struct SettingsPage {
             this.reduceMotion = checked;
           }
         })
+
+        AdDivider()
+
+        // ---- 网络抓取白名单（http.fetch 授权边界，§9.4）--------------------
+        Text('网络抓取白名单').settingsGroupTitle().width('100%')
+        Text('智能体的联网抓取（http.fetch 工具）只允许访问下列域名及其子域。清单为空 = 拒绝一切外域。' +
+          '添加即授权，移除即时撤销。')
+          .settingsRowHelper().width('100%')
+
+        Row({ space: AdSpace.s2 }) {
+          AdTextField({
+            label: '',
+            text: this.newDomain,
+            placeholder: '如 example.com（不带 http:// 或路径）',
+            errorText: this.domainError,
+            onTextChange: (value: string) => {
+              this.newDomain = value;
+            }
+          })
+            .layoutWeight(1)
+          AdButton({
+            label: '添加',
+            variant: AdButtonVariant.SECONDARY,
+            btnSize: AdButtonSize.MD,
+            btnEnabled: this.newDomain.trim().length > 0,
+            a11yText: '添加域名到网络抓取白名单',
+            onAction: () => {
+              this.addDomain();
+            }
+          })
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Top)
+
+        if (this.settings.httpFetchWhitelist.length === 0) {
+          Text('白名单为空：当前禁止一切联网抓取。')
+            .settingsRowHelper().width('100%')
+        } else {
+          ForEach(this.settings.httpFetchWhitelist, (domain: string) => {
+            Row({ space: AdSpace.s2 }) {
+              Text(domain).settingsRowLabel().layoutWeight(1)
+              AdButton({
+                label: '移除',
+                variant: AdButtonVariant.GHOST,
+                btnSize: AdButtonSize.SM,
+                a11yText: `从白名单移除 ${domain}`,
+                onAction: () => {
+                  this.removeDomain(domain);
+                }
+              })
+            }
+            .width('100%')
+            .alignItems(VerticalAlign.Center)
+            .padding({ top: AdSpace.s1, bottom: AdSpace.s1 })
+          }, (domain: string) => domain)
+        }
 
         AdDivider()
 

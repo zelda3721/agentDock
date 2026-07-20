@@ -15,7 +15,7 @@ import { common } from '@kit.AbilityKit';
 import { bundleManager } from '@kit.AbilityKit';
 import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
-import { AppConfig, ConfigKeys, CrashWatcher, RuntimeFlags } from 'core-infra';
+import { AppConfig, ConfigKeys, CrashWatcher, KvConfig, RuntimeFlags } from 'core-infra';
 import {
   BackupService,
   BackupProgressListener,
@@ -67,6 +67,11 @@ export interface AppSettings {
    * 供日后诊断包导出（T1.0-13）排查问题；V0.9 不存在任何上报后端。
    */
   crashReportingEnabled: boolean;
+  /**
+   * http.fetch 域名白名单（§9.4）：允许联网抓取的域名清单。空 = 默认拒绝一切外域。
+   * 白名单本身即授权边界——加进来 = 授权对该域名（及其子域）的抓取，移除 = 即时撤销。
+   */
+  httpFetchWhitelist: string[];
 }
 
 /** 导入前预览（[R-41] 确认必须带宾语：让用户看清要导入什么再确认）。 */
@@ -86,9 +91,89 @@ export class SettingsFacade {
     const kv = AppConfig.get();
     const settings: AppSettings = {
       remoteOnWifiOnly: await kv.getBoolean(ConfigKeys.NETWORK_REMOTE_WIFI_ONLY, true),
-      crashReportingEnabled: await kv.getBoolean(ConfigKeys.PRIVACY_CRASH_REPORT_ENABLED, false)
+      crashReportingEnabled: await kv.getBoolean(ConfigKeys.PRIVACY_CRASH_REPORT_ENABLED, false),
+      httpFetchWhitelist: await SettingsFacade.readHttpWhitelist(kv)
     };
     return settings;
+  }
+
+  /** 读白名单（坏数据/缺失回退空数组 = 默认全拒，安全侧）。 */
+  private static async readHttpWhitelist(kv: KvConfig): Promise<string[]> {
+    try {
+      const json: string | null = await kv.getJson(ConfigKeys.HTTP_FETCH_DOMAIN_WHITELIST);
+      if (json === null || json.length === 0) {
+        return [];
+      }
+      const parsed: Object = JSON.parse(json) as Object;
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+      const result: string[] = [];
+      for (const item of parsed as Object[]) {
+        if (typeof item === 'string' && item.trim().length > 0 && result.indexOf(item.trim()) < 0) {
+          result.push(item.trim());
+        }
+      }
+      return result;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /**
+   * 规范化并校验一个待添加的域名（去 scheme / 路径 / 端口；小写）。
+   * 返回空串 = 非法（UI 据此拒绝并提示）。只做结构性校验：含点或 localhost，不含空格/斜杠。
+   */
+  public static normalizeDomain(input: string): string {
+    let d: string = input.trim().toLowerCase();
+    if (d.startsWith('http://')) {
+      d = d.substring(7);
+    } else if (d.startsWith('https://')) {
+      d = d.substring(8);
+    }
+    // 去掉路径/查询/端口/凭据
+    const at: number = d.indexOf('@');
+    if (at >= 0) {
+      d = d.substring(at + 1);
+    }
+    for (let i = 0; i < d.length; i++) {
+      const c: string = d.charAt(i);
+      if (c === '/' || c === '?' || c === '#' || c === ':') {
+        d = d.substring(0, i);
+        break;
+      }
+    }
+    if (d.length === 0 || d.indexOf(' ') >= 0) {
+      return '';
+    }
+    if (d === 'localhost') {
+      return d;
+    }
+    return d.indexOf('.') > 0 ? d : '';
+  }
+
+  /** 添加域名（规范化 + 去重）；返回更新后的清单。非法域名抛错。 */
+  public async addHttpFetchDomain(input: string): Promise<string[]> {
+    const domain: string = SettingsFacade.normalizeDomain(input);
+    if (domain.length === 0) {
+      throw new Error('请输入有效的域名，如 example.com（不要带 http:// 或路径）');
+    }
+    const kv = AppConfig.get();
+    const list: string[] = await SettingsFacade.readHttpWhitelist(kv);
+    if (list.indexOf(domain) < 0) {
+      list.push(domain);
+      await kv.setJson(ConfigKeys.HTTP_FETCH_DOMAIN_WHITELIST, JSON.stringify(list));
+    }
+    return list;
+  }
+
+  /** 移除域名（即时撤销授权）；返回更新后的清单。 */
+  public async removeHttpFetchDomain(domain: string): Promise<string[]> {
+    const kv = AppConfig.get();
+    const list: string[] = await SettingsFacade.readHttpWhitelist(kv);
+    const next: string[] = list.filter((d: string): boolean => d !== domain);
+    await kv.setJson(ConfigKeys.HTTP_FETCH_DOMAIN_WHITELIST, JSON.stringify(next));
+    return next;
   }
 
   /** 保存并**即时生效**：先落盘（写穿），成功后同步进程内热镜像。 */

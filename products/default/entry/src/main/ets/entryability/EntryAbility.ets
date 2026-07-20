@@ -27,7 +27,7 @@ import {
 import { KnowledgeService } from 'core-rag';
 import { ModelFacade } from 'models';
 import { InferenceProvider, LocalProvider, ProviderRegistry } from 'core-llm';
-import { AgentService, ChatService, CalcTool, DatetimeTool, KbSearchTool, ToolBus } from 'core-agent';
+import { AgentService, ChatService, CalcTool, DatetimeTool, HttpFetchTool, KbSearchTool, ToolBus } from 'core-agent';
 import { MemoryService, pickLocalMemoryProvider } from 'core-memory';
 import { BreakpointSystem } from '../common/BreakpointSystem';
 
@@ -112,6 +112,9 @@ export default class EntryAbility extends UIAbility {
       toolBus.register(new DatetimeTool());
       toolBus.register(new KbSearchTool());
       toolBus.register(new CalcTool());
+      // http.fetch：白名单即授权（默认全拒）。白名单读取器绑到 KvConfig——用户在设置里增删，
+      // 抓取时现读（授权可随时撤销即时生效，不吃进程内缓存）。
+      toolBus.register(new HttpFetchTool((): Promise<string[]> => this.readHttpFetchWhitelist(kv)));
       ChatService.get().attachTools(toolBus);
       // 技能编辑器的工具声明选择器读同一实例（T1.0-10③）——两处清单必须同源
       AgentService.get().attachTools(toolBus);
@@ -152,6 +155,32 @@ export default class EntryAbility extends UIAbility {
   onDestroy(): void {
     hilog.info(DOMAIN, TAG, 'onDestroy');
     BreakpointSystem.getInstance().unregister();
+  }
+
+  /**
+   * http.fetch 域名白名单读取器（§9.4）：KvConfig 里的 JSON 数组，坏数据/缺失一律回退空数组
+   * （空 = 默认全拒，安全侧）。抓取时现读 ⇒ 用户在设置里撤销授权即时生效。
+   */
+  private async readHttpFetchWhitelist(kv: KvConfig): Promise<string[]> {
+    try {
+      const json: string | null = await kv.getJson(ConfigKeys.HTTP_FETCH_DOMAIN_WHITELIST);
+      if (json === null || json.length === 0) {
+        return [];
+      }
+      const parsed: Object = JSON.parse(json) as Object;
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+      const result: string[] = [];
+      for (const item of parsed as Object[]) {
+        if (typeof item === 'string' && item.trim().length > 0) {
+          result.push(item.trim());
+        }
+      }
+      return result;
+    } catch (e) {
+      return [];
+    }
   }
 
   /**

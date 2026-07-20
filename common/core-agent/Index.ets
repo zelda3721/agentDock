@@ -19,6 +19,7 @@ export * from './src/main/ets/runtime/RunRecorder';
 // 工具总线（§5.2 / §9.4）+ 内置工具（T1.0-02：datetime / kb.search，entry 装配时注册）
 export * from './src/main/ets/tools/ToolBus';
 export * from './src/main/ets/tools/BuiltinTools';
+export * from './src/main/ets/tools/HttpFetchTool';
 export * from './src/main/ets/tools/ToolAliases';
 
 // 上下文治理（§23 / §27）

@@ -62,6 +62,11 @@ export class ConfigKeys {
   static readonly MEMORY_ARCHIVE_RETENTION_DAYS: string = 'memory.archive_retention_days';
   /** 日志级别（0=debug…4=fatal）。 */
   static readonly LOG_LEVEL: string = 'log.level';
+  /**
+   * http.fetch 域名白名单（§9.4 / 红线 19）：JSON 字符串数组。
+   * 出厂为空 = 默认拒绝一切外域；用户在设置里显式添加受信域名即授权。白名单本身即授权边界。
+   */
+  static readonly HTTP_FETCH_DOMAIN_WHITELIST: string = 'http_fetch.domain_whitelist';
 }
 
 /** 禁止写入 kv_config 的键片段（红线 16：密钥只进 Asset Store Kit）。 */
