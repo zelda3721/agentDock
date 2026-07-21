@@ -124,19 +124,19 @@ export struct AdCard {
           .width('100%')
           .height('100%')
           .backgroundColor(this.resolveOverlay())
-          .borderRadius(AdRadius.md)
+          .borderRadius(AdRadius.lg)
           .hitTestBehavior(HitTestMode.None)
       }
     }
     .width('100%')
     .backgroundColor(this.resolveBackground())
-    .borderRadius(AdRadius.md)
+    .borderRadius(AdRadius.lg)
     .border({ width: AdStroke.hairline, color: this.resolveBorderColor(), style: BorderStyle.Solid })
     .shadow(AdElevation.shadow(this.variant === AdCardVariant.SUNKEN ? AdElevationLevel.E0 : AdElevationLevel.E1))
     .outline({
       width: this.focused ? AdStroke.emphasis : 0,
       color: AdColor.focus,
-      radius: AdRadius.md + AdStroke.emphasis,
+      radius: AdRadius.lg + AdStroke.emphasis,
       style: OutlineStyle.SOLID
     })
     .focusable(this.variant === AdCardVariant.INTERACTIVE)

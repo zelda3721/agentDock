@@ -68,7 +68,7 @@ export struct AdTextField {
   /** token 预算；<=0 表示不显示预算分母 */
   @Prop tokenBudget: number = 0;
   /** 圆角（默认 AdRadius.sm；聊天输入区在混合现代方向用 AdRadius.lg 取更柔的观感） */
-  @Prop radius: number = AdRadius.sm;
+  @Prop radius: number = AdRadius.md;
 
   onTextChange: (value: string) => void = () => {
   };

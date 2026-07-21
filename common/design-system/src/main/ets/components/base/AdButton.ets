@@ -102,7 +102,7 @@ export struct AdButton {
       }
       .alignContent(Alignment.Center)
       .backgroundColor(this.getOverlay())
-      .borderRadius(AdRadius.sm)
+      .borderRadius(AdRadius.md)
       .padding({ left: this.getPadding(), right: this.getPadding() })
       .height('100%')
       // fullWidth 时 Stack 要撑满 Button（否则染色与内容只占内容宽）；
@@ -111,7 +111,7 @@ export struct AdButton {
     }
     .type(ButtonType.Normal)
     .stateEffect(false)
-    .borderRadius(AdRadius.sm)
+    .borderRadius(AdRadius.md)
     .height(this.getHeight())
     // fullWidth 用 minWidth 100% 表达（避免给非通栏按钮写死宽度，内容宽由 Button 自适应）
     .constraintSize({ minWidth: this.fullWidth ? '100%' : this.getHeight() })
@@ -125,7 +125,7 @@ export struct AdButton {
     .outline({
       width: this.focused && this.btnEnabled ? AdStroke.emphasis : 0,
       color: AdColor.focus,
-      radius: AdRadius.sm + AdStroke.emphasis,
+      radius: AdRadius.md + AdStroke.emphasis,
       style: OutlineStyle.SOLID
     })
     .enabled(this.btnEnabled && !this.loading)
