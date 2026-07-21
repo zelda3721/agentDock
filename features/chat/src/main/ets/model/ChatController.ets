@@ -14,7 +14,8 @@ import {
   CtxUsage,
   CurrentBrain,
   COMPACTION_TRIGGER_RATIO,
-  ToolStepRecord
+  ToolStepRecord,
+  TRUNCATED_MARKER
 } from 'core-agent';
 import { BrainMenuVM, BrainVM, ChatMessageVM, ConversationVM, CtxUsageVM, formatClock, MessageDataSource } from './ChatViewModel';
 
@@ -254,6 +255,9 @@ export class ChatController {
   async selectConversation(convId: string): Promise<void> {
     this.stop();
     this.convId = convId;
+    // 切会话即换水位语境：先把读数清空（gauge 隐藏），等 refreshCtx 拿到新会话真值再显示——
+    // 绝不让上一会话的 ctx% 在切换窗口里冒充新会话的读数（假值即错误，[R-02]）。
+    this.host.onCtxUsage(new CtxUsageVM());
     // 切会话即换绑定语境：顶栏大脑按新会话的智能体绑定重报（见 refreshBrain 注释）
     this.refreshBrain();
     try {
@@ -298,6 +302,8 @@ export class ChatController {
       this.convId = '';
       this.messages.reset([]);
       this.host.onMessageCountChanged(0);
+      // 当前会话被删：水位读数也清空，别把已删会话的 ctx% 留在输入胶囊里（假值即错误）
+      this.host.onCtxUsage(new CtxUsageVM());
     }
     await this.loadConversations(50);
   }
@@ -370,6 +376,45 @@ export class ChatController {
     }
     this.handle.cancel();
     // 状态落定交给流的 done(finishReason='aborted') 事件；此处只停按钮抖动，不抢先改文案
+  }
+
+  /**
+   * 「继续」续写（T1.0-04b）：把生成**追加**到被点的那条被截断回答上（同一气泡）。
+   * 复用该消息为流式目标——续写的文本增量 append 到它已有的部分答案之后。
+   * 按 messageId 精确定位（不用 lastIndex）：截断态可能不是末条（其后已有新消息），
+   * 否则会把续写错接到最新那条上。
+   */
+  continueLast(messageId: string): void {
+    if (this.convId.length === 0 || this.handle !== null || messageId.length === 0) {
+      return;
+    }
+    const idx: number = this.messages.indexOfId(messageId);
+    // 只续末条：其后已有新消息时续写会错接到最新那条上（UI 也已据此隐藏按钮，这里兜底）
+    if (idx < 0 || idx !== this.messages.lastIndex()) {
+      return;
+    }
+    const msg: ChatMessageVM | null = this.messages.itemAt(idx);
+    if (msg === null || msg.role !== AdMessageRole.ASSISTANT || msg.id.length === 0) {
+      return;
+    }
+    let turn: ChatTurnHandle;
+    try {
+      turn = this.service.continueTurn(this.convId, msg.id);
+    } catch (err) {
+      this.host.onPageError(ChatController.reasonOf(err, '继续没能发出去'));
+      return;
+    }
+    this.handle = turn;
+    this.completionTokens = -1;
+    this.lastTurnAssistantId = turn.assistantMessageId;
+    this.pendingText = '';
+    // 复用被截断的消息为流式目标：续写增量 append 到它已有的部分答案上
+    this.streamingIndex = idx;
+    msg.status = AdMessageStatus.STREAMING;
+    this.messages.notifyChanged(idx);
+    this.host.onStreaming(true);
+    this.startFlushTimer();
+    this.consume(turn);
   }
 
   /**
@@ -687,6 +732,12 @@ export class ChatController {
     vm.timestamp = formatClock(r.createdAt);
     vm.status = ChatController.toStatus(r.status);
     vm.errorText = r.errorMessage !== undefined ? r.errorMessage : '';
+    // 撞长度上限的哨兵（error 列）：还原 BUDGET_EXHAUSTED，让「继续」入口在重读/重启后仍在；
+    // 哨兵是内部记号，绝不作为错误文案显示给用户。
+    if (r.errorMessage === TRUNCATED_MARKER) {
+      vm.status = AdMessageStatus.BUDGET_EXHAUSTED;
+      vm.errorText = '';
+    }
     vm.showRail = role === AdMessageRole.ASSISTANT && r.provenance !== undefined;
     if (r.provenance !== undefined) {
       vm.provenance = ChatController.toProvenance(r.provenance, r.citations ?? []);

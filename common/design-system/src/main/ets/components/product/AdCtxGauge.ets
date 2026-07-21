@@ -60,6 +60,12 @@ export struct AdCtxGauge {
   /** [R-18] 阈值由 core-agent ContextGovernor 注入，UI 不另写字面量 */
   @Prop warnAt: number = 70;
   @Prop dangerAt: number = 90;
+  /**
+   * 只画 2vp 水位线、不画读数行（混合现代方向 B）：聊天输入区把「ctx N%」读数挪进了
+   * 输入胶囊内（效果图形态），线仍长在输入框上沿——仪表进主界面的立场不变，读数换了落点。
+   * a11y 播报仍由本组件承担（读数文本挪走不挪语义）。
+   */
+  @Prop lineOnly: boolean = false;
 
   @StorageProp(AD_BREAKPOINT_KEY) bp: AdBreakpoint = AdBreakpoint.SM;
   @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = false;
@@ -169,8 +175,11 @@ export struct AdCtxGauge {
     .accessibilityText(this.a11y())
   }
 
-  /** sm 下 <70% 时读数完全隐藏（安静态）；lg 常显读数 */
+  /** sm 下 <70% 时读数完全隐藏（安静态）；lg 常显读数；lineOnly（读数在胶囊内）恒不画 */
   private showsReadout(): boolean {
+    if (this.lineOnly) {
+      return false;
+    }
     if (this.compressing) {
       return true;
     }

@@ -119,6 +119,14 @@ export struct AdMessage {
   };
   onSwitchToLocal: () => void = () => {
   };
+  /** 「继续」续写（T1.0-04b）：回答撞长度上限时，接着写完（追加到同一气泡）。 */
+  onContinue: () => void = () => {
+  };
+  /**
+   * 「继续」是否可用：仅当本条是会话**末条**时为真。续写只对末条语义成立——
+   * 若其后已有新消息，续写会错接到最新那条上，故非末条只显通知、不给按钮（[R-41] 不给死按钮）。
+   */
+  @Prop canContinue: boolean = false;
   onRailSegment: (segment: number) => void = () => {
   };
   /**
@@ -178,8 +186,9 @@ export struct AdMessage {
   }
 
   /**
-   * 用户消息（混合现代方向）：右对齐柔角卡片，hug 内容、最宽 82%，中性 surface_sunken 底
-   * （**不用青琥珀**，避免蹭来源语义轴）。用户轮次无工具/溯源/流式，只有时间戳 + 正文。
+   * 用户消息（混合现代方向 B）：右对齐柔角卡片，hug 内容、最宽 82%，**品牌青浅底**（brand 轴）。
+   * 用户说话走品牌色——这是「用户 × 应用」的关系轴，不是来源语义轴（来源由溯源条/芯片表达，
+   * 且用户消息本就没有来源）；方向 B 效果图即此。用户轮次无工具/溯源/流式，只有时间戳 + 正文。
    */
   @Builder
   userMessage() {
@@ -193,9 +202,9 @@ export struct AdMessage {
       .alignItems(HorizontalAlign.Start)
       .constraintSize({ maxWidth: '82%' })
       .padding({ left: AdSpace.s3, right: AdSpace.s3, top: AdSpace.s2, bottom: AdSpace.s2 })
-      .backgroundColor(AdColor.surfaceSunken)
+      .backgroundColor(AdColor.brandBg)
       .borderRadius(AdRadius.lg)
-      .border({ width: AdStroke.hairline, color: AdColor.border })
+      .border({ width: AdStroke.hairline, color: AdColor.brandBorder })
       .accessibilityGroup(true)
       .accessibilityText(this.a11y())
     }
@@ -340,12 +349,28 @@ export struct AdMessage {
           }
           .alignItems(HorizontalAlign.Start)
         } else if (this.status === AdMessageStatus.BUDGET_EXHAUSTED) {
-          Row({ space: AdSpace.s1 }) {
-            AdGlyph({ kind: AdGlyphKind.TRIANGLE, glyphSize: 12, color: AdColor.warningFg })
-            // 宁可诚实失败，不做静默掐头截尾
-            Text('上下文预算耗尽 —— 以上是当前最优答案').msgNotice(AdColor.warningFg)
+          Column({ space: AdSpace.s2 }) {
+            Row({ space: AdSpace.s1 }) {
+              AdGlyph({ kind: AdGlyphKind.TRIANGLE, glyphSize: 12, color: AdColor.warningFg })
+              // 宁可诚实失败，不做静默掐头截尾
+              Text('回答到达长度上限 —— 以上是当前答案').msgNotice(AdColor.warningFg)
+            }
+            .alignItems(VerticalAlign.Center)
+
+            // 不再是死路：一键接着写完（追加到同一气泡，T1.0-04b）。仅末条给按钮。
+            if (this.canContinue) {
+              AdButton({
+                label: '继续',
+                variant: AdButtonVariant.SECONDARY,
+                btnSize: AdButtonSize.SM,
+                a11yText: '继续这条回答',
+                onAction: () => {
+                  this.onContinue();
+                }
+              })
+            }
           }
-          .alignItems(VerticalAlign.Center)
+          .alignItems(HorizontalAlign.Start)
         }
 
         // 附加槽（工具卡片 / 附件）

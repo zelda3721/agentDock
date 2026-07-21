@@ -49,6 +49,9 @@ export struct MessageStream {
   };
   onSwitchToLocal: () => void = () => {
   };
+  /** 「继续」续写（T1.0-04b）：回答撞长度上限时接着写完（带上被点那条的 id，精确命中） */
+  onContinue: (messageId: string) => void = () => {
+  };
   /** 溯源条某段被点：lg 推入检视栏；md/sm 由 AdProvenanceRail 就地展开（组件自理） */
   onRailSegment: (messageId: string, segment: number) => void = () => {
   };
@@ -117,6 +120,8 @@ export struct MessageStream {
                   toolCalls: item.toolCalls,
                   authorName: this.agentName,
                   authorAvatar: this.agentAvatar,
+                  // 「继续」只对会话末条成立（续写非末条会错接到最新那条上）
+                  canContinue: this.source.lastIndex() === index,
                   onAbort: () => {
                     this.onAbort();
                   },
@@ -134,6 +139,9 @@ export struct MessageStream {
                   onSwitchToLocal: () => {
                     this.onSwitchToLocal();
                   },
+                  onContinue: () => {
+                    this.onContinue(item.id);
+                  },
                   onRailSegment: (segment: number) => {
                     this.onRailSegment(item.id, segment);
                   },
@@ -149,7 +157,9 @@ export struct MessageStream {
             // key 里带上 text.length 与 status：控制器每批提交后 key 变化，LazyForEach 只重建**这一条**，
             // 其余行不参与 diff —— 这正是攒批的收益落地处（S1 §5.4）
             // 工具签名进 key：卡片增删或落定（running→done）时 key 变，LazyForEach 只重建这一条
-          }, (item: ChatMessageVM) => `${item.id}-${item.status}-${item.text.length}-${item.toolSig()}`)
+            // 末条标记进 key：追加新消息后，原截断气泡不再是末条 → key 变 → 重建 → 「继续」按钮据 canContinue 消失
+          }, (item: ChatMessageVM, index: number) =>
+            `${item.id}-${item.status}-${item.text.length}-${item.toolSig()}-${this.source.lastIndex() === index ? 'end' : 'mid'}`)
         }
         .layoutWeight(1)
         .width('100%')

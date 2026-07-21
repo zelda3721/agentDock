@@ -398,6 +398,9 @@ export struct ChatPage {
           //               合同 §2 的 send(convId, text, providerId?) 已留入参，缺清单读取口。
           this.controller.retryLast();
         },
+        onContinue: (messageId: string): void => {
+          this.controller.continueLast(messageId);
+        },
         onRailSegment: (messageId: string, segment: number): void => {
           this.inspectMessage(messageId);
         },

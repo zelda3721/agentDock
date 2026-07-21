@@ -15,12 +15,13 @@ export class AdRadius {
   static readonly xs: number = 2;
   /** 小/紧凑元素、卡片内小分隔 —— 现代化后控件已上移到 md，此档留给更小的内元素 */
   static readonly sm: number = 4;
-  /** **输入框、按钮**（现代化后）、卡片内元素 —— 仍**不是药丸**（离 full 很远） */
+  /** **输入框、按钮**（现代化后）、卡片内元素 —— 表单输入仍**不是药丸**（离 full 很远） */
   static readonly md: number = 8;
   /** **卡片、面板、菜单**（现代化后）、模态、底部 Sheet、PC 悬浮胶囊窗 */
   static readonly lg: number = 12;
   /**
-   * **白名单专用**：头像、状态圆点、圆形图标按钮、滑块拇指。其余一律禁止。
+   * **白名单专用**：头像、状态圆点、圆形图标按钮、滑块拇指、**对话输入胶囊**（仅聊天主输入井，
+   * 方向 B 效果图 2026-07-21；表单里的输入框仍是 md）。其余一律禁止。
    * 特别地：芯片（AdChip / AdTag）上明令禁止 full。
    */
   static readonly full: number = 999;

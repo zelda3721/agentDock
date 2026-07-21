@@ -74,7 +74,8 @@ import {
   CurrentBrain,
   DEFAULT_SYSTEM_PROMPT,
   TITLE_MAX_CHARS,
-  ToolStepRecord
+  ToolStepRecord,
+  TRUNCATED_MARKER
 } from '../chat/ChatTypes';
 
 const TAG: string = 'ChatService';
@@ -91,6 +92,8 @@ const CHECKPOINT_INTERVAL_MS: number = 2000;
 const MAX_TOOL_CALLS_PER_STEP: number = 5;
 /** 工具出参摘要落库/上屏的字符上限（全文外置随 T1.0-04；卡片只需摘要） */
 const TOOL_RESULT_SUMMARY_MAX: number = 800;
+/** 「继续」续写的提示语（T1.0-04b）：作为 prompt 末尾的合成 user 消息，不落库、不显示。 */
+const CONTINUE_CUE: string = '请接着上面的回答继续写完，衔接自然，不要重复已经说过的内容。';
 
 // ============================================================================
 // 模块级工具函数
@@ -390,9 +393,15 @@ class ChatTurn implements ChatTurnHandle {
   /** 引用明细（标题/页码/得分快照，随消息入信封——检视 Sheet 的数据源） */
   private ragCitationDetails: ChatCitation[] = [];
 
+  /**
+   * 「继续」续写模式（T1.0-04b）：assistantMessageId 指向一条**被截断的**已落定回答，
+   * 本轮不建新气泡/不落新 user 消息，而是把生成**追加**到那条消息之后。
+   */
+  private readonly continueMode: boolean;
+
   constructor(runId: string, assistantMessageId: string, convId: string,
               repo: ChatRepository, recorder: RunRecorder | null, memory: MemoryService | null,
-              toolBus: ToolBus | null) {
+              toolBus: ToolBus | null, continueMode: boolean = false) {
     this.runId = runId;
     this.assistantMessageId = assistantMessageId;
     this.convId = convId;
@@ -400,6 +409,25 @@ class ChatTurn implements ChatTurnHandle {
     this.recorder = recorder;
     this.memory = memory;
     this.toolBus = toolBus;
+    this.continueMode = continueMode;
+  }
+
+  /**
+   * 落定一次「终态失败」到 assistant 行（T1.0-04b 修复：续写路径的行**已存在**，不能 INSERT）：
+   * - 续写模式：原截断答案是有效数据，绝不因续写失败被毁——复位为 BUDGET_EXHAUSTED（done+哨兵）保留；
+   * - 已插过流式行（rowInserted）：UPDATE 落定为 failed/cancelled；
+   * - 生成前就失败、尚未插行：INSERT 一条 failed 行（补一条可渲染的助手消息，诚实失败）。
+   * detail/dbStatus 仅用于非续写路径。
+   */
+  private async persistTerminalFailure(rowInserted: boolean, detail: string,
+                                       dbStatus: 'failed' | 'cancelled'): Promise<void> {
+    if (this.continueMode) {
+      await this.repo.restoreTruncated(this.assistantMessageId);
+    } else if (rowInserted) {
+      await this.repo.failStreamingAssistant(this.assistantMessageId, detail, dbStatus);
+    } else {
+      await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, detail);
+    }
   }
 
   // --- ChatTurnHandle ---------------------------------------------------------
@@ -511,14 +539,28 @@ class ChatTurn implements ChatTurnHandle {
       }
 
       // ---- [1] user 消息先落库，再发请求（进程被杀不丢用户输入；合同硬要求） ----
-      const userMessageId: string = await this.repo.insertUserMessage(this.convId, text, this.runId);
-      // 立刻刷新会话计数/时间：哪怕这一轮后面全失败，用户的话也已经在会话列表里"存在"了
-      await this.repo.touchCounts(this.convId);
+      //   继续模式：不落新 user、不建新气泡——把生成追加到被截断的那条回答之后。
+      let messageIdForRun: string;
+      if (this.continueMode) {
+        const base: string | null = await this.repo.getMessageContent(this.assistantMessageId);
+        if (base === null) {
+          this.fail(ChatErrorCode.CONVERSATION_NOT_FOUND, '要继续的回答不存在或已删除');
+          return;
+        }
+        this.turnContent = base;                                            // 追加起点 = 已生成的部分
+        await this.repo.reopenAssistantStreaming(this.assistantMessageId);  // 复开 streaming 供 checkpoint 追加
+        messageIdForRun = this.assistantMessageId;
+      } else {
+        const userMessageId: string = await this.repo.insertUserMessage(this.convId, text, this.runId);
+        // 立刻刷新会话计数/时间：哪怕这一轮后面全失败，用户的话也已经在会话列表里"存在"了
+        await this.repo.touchCounts(this.convId);
+        messageIdForRun = userMessageId;
+      }
 
       // ---- [1b] Run 开账（§5.2：每次用户消息创建一个 Run；轨迹失败不拖垮聊天） ----
       if (this.recorder !== null) {
         try {
-          await this.recorder.beginRun(this.runId, conv.agentId, this.convId, userMessageId);
+          await this.recorder.beginRun(this.runId, conv.agentId, this.convId, messageIdForRun);
           runBegun = true;
         } catch (e) {
           Logger.error(TAG, 'run begin failed', [{ key: 'err', value: (e as Error).message }]);
@@ -526,7 +568,8 @@ class ChatTurn implements ChatTurnHandle {
       }
 
       // ---- [2] 首轮生成标题（V0.9 用截断，不调模型；TODO(T1.0) 换 Nano 模型，§3.4） ----
-      if (conv.title.length === 0) {
+      //   继续模式不生标题：text 是「请继续」这类续写提示，不能拿它当会话标题。
+      if (!this.continueMode && conv.title.length === 0) {
         await this.repo.setTitleIfEmpty(this.convId, ChatPromptBuilder.titleFromFirstMessage(text, TITLE_MAX_CHARS));
       }
 
@@ -546,7 +589,8 @@ class ChatTurn implements ChatTurnHandle {
       const provider: InferenceProvider | null = resolution.provider;
       const providerId: string = resolution.providerId;
       if (provider === null) {
-        await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, resolution.failDetail);
+        // 续写模式行已存在（复开为 streaming），走 restoreTruncated 复位；否则 INSERT 一条 failed
+        await this.persistTerminalFailure(false, resolution.failDetail, 'failed');
         await this.repo.touchCounts(this.convId);
         await settleRun('error', resolution.failDetail);
         this.fail(ChatErrorCode.NO_PROVIDER, resolution.failDetail);
@@ -575,7 +619,9 @@ class ChatTurn implements ChatTurnHandle {
       // （更早触发压缩），方向安全；精确拆分随 T1.0-04 的 L1 外置一并处理。
       let effectiveText: string = text;
       let injectedChunks: ScoredChunk[] = [];
-      if (binding !== null && binding.libIds.length > 0) {
+      // 续写模式不检索：CONTINUE_CUE（"请接着写完"）是无实义 query，检索它既无意义、
+      // 又会用空结果覆盖原答案的引用明细（finishAssistantKeepEnvelope 也已保原信封，双保险）。
+      if (binding !== null && binding.libIds.length > 0 && !this.continueMode) {
         try {
           const hits: ScoredChunk[] = await KnowledgeService.get().search(
             binding.libIds, text, { topK: binding.topK });
@@ -695,24 +741,16 @@ class ChatTurn implements ChatTurnHandle {
       if (!gate.proceed) {
         stopReason = gate.stopReason ?? 'error';
         if (stopReason === 'user_cancelled') {
-          if (assistantRowInserted) {
-            // 工具循环中途取消：行已存在，UPDATE 落定为 cancelled（部分内容保留，[R-37]；
-            // 与流中取消同一落库语义——UI 渲染「已中断」而非错误气泡）
-            await this.repo.failStreamingAssistant(this.assistantMessageId, '已取消', 'cancelled');
-          } else {
-            await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, '已取消');
-          }
+          // 工具循环中途取消：行已存在则 UPDATE 落定 cancelled（部分内容保留，[R-37]，UI 渲染「已中断」）；
+          // 续写模式则复位为截断态（原答案不毁）——由 persistTerminalFailure 分派。
+          await this.persistTerminalFailure(assistantRowInserted, '已取消', 'cancelled');
           await this.repo.touchCounts(this.convId);
           this.events.push({ type: 'done', finishReason: 'aborted' });
         } else {
           // 预算类前置停止：T1.0-01 工具循环下**真实可达**（模型连环调用工具烧步数/时间），
           // 其数学由 tools/eval/agent-run 全覆盖。
           stopError = stopReason === 'budget_steps' ? '本轮已达步数预算上限' : '本轮已超时';
-          if (assistantRowInserted) {
-            await this.repo.failStreamingAssistant(this.assistantMessageId, stopError);
-          } else {
-            await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, stopError);
-          }
+          await this.persistTerminalFailure(assistantRowInserted, stopError, 'failed');
           await this.repo.touchCounts(this.convId);
           this.fail(ChatErrorCode.PROVIDER_FAILED, stopError);
         }
@@ -815,11 +853,7 @@ class ChatTurn implements ChatTurnHandle {
         const detail: string = didCompact
           ? `上下文已满（压缩后仍需 ${promptTokens} / ${budget.promptCapacity} token），请新建会话继续。`
           : `上下文已满（${promptTokens} / ${budget.promptCapacity} token），请新建会话继续。`;
-        if (assistantRowInserted) {
-          await this.repo.failStreamingAssistant(this.assistantMessageId, detail);
-        } else {
-          await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, detail);
-        }
+        await this.persistTerminalFailure(assistantRowInserted, detail, 'failed');
         await this.repo.touchConversation(this.convId, providerId, provider.kind);
         Logger.warn(TAG, 'context budget exhausted', [
           { key: 'prompt_tokens', value: promptTokens },
@@ -835,11 +869,7 @@ class ChatTurn implements ChatTurnHandle {
       // 用户在组 prompt 期间就点了停止（①的采样此刻可能已过时——发前再看一眼）：
       // 不发请求，也不留一条永远 streaming 的空壳
       if (this.aborted) {
-        if (assistantRowInserted) {
-          await this.repo.failStreamingAssistant(this.assistantMessageId, '已取消', 'cancelled');
-        } else {
-          await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, '已取消');
-        }
+        await this.persistTerminalFailure(assistantRowInserted, '已取消', 'cancelled');
         await this.repo.touchCounts(this.convId);
         this.events.push({ type: 'done', finishReason: 'aborted' });
         stopReason = 'user_cancelled';
@@ -847,8 +877,11 @@ class ChatTurn implements ChatTurnHandle {
       }
 
       // assistant 消息以 status='streaming' 落库（流开始时；多步循环共用同一行，只插一次）
+      //   继续模式：该行已存在且在 [1] 复开为 streaming，不再 INSERT（否则主键冲突）。
       if (!assistantRowInserted) {
-        await this.repo.insertAssistantStreaming(this.assistantMessageId, this.convId, this.runId);
+        if (!this.continueMode) {
+          await this.repo.insertAssistantStreaming(this.assistantMessageId, this.convId, this.runId);
+        }
         assistantRowInserted = true;
       }
 
@@ -1044,8 +1077,13 @@ class ChatTurn implements ChatTurnHandle {
       // 会把刚点亮的错误气泡连同整轮一起抹掉，用户只看到自己发的话、没有任何反馈（静默失败，
       // 违反"诚实失败/UI 不许说谎"）。生成前就抛的错（如超内存预算，steps=0）库里尚无本轮助手行，
       // 这里补插；若已插过流式行/已落库（撞主键）则库里本就有可渲染的行，忽略插入即可（幂等兜底）。
+      //   续写模式：行必然已存在（复开为 streaming），且原截断答案有效——复位为截断态、绝不改写为 failed。
       try {
-        await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, err.message);
+        if (this.continueMode) {
+          await this.repo.restoreTruncated(this.assistantMessageId);
+        } else {
+          await this.repo.insertFailedAssistant(this.assistantMessageId, this.convId, this.runId, err.message);
+        }
       } catch (persistErr) {
         // 行已存在（流式行已插入后异常逃逸）：insert 撞主键 → 改走 UPDATE 落定，
         // 绝不能把行留在 streaming——那是一条永远转圈的气泡（终态在库里说谎）。
@@ -1211,11 +1249,25 @@ class ChatTurn implements ChatTurnHandle {
     const status: ChatMessageStatus =
       finishReason === 'aborted' ? 'aborted' : (finishReason === 'error' ? 'failed' : 'done');
 
-    await this.repo.finishAssistant(
-      this.assistantMessageId, this.turnContent, status, turnCompletion, provenance,
-      errorMessage.length > 0 ? errorMessage : null,
-      this.ragCitationDetails
-    );
+    // 撞长度上限：status='done'（部分答案有效）+ error 列写截断哨兵，重读时还原「继续」入口。
+    const persistedError: string | null = finishReason === 'length'
+      ? TRUNCATED_MARKER
+      : (errorMessage.length > 0 ? errorMessage : null);
+
+    if (this.continueMode) {
+      // 续写落定：正文 = 原部分 + 续写；**保原引用/溯源信封不动**（锚定首次生成，绝不被 CONTINUE_CUE 覆盖）。
+      // 干净收尾 → done（无「继续」）；又撞上限/被中断/出错 → 仍标截断（保住答案 + 可再续），不改写为 failed。
+      await this.repo.finishAssistantKeepEnvelope(
+        this.assistantMessageId, this.turnContent,
+        finishReason === 'stop' ? null : TRUNCATED_MARKER
+      );
+    } else {
+      await this.repo.finishAssistant(
+        this.assistantMessageId, this.turnContent, status, turnCompletion, provenance,
+        persistedError,
+        this.ragCitationDetails
+      );
+    }
     await this.repo.touchConversation(this.convId, providerId, provider.kind);
 
     this.events.push({ type: 'usage', usage: finalUsage });
@@ -1471,6 +1523,23 @@ export class ChatService {
       this.turns.delete(finishedRunId);
     });
 
+    return turn;
+  }
+
+  /**
+   * 「继续」续写（T1.0-04b）：把生成**追加**到一条被截断的回答之后（同一气泡，不落新 user 消息、
+   * 不建新气泡）。assistantMessageId 必须是本会话里那条被截断的 assistant 消息。
+   * Provider 裁决序同 send（显式 > 绑定 > 默认）。返回句柄，stream/cancel 与 send 一致。
+   */
+  continueTurn(convId: string, assistantMessageId: string, providerId?: string): ChatTurnHandle {
+    const repo: ChatRepository = this.requireRepo();
+    const runId: string = util.generateRandomUUID(true);
+    const turn: ChatTurn = new ChatTurn(
+      runId, assistantMessageId, convId, repo, this.recorder, this.memory, this.toolBus, true);
+    this.turns.set(runId, turn);
+    turn.run(CONTINUE_CUE, providerId, (finishedRunId: string): void => {
+      this.turns.delete(finishedRunId);
+    });
     return turn;
   }
 

@@ -158,6 +158,15 @@ export interface CurrentBrain {
  */
 export type ChatMessageStatus = 'streaming' | 'done' | 'aborted' | 'failed';
 
+/**
+ * 输出撞长度上限（finishReason='length'）的**持久化哨兵**（T1.0-04b）。
+ * DB status 的 CHECK 约束不含 'truncated'（Schema 跨模块契约，不可改），
+ * 故截断态落库为 status='done'（它是**有效的部分答案**，不是失败）+ error 列存本哨兵。
+ * 重读时（toMessageVM）据此还原 BUDGET_EXHAUSTED，「继续」按钮才能在重启/切会话后仍在。
+ * 哨兵取 ASCII 定值，绝不与真实错误文案（皆为中文人类可读串）相撞；渲染侧永不显示它。
+ */
+export const TRUNCATED_MARKER: string = 'len_truncated';
+
 export interface ChatMessageRecord {
   id: string;
   convId: string;

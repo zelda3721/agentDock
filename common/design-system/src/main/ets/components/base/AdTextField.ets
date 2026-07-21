@@ -67,8 +67,13 @@ export struct AdTextField {
   @Prop tokenCount: number = -1;
   /** token 预算；<=0 表示不显示预算分母 */
   @Prop tokenBudget: number = 0;
-  /** 圆角（默认 AdRadius.sm；聊天输入区在混合现代方向用 AdRadius.lg 取更柔的观感） */
+  /** 圆角（默认 AdRadius.md；聊天主输入井传 AdRadius.full 成胶囊——白名单见 Radius.ets） */
   @Prop radius: number = AdRadius.md;
+  /**
+   * 右侧内距**额外预留**（vp）：宿主要在输入井内右侧叠放读数（如聊天胶囊里的 ctx 水位读数）时
+   * 传入，避免正文/占位文字垫到读数底下。0 = 不预留（默认，其他表单不受影响）。
+   */
+  @Prop reserveRightVp: number = 0;
 
   onTextChange: (value: string) => void = () => {
   };
@@ -165,7 +170,9 @@ export struct AdTextField {
 
   private innerPadding(): Padding {
     const v: number = AdBreakpoints.isCompact(this.bp) ? AdSpace.s1 : AdSpace.s2;
-    return { left: AdSpace.s3, right: AdSpace.s3, top: v, bottom: v };
+    // 胶囊（radius=full）：水平内距加大到 s5——正文不贴着弧线起笔
+    const h: number = this.radius >= AdRadius.full ? AdSpace.s5 : AdSpace.s3;
+    return { left: h, right: h + this.reserveRightVp, top: v, bottom: v };
   }
 
   private hasError(): boolean {

@@ -33,7 +33,8 @@ import {
   ToolStepRecord,
   ProvenanceCodec,
   fromDbStatus,
-  toDbStatus
+  toDbStatus,
+  TRUNCATED_MARKER
 } from './ChatTypes';
 
 /** conversations 行（内部用；对外用 ConversationSummary） */
@@ -397,6 +398,48 @@ export class ChatRepository {
     await this.rdb.exec(
       `UPDATE messages SET content = ?, updated_at = ? WHERE id = ? AND status = 'streaming';`,
       [content, Date.now(), id] as Array<SqlArg>
+    );
+  }
+
+  /** 读一条 assistant 消息的当前正文（「继续」续写时作 contentBase 追加）；不存在返回 null。 */
+  async getMessageContent(id: string): Promise<string | null> {
+    return this.rdb.queryScalarString(
+      `SELECT content FROM messages WHERE id = ? AND role = 'assistant';`,
+      [id] as Array<SqlArg>
+    );
+  }
+
+  /**
+   * 把一条已落定的 assistant 消息重新打开为 streaming（「继续」续写：在其后追加生成）。
+   * 无条件按 id 更新——续写目标可能处于 done/cancelled/failed 任一终态。
+   */
+  async reopenAssistantStreaming(id: string): Promise<void> {
+    await this.rdb.exec(
+      `UPDATE messages SET status = 'streaming', error = NULL, updated_at = ? WHERE id = ? AND role = 'assistant';`,
+      [Date.now(), id] as Array<SqlArg>
+    );
+  }
+
+  /**
+   * 「继续」续写**失败**时的复位：把复开成 streaming 的行还原为截断态（done + 哨兵）。
+   * 续写没能进行——原截断答案是有效数据，绝不因续写失败被毁；正文/引用/溯源信封原样不动。
+   */
+  async restoreTruncated(id: string): Promise<void> {
+    await this.rdb.exec(
+      `UPDATE messages SET status = 'done', error = ?, updated_at = ? WHERE id = ? AND role = 'assistant';`,
+      [TRUNCATED_MARKER, Date.now(), id] as Array<SqlArg>
+    );
+  }
+
+  /**
+   * 「继续」续写**成功**落定：只更新正文与截断哨兵，**不动** citations 信封（引用/溯源）与 token 数。
+   * 续写用的合成提示（CONTINUE_CUE）不该覆盖原答案的 RAG 引用与生成溯源——那些锚定在首次生成。
+   * error：干净收尾传 null（done、无「继续」按钮）；又撞上限传 TRUNCATED_MARKER（可再续）。
+   */
+  async finishAssistantKeepEnvelope(id: string, content: string, error: string | null): Promise<void> {
+    await this.rdb.exec(
+      `UPDATE messages SET content = ?, status = 'done', error = ?, updated_at = ? WHERE id = ? AND role = 'assistant';`,
+      [content, error, Date.now(), id] as Array<SqlArg>
     );
   }
 

@@ -96,6 +96,17 @@ for (const [theme, T] of [['浅', light], ['深', dark]]) {
   check(theme, T, 'warning_fg / sunken（警戒态水位条）', 'ad_warning_fg', 'ad_surface_sunken', 3.0);
   check(theme, T, 'danger_fg / sunken（危险态水位条）', 'ad_danger_fg', 'ad_surface_sunken', 3.0);
   check(theme, T, 'info_fg / sunken（整理思路中）', 'ad_info_fg', 'ad_surface_sunken', 3.0);
+
+  // ④ 混合现代方向 B（2026-07-21）：用户品牌青卡片 + 输入胶囊内 ctx 读数
+  //    用户消息卡片：正文 ink / 时间戳 ink_tertiary 落在 brand_bg 上（AdMessage.userMessage）
+  check(theme, T, 'ink / brand_bg（用户卡片正文）', 'ad_ink', 'ad_brand_bg', 4.5);
+  check(theme, T, 'ink_tertiary / brand_bg（用户卡片时间戳）', 'ad_ink_tertiary', 'ad_brand_bg', 4.5);
+  check(theme, T, 'brand_border / brand_bg（用户卡片描边）', 'ad_brand_border', 'ad_brand_bg', 3.0);
+  check(theme, T, 'brand_border / bg（用户卡片描边 vs 页底）', 'ad_brand_border', 'ad_bg', 3.0);
+  //    胶囊内读数：warning/danger/info 文字落在输入井 surface 上（ChatComposer 内嵌读数是文本，≥4.5）
+  check(theme, T, 'warning_fg / surface（胶囊内警戒读数）', 'ad_warning_fg', 'ad_surface', 4.5);
+  check(theme, T, 'danger_fg / surface（胶囊内危险读数）', 'ad_danger_fg', 'ad_surface', 4.5);
+  check(theme, T, 'info_fg / surface（胶囊内整理思路中）', 'ad_info_fg', 'ad_surface', 4.5);
 }
 
 // ---- 输出 ----

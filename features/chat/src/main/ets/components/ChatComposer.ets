@@ -23,8 +23,9 @@ import { CtxUsageVM } from '../model/ChatViewModel';
 /**
  * 输入区（UI 设计规范 §4.2）。
  *
- * 结构自上而下：**ctx 水位线（2vp，长在输入框上沿）** → 输入框 + 发送/停止。
- * 把仪表放进主界面而非藏进设置，是本产品可辩护的冒险（§1.4）——水位线在这里，不在设置页。
+ * 结构自上而下：**ctx 水位线（2vp，长在输入框上沿）** → 输入胶囊（内嵌「ctx N%」读数）+ 发送/停止。
+ * 把仪表放进主界面而非藏进设置，是本产品可辩护的冒险（§1.4）——水位线在这里，不在设置页；
+ * 混合现代方向 B（2026-07-21）：读数从线下方挪进胶囊内右侧（效果图形态），线与语义不变。
  *
  * [R-18] 阈值（70% warning / 90% danger）由 core-agent 的 ContextGovernor 常量注入，UI 不另写字面量。
  * [R-37] 流式中发送按钮变**停止**（danger），且在生成开始的**同一帧**出现——它与 AdMessage 内的中断
@@ -39,6 +40,17 @@ function composerNotice() {
   .fontColor(AdColor.warningFg)
   .maxLines(2)
   .textOverflow({ overflow: TextOverflow.Ellipsis })
+}
+
+/** 胶囊内 ctx 读数：仪表体 + tabular-nums（[R-28]），色随阈值档 */
+@Extend(Text)
+function ctxReadout(color: ResourceColor) {
+  .fontSize(AdType.instrumentM.size)
+  .lineHeight(AdType.instrumentM.lineHeight)
+  .fontWeight(AdType.instrumentM.weight)
+  .fontFamily(AdType.instrumentM.family)
+  .fontFeature(AdType.TABULAR)
+  .fontColor(color)
 }
 
 @Component
@@ -78,14 +90,16 @@ export struct ChatComposer {
   build() {
     Column({ space: AdSpace.s2 }) {
       if (this.hasModel) {
-        // ctx 水位线：数值 0ms 跳变（[R-30]），条形 300ms 补间——由 AdCtxGauge 自理
+        // ctx 水位线：2vp 线仍长在输入框上沿（仪表进主界面的立场，§1.4）；
+        // 「ctx N%」读数挪进输入胶囊内（混合现代方向 B 效果图形态），lineOnly 只留线
         AdCtxGauge({
           percent: this.ctx.percent,
           usedTokens: this.ctx.usedTokens,
           totalTokens: this.ctx.totalTokens,
           compressing: this.compressing,
           warnAt: this.warnAt,
-          dangerAt: this.dangerAt
+          dangerAt: this.dangerAt,
+          lineOnly: true
         })
         if (this.toolActivity.length > 0) {
           // 工具执行必须显示，不许静默（与「整理思路中…」同一纪律，T1.0-01）
@@ -112,20 +126,52 @@ export struct ChatComposer {
         // 修法：把权重挂在**真实布局节点**（这个 Column）上，由它把确定宽度传给 AdTextField，
         // 后者的 width('100%') 才有东西可以撑满。**不要**改成写死宽度：三栏宽度随窗口变。
         Column() {
-          AdTextField({
-            text: this.draft,
-            placeholder: '问点什么…',
-            multiline: true,
-            areaHeight: this.areaHeight(),
-            fieldEnabled: this.composerEnabled,
-            // 混合现代方向：输入井取更柔的 lg 圆角
-            radius: AdRadius.lg,
-            // token 计数由 countTokens() 异步返回；未接线时 AdTextField 显示 `~—— tok`（**不显示 0**）
-            // TODO(T0.9-15)：接 ChatService 的 countTokens 防抖（300ms）后回填 tokenCount / tokenBudget
-            onTextChange: (value: string) => {
-              this.draft = value;
+          Stack({ alignContent: Alignment.End }) {
+            AdTextField({
+              text: this.draft,
+              placeholder: '问点什么…',
+              multiline: true,
+              areaHeight: this.areaHeight(),
+              fieldEnabled: this.composerEnabled,
+              // 混合现代方向 B：输入井 = 胶囊（full 白名单：仅聊天主输入井，见 Radius.ets）
+              radius: AdRadius.full,
+              // 胶囊内右侧叠 ctx 读数：给正文预留宽度，别垫到读数底下
+              reserveRightVp: this.readoutReserve(),
+              // token 计数由 countTokens() 异步返回；未接线时 AdTextField 显示 `~—— tok`（**不显示 0**）
+              // TODO(T0.9-15)：接 ChatService 的 countTokens 防抖（300ms）后回填 tokenCount / tokenBudget
+              onTextChange: (value: string) => {
+                this.draft = value;
+              }
+            })
+
+            // 胶囊内 ctx 读数（方向 B 效果图）：数值 0ms 跳变（[R-30]）；阈值三重冗余（色 + △ + 数值）。
+            // a11y 播报由上方 AdCtxGauge 承担（读数换落点不换语义），此处不重复播报。
+            //
+            // 触摸穿透：HitTestMode.None **只对挂载节点自身生效、不级联子节点**——只挂在 Row 上，
+            // 其子 Text/AdGlyph 仍默认命中，会在胶囊右侧吞掉点击、成为输入框的触摸死区（点不进光标）。
+            // 故 None 必须挂到**每个叶子**（Row + Text + AdGlyph 各一份）。
+            // a11y 同理：accessibilityLevel('no') 不隐藏子孙——用 'no-hide-descendants' 才整棵隐藏，
+            // 否则读屏会在 AdCtxGauge 播报后又落焦到裸文本「ctx N%」再念一次。
+            if (this.showsInlineCtx()) {
+              Row({ space: AdSpace.s1 }) {
+                if (!this.compressing && this.ctxLevel() >= 1) {
+                  AdGlyph({
+                    kind: AdGlyphKind.TRIANGLE,
+                    glyphSize: 10,
+                    color: this.ctxLevel() >= 2 ? AdColor.dangerFg : AdColor.warningFg
+                  })
+                    .hitTestBehavior(HitTestMode.None)
+                }
+                Text(this.inlineCtxText())
+                  .ctxReadout(this.inlineCtxColor())
+                  .hitTestBehavior(HitTestMode.None)
+              }
+              .alignItems(VerticalAlign.Center)
+              .margin({ right: AdSpace.s5 })
+              .hitTestBehavior(HitTestMode.None)
+              .accessibilityLevel('no-hide-descendants')
             }
-          })
+          }
         }
         // 只挂 layoutWeight，**不要再挂 width('100%')**：在 Row 里两者是同一根主轴上的两条
         // 互相打架的指令（百分比宽以父容器整宽为基准，会把发送按钮挤出去）。
@@ -213,5 +259,64 @@ export struct ChatComposer {
   /** 输入井高度：sm/md 舒适 72vp，lg 收紧到 56vp（密度靠内距，**字号不变**，§2.4.5） */
   private areaHeight(): number {
     return this.bp === AdBreakpoint.LG ? 56 : 72;
+  }
+
+  // ---- 胶囊内 ctx 读数（方向 B）----------------------------------------------
+
+  /** 读数只在有真值时上屏：totalTokens=0 意味着 tokenizer 还没给出读数——**不画 0% 的假表**。 */
+  private showsInlineCtx(): boolean {
+    if (!this.hasModel) {
+      return false;
+    }
+    return this.compressing || this.ctx.totalTokens > 0;
+  }
+
+  /** 0 = 安静（<warnAt）；1 = 警戒（≥warnAt）；2 = 危险（≥dangerAt）——阈值与水位线同源（[R-18]） */
+  private ctxLevel(): number {
+    const p: number = Math.min(100, Math.max(0, this.ctx.percent));
+    if (p >= this.dangerAt) {
+      return 2;
+    }
+    if (p >= this.warnAt) {
+      return 1;
+    }
+    return 0;
+  }
+
+  private inlineCtxText(): string {
+    if (this.compressing) {
+      return '整理思路中…';
+    }
+    return `ctx ${Math.round(Math.min(100, Math.max(0, this.ctx.percent)))}%`;
+  }
+
+  /** [R-02] 仪表数值默认 inkTertiary 实色，不再降透明度；压缩走 info 轴（事件，不是错误） */
+  private inlineCtxColor(): Resource {
+    if (this.compressing) {
+      return AdColor.infoFg;
+    }
+    switch (this.ctxLevel()) {
+      case 2:
+        return AdColor.dangerFg;
+      case 1:
+        return AdColor.warningFg;
+      default:
+        return AdColor.inkTertiary;
+    }
+  }
+
+  /**
+   * 读数占用的右侧预留（vp）：给输入正文让出宽度，别垫到读数底下。
+   * 「整理思路中…」最宽（120）；警戒/危险态「△ ctx 100%」带三角次之（104）；安静态「ctx N%」最窄（84）。
+   * 宁可多留几 vp，也不让长草稿在末行右缘啃到读数。
+   */
+  private readoutReserve(): number {
+    if (!this.showsInlineCtx()) {
+      return 0;
+    }
+    if (this.compressing) {
+      return 120;
+    }
+    return this.ctxLevel() >= 1 ? 104 : 84;
   }
 }

@@ -172,9 +172,16 @@ export class MessageDataSource implements IDataSource {
   }
 
   append(item: ChatMessageVM): number {
+    const prevLast: number = this.items.length - 1;   // 追加前的末条下标（无消息时为 -1）
     this.items.push(item);
     const at: number = this.items.length - 1;
     this.listeners.forEach((l: DataChangeListener) => l.onDataAdd(at));
+    // 原末条不再是末条：显式重绘它，让依赖「是否末条」的渲染跟着更新（「继续」按钮 canContinue）。
+    // LazyForEach 的 onDataAdd 只构建新增下标，**不会**重跑既有项的 key/itemGenerator——
+    // 少了这条 onDataChange，旧末条的「继续」按钮会残留成点了没反应的死按钮（[R-41]）。
+    if (prevLast >= 0) {
+      this.listeners.forEach((l: DataChangeListener) => l.onDataChange(prevLast));
+    }
     return at;
   }
 
@@ -195,6 +202,16 @@ export class MessageDataSource implements IDataSource {
 
   lastIndex(): number {
     return this.items.length - 1;
+  }
+
+  /** 按消息 id 定位下标（找不到返回 -1）。「继续」续写要精确命中被点那条，不能用 lastIndex 猜。 */
+  indexOfId(id: string): number {
+    for (let i = 0; i < this.items.length; i++) {
+      if (this.items[i].id === id) {
+        return i;
+      }
+    }
+    return -1;
   }
 
   isEmpty(): boolean {
