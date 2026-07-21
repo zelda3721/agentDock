@@ -55,6 +55,9 @@ export struct MessageStream {
   /** 工具确认决策（§9.4）：NEEDS_CONFIRM 卡片上选择后透传给控制器 */
   onToolConfirm: (callId: string, decision: string) => void = () => {
   };
+  /** 混合现代：AI 消息头像 + 智能体名（本会话绑定的智能体；全条同源） */
+  @Prop agentName: string = '';
+  @Prop agentAvatar: string = '';
   /** 空态里的行动邀请 */
   onCreateConversation: () => void = () => {
   };
@@ -112,6 +115,8 @@ export struct MessageStream {
                   generatedTokens: item.generatedTokens > 0 ? item.generatedTokens : 0,
                   errorText: item.errorText,
                   toolCalls: item.toolCalls,
+                  authorName: this.agentName,
+                  authorAvatar: this.agentAvatar,
                   onAbort: () => {
                     this.onAbort();
                   },
@@ -177,11 +182,9 @@ export struct MessageStream {
    * assistant），因此本函数依赖 index-1 不会产生"前项已渲染但本项判断过期"的错位。
    */
   private headerShown(item: ChatMessageVM, index: number): boolean {
-    if (item.role !== AdMessageRole.USER) {
-      return false;
-    }
+    // 混合现代：每组（角色切换）的**首条**显示眉标——用户组首显时间戳，助手组首显头像 + 智能体名。
     const prev: ChatMessageVM | null = index > 0 ? this.source.itemAt(index - 1) : null;
-    return prev === null || prev.role !== AdMessageRole.USER;
+    return prev === null || prev.role !== item.role;
   }
 
   /**

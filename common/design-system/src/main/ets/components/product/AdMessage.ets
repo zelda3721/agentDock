@@ -101,6 +101,12 @@ export struct AdMessage {
    * （工具先用、答案后出，符合阅读序）。用户消息恒空。
    */
   @Prop toolCalls: AdToolCall[] = [];
+  /**
+   * 助手消息的作者名与头像（混合现代方向）：智能体名 + emoji 头像。空时回退——
+   * 名回退 roleLabel，头像回退来源色坞形/云弧图元（仍是来源冗余）。仅助手眉标用。
+   */
+  @Prop authorName: string = '';
+  @Prop authorAvatar: string = '';
 
   /** [R-37] 中断：必须在生成开始的同一帧可用 */
   onAbort: () => void = () => {
@@ -204,17 +210,19 @@ export struct AdMessage {
   @Builder
   assistantMessage() {
     Column({ space: AdSpace.s2 }) {
-      // 眉标行：角色 + 时间戳（助手 showHeader 恒为 false——身份由左色带 + 溯源条承担；
-      // 混合现代方向若要 AI 头像/智能体名，需把 agent avatar/name 接进 message VM，见 backlog）
+      // 眉标行（混合现代）：来源头像 + 智能体名 + 时间戳。头像来自会话绑定的智能体（emoji），
+      // 缺则回退来源色坞形/云弧图元；名缺则回退 roleLabel。
       if (this.showHeader) {
-        Row() {
-          Text(this.roleLabel).msgEyebrow(this.bandColor()).layoutWeight(1)
+        Row({ space: AdSpace.s2 }) {
+          this.authorAvatarSlot()
+          Text(this.authorName.length > 0 ? this.authorName : this.roleLabel)
+            .msgEyebrow(this.bandColor()).layoutWeight(1)
           if (this.timestamp.length > 0) {
             Text(this.timestamp).msgTimestamp()
           }
         }
         .width('100%')
-        .alignItems(VerticalAlign.Bottom)
+        .alignItems(VerticalAlign.Center)
       }
 
         // 工具执行卡片（正文上方；折叠展开由卡片自理）
@@ -373,6 +381,37 @@ export struct AdMessage {
 
   private isUser(): boolean {
     return this.role === AdMessageRole.USER;
+  }
+
+  /**
+   * 助手来源头像（混合现代方向）：24vp 圆。有 agent emoji 头像就用它（内容，非标记——
+   * check-glyphs 白名单）；否则回退来源色底 + 坞形/云弧 SVG 图元（来源冗余的一环 [R-32]）。
+   */
+  @Builder
+  authorAvatarSlot() {
+    if (this.authorAvatar.length > 0) {
+      Stack() {
+        Text(this.authorAvatar).fontSize(AdType.bodyS.size)
+      }
+      .width(24)
+      .height(24)
+      .borderRadius(AdRadius.full)
+      .backgroundColor(AdColor.surfaceSunken)
+      .alignContent(Alignment.Center)
+    } else {
+      Stack() {
+        AdGlyph({
+          kind: this.provenance.isLocal() ? AdGlyphKind.LOCAL_DOCK : AdGlyphKind.REMOTE_CLOUD,
+          glyphSize: 11,
+          color: AdColor.semanticFg(this.provenance.isLocal())
+        })
+      }
+      .width(24)
+      .height(24)
+      .borderRadius(AdRadius.full)
+      .backgroundColor(AdColor.semanticBg(this.provenance.isLocal()))
+      .alignContent(Alignment.Center)
+    }
   }
 
 

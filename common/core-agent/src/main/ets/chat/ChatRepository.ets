@@ -141,7 +141,7 @@ export class ChatRepository {
     // LEFT JOIN agent_defs：绑定 Agent 的名字随行给出（Agent 被删后 JOIN 落空 → 缺席，不猜名字）。
     return this.rdb.queryRows<ConversationSummary>(
       `SELECT c.id, c.title, c.message_count, c.updated_at, c.last_message_at, c.meta,
-              c.agent_id, a.name AS agent_name
+              c.agent_id, a.name AS agent_name, a.avatar AS agent_avatar
          FROM conversations c
          LEFT JOIN agent_defs a ON a.id = c.agent_id
         WHERE c.archived = 0
@@ -164,6 +164,13 @@ export class ChatRepository {
           const nameIdx: number = rs.getColumnIndex('agent_name');
           if (!rs.isColumnNull(nameIdx)) {
             summary.agentName = rs.getString(nameIdx);
+          }
+          const avatarIdx: number = rs.getColumnIndex('agent_avatar');
+          if (!rs.isColumnNull(avatarIdx)) {
+            const av: string = rs.getString(avatarIdx);
+            if (av.length > 0) {
+              summary.agentAvatar = av;
+            }
           }
         }
         return summary;

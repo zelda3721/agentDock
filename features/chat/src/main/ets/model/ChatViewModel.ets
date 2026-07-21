@@ -82,6 +82,8 @@ export class ConversationVM {
   local: boolean = true;
   /** 绑定的智能体名字（T0.9-16）；空串 = 未绑定（顶栏与列表都不显示智能体位） */
   agentName: string = '';
+  /** 绑定的智能体头像 emoji（混合现代 AI 消息头像用）；空串 = 无 */
+  agentAvatar: string = '';
 
   constructor(id: string, title: string) {
     this.id = id;

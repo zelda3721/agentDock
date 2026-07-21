@@ -579,6 +579,7 @@ export class ChatController {
     vm.brainKnown = s.lastProviderKind !== undefined;
     vm.local = s.lastProviderKind !== 'remote';
     vm.agentName = s.agentName !== undefined ? s.agentName : '';
+    vm.agentAvatar = s.agentAvatar !== undefined ? s.agentAvatar : '';
     return vm;
   }
 

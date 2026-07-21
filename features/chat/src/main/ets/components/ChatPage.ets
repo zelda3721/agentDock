@@ -381,6 +381,9 @@ export struct ChatPage {
         messageCount: this.messageCount,
         hasConversation: this.selectedId.length > 0,
         loading: this.messagesLoading,
+        // 混合现代方向：AI 消息头像 + 智能体名（本会话绑定的智能体，全条同源）
+        agentName: this.currentAgentName(),
+        agentAvatar: this.currentAgentAvatar(),
         onAbort: (): void => {
           this.controller.stop();
         },
@@ -618,6 +621,15 @@ export struct ChatPage {
     for (let i = 0; i < this.conversations.length; i++) {
       if (this.conversations[i].id === this.selectedId) {
         return this.conversations[i].agentName;
+      }
+    }
+    return '';
+  }
+
+  private currentAgentAvatar(): string {
+    for (let i = 0; i < this.conversations.length; i++) {
+      if (this.conversations[i].id === this.selectedId) {
+        return this.conversations[i].agentAvatar;
       }
     }
     return '';

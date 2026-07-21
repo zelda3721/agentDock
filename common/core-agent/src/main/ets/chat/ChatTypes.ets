@@ -208,6 +208,8 @@ export interface ConversationSummary {
   agentId?: string;
   /** 绑定 Agent 的名字（LEFT JOIN agent_defs；Agent 已删则缺席——绑定随删除解除） */
   agentName?: string;
+  /** 绑定 Agent 的头像（emoji；混合现代方向的 AI 消息头像用）。未绑定/已删则缺席。 */
+  agentAvatar?: string;
 }
 
 /** 一轮对话的句柄（send 的返回值） */
