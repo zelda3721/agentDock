@@ -258,7 +258,11 @@ export const CTX_GAUGE_DANGER_PERCENT: number = EMERGENCY_RATIO * 100;          
 /** 预留生成空间的倍率（= maxTokens × 1.1，§23.2），供 ctxUsage 与 send 共用 */
 export const CTX_RESERVED_OUTPUT_MARGIN: number = RESERVED_OUTPUT_MARGIN;
 
-/** V0.9 单轮输出上限（token）。Provider 声明的 maxOutputTokens 更小时以其为准 */
+/**
+ * 单轮输出的**下限/兜底**（token）。Provider 未声明 maxOutputTokens 时用它；声明时以 Provider 为准
+ * （上界 ctx/3，见 computeChatBudget）。**不再是硬顶**——思考模型（如 qwen3.6）的推理占 max_tokens，
+ * 硬卡 1024 会被思考烧光、留不下答案 → 空气泡。
+ */
 export const CHAT_DEFAULT_MAX_OUTPUT_TOKENS: number = 1024;
 
 /**

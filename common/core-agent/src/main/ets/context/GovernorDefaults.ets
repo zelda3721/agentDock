@@ -82,9 +82,12 @@ export interface ChatBudgetSpec {
 export function computeChatBudget(contextWindow: number, providerMaxOutput: number,
                                   defaultMaxOutput: number, devCtxOverride: number): ChatBudgetSpec {
   const ctxTotal: number = devCtxOverride > 0 ? devCtxOverride : contextWindow;
-  let maxOut: number = providerMaxOutput > 0
-    ? Math.min(providerMaxOutput, defaultMaxOutput)
-    : defaultMaxOutput;
+  // 尊重 Provider 声明的输出额度：**思考模型的推理 token 计入 max_tokens**，硬卡 1024 会被思考
+  // 烧光、留不下可见答案 → 空气泡（35B 真机现象）。Provider 最懂自己该留多少（如 qwen3.6 声明 4096）。
+  // 兜底 ctx/3：声明过大的 Provider 也不至于把 prompt 预算挤没；下限仍是 defaultMaxOutput。
+  // Provider 未声明（=0）才回退 defaultMaxOutput。
+  const declared: number = providerMaxOutput > 0 ? providerMaxOutput : defaultMaxOutput;
+  let maxOut: number = Math.min(declared, Math.max(defaultMaxOutput, Math.floor(ctxTotal / 3)));
   if (devCtxOverride > 0) {
     maxOut = Math.min(maxOut, Math.max(16, Math.floor(devCtxOverride / 4)));
   }
