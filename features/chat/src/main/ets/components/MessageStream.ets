@@ -120,6 +120,7 @@ export struct MessageStream {
                   toolCalls: item.toolCalls,
                   authorName: this.agentName,
                   authorAvatar: this.agentAvatar,
+                  thinkingText: item.thinkingText,
                   // 「继续」只对会话末条成立（续写非末条会错接到最新那条上）
                   canContinue: this.source.lastIndex() === index,
                   onAbort: () => {
@@ -158,8 +159,9 @@ export struct MessageStream {
             // 其余行不参与 diff —— 这正是攒批的收益落地处（S1 §5.4）
             // 工具签名进 key：卡片增删或落定（running→done）时 key 变，LazyForEach 只重建这一条
             // 末条标记进 key：追加新消息后，原截断气泡不再是末条 → key 变 → 重建 → 「继续」按钮据 canContinue 消失
+            // 思考长度进 key：思考流式期间正文仍空、text.length 不变，靠 thinkingText.length 触发重建
           }, (item: ChatMessageVM, index: number) =>
-            `${item.id}-${item.status}-${item.text.length}-${item.toolSig()}-${this.source.lastIndex() === index ? 'end' : 'mid'}`)
+            `${item.id}-${item.status}-${item.text.length}-${item.thinkingText.length}-${item.toolSig()}-${this.source.lastIndex() === index ? 'end' : 'mid'}`)
         }
         .layoutWeight(1)
         .width('100%')

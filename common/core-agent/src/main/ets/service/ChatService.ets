@@ -1156,6 +1156,13 @@ class ChatTurn implements ChatTurnHandle {
             lastCheckpoint = now;
             await this.repo.checkpointAssistant(this.assistantMessageId, contentBase + content);
           }
+        } else if (delta.type === 'reasoning') {
+          // 思考增量：流式吐给 UI（可折叠显示），**不并入 content、不落库、不进摘要**——思考不是回答。
+          // 不动 firstTokenMs（那口径是首个**可见**字，思考先到不算），也不动 checkpoint。
+          const rc: string = delta.reasoning ?? '';
+          if (rc.length > 0) {
+            this.events.push({ type: 'thinking', thinking: rc });
+          }
         } else if (delta.type === 'tool_call' && delta.toolCall !== undefined) {
           // Provider 已聚合完整（远程 SSE 分片在 Provider 内部拼好才发出）
           toolCalls.push(delta.toolCall);

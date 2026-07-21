@@ -73,6 +73,16 @@ function msgNotice(color: ResourceColor) {
   .fontColor(color)
 }
 
+/** 思考正文：比正文小一档、inkTertiary——过程不喧宾夺主（[R-02] 仪表/过程默认低对比中性色） */
+@Extend(Text)
+function msgThinking() {
+  .fontSize(AdType.bodyS.size)
+  .lineHeight(AdType.bodyS.lineHeight)
+  .fontFamily(AdType.bodyS.family)
+  .fontColor(AdColor.inkTertiary)
+  .textAlign(TextAlign.Start)
+}
+
 @Reusable
 @Component
 export struct AdMessage {
@@ -127,6 +137,12 @@ export struct AdMessage {
    * 若其后已有新消息，续写会错接到最新那条上，故非末条只显通知、不给按钮（[R-41] 不给死按钮）。
    */
   @Prop canContinue: boolean = false;
+  /**
+   * 本轮**思考**过程（推理模型的 reasoning_content / 内联 <think> 归一，T1.0-04c）。
+   * 非空 → 流式时展开显示思考过程；答案一到（text 非空）折叠成一行「已思考 · 展开」。
+   * 思考不是回答：不并入正文、不落库（重读为空）。
+   */
+  @Prop thinkingText: string = '';
   onRailSegment: (segment: number) => void = () => {
   };
   /**
@@ -143,6 +159,8 @@ export struct AdMessage {
   @StorageProp(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = false;
   /** 流式光标 opacity（1 → 0.2 → 1 循环）；减弱动效时常亮不闪 */
   @State private cursorOpacity: number = 1;
+  /** 思考块是否展开（落定/答题后默认折叠；用户点头部切换）。流式思考中恒展开、不受此控。 */
+  @State private thinkingExpanded: boolean = false;
 
   @Builder
   emptySlot() {
@@ -155,6 +173,8 @@ export struct AdMessage {
   aboutToReuse(params: Record<string, Object>): void {
     // @Reusable 复用时重置光标状态（长会话必需）
     this.cursorOpacity = 1;
+    // 折叠态是本条消息的局部 UI，复用到另一条时必须回到默认折叠，否则串味
+    this.thinkingExpanded = false;
     this.startCursor();
   }
 
@@ -252,44 +272,49 @@ export struct AdMessage {
           }, (call: AdToolCall, index: number) => `${index}-${call.name}-${call.status}`)
         }
 
-        // 正文 + 流式光标（同一行尾）
-        Row({ space: AdSpace.hairline }) {
-          Text(this.text)
-            .msgBody()
-            .layoutWeight(1)
-            // [R-20] 流式期间禁止逐 token 播报
-            .accessibilityLevel(this.status === AdMessageStatus.STREAMING ? 'no' : 'auto')
-          if (this.status === AdMessageStatus.STREAMING) {
+        // 思考块（推理模型）：流式时展开显示思考过程，答案一到折叠成一行「已思考 · 展开」
+        if (this.thinkingText.length > 0) {
+          this.thinkingBlock()
+        }
+
+        // 正文 / 加载态 / 流式光标
+        if (this.isLoadingOnly()) {
+          // 还没有任何输出（无正文、无思考）：诚实的加载态——不是空气泡，也不在气泡里放停止按钮
+          Row({ space: AdSpace.s2 }) {
+            Text('正在生成…').msgNotice(AdColor.inkTertiary)
             Column()
               .width(AdStroke.emphasis)
               .height(AdType.bodyL.lineHeight - 6)
-              // 流式光标 = 品牌用途（不是来源断言）：色带才承载来源
               .backgroundColor(AdColor.brandFg)
               .opacity(this.cursorOpacity)
               .accessibilityLevel('no')
           }
-        }
-        .width('100%')
-        .alignItems(VerticalAlign.Bottom)
-
-        // 状态行
-        if (this.status === AdMessageStatus.STREAMING) {
-          Row({ space: AdSpace.s2 }) {
-            // §5.2 动词表：按钮用动词「停止」（与输入区同词）——曾用名词性的「中断」，
-            // 真机反馈把它读成了状态"已中断"（生成中的消息看起来像断了），体验事故
-            AdButton({
-              label: '停止',
-              variant: AdButtonVariant.SECONDARY,
-              btnSize: AdButtonSize.SM,
-              showGlyph: true,
-              glyph: AdGlyphKind.CROSS,
-              a11yText: '停止生成',
-              onAction: () => {
-                this.onAbort();
-              }
-            })
+          .alignItems(VerticalAlign.Center)
+        } else if (this.text.length > 0 || this.status !== AdMessageStatus.STREAMING) {
+          // 有正文，或已落定：渲染正文（+ 答题中的流式光标）。思考中（正文尚空且在流式）不进这里——
+          // 那时只显思考块，光标在思考块尾。
+          Row({ space: AdSpace.hairline }) {
+            Text(this.text)
+              .msgBody()
+              .layoutWeight(1)
+              // [R-20] 流式期间禁止逐 token 播报
+              .accessibilityLevel(this.status === AdMessageStatus.STREAMING ? 'no' : 'auto')
+            if (this.status === AdMessageStatus.STREAMING) {
+              Column()
+                .width(AdStroke.emphasis)
+                .height(AdType.bodyL.lineHeight - 6)
+                // 流式光标 = 品牌用途（不是来源断言）：色带才承载来源
+                .backgroundColor(AdColor.brandFg)
+                .opacity(this.cursorOpacity)
+                .accessibilityLevel('no')
+            }
           }
-        } else if (this.status === AdMessageStatus.ABORTED) {
+          .width('100%')
+          .alignItems(VerticalAlign.Bottom)
+        }
+
+        // 状态行（流式**不再**在气泡里放停止按钮——停止是输入区旁边那颗，[R-37]/用户反馈 2026-07-21）
+        if (this.status === AdMessageStatus.ABORTED) {
           Column({ space: AdSpace.s2 }) {
             Row({ space: AdSpace.s1 }) {
               AdGlyph({ kind: AdGlyphKind.BLOCKED, glyphSize: 12, color: AdColor.inkTertiary })
@@ -407,6 +432,85 @@ export struct AdMessage {
   private isUser(): boolean {
     return this.role === AdMessageRole.USER;
   }
+
+  /** 还没有任何输出（无正文、无思考）且在流式：显示诚实的加载态，而非空气泡。 */
+  private isLoadingOnly(): boolean {
+    return this.status === AdMessageStatus.STREAMING
+      && this.text.length === 0 && this.thinkingText.length === 0;
+  }
+
+  /** 思考进行中 = 流式 + 正文尚空（答案一开始就算思考结束、思考随即折叠）。 */
+  private thinkingLive(): boolean {
+    return this.status === AdMessageStatus.STREAMING && this.text.length === 0;
+  }
+
+  /** 思考块是否展开：思考中恒展开；否则听用户折叠开关（默认折叠）。 */
+  private thinkingShown(): boolean {
+    return this.thinkingLive() || this.thinkingExpanded;
+  }
+
+  /**
+   * 思考块（推理模型的思考过程）：
+   * · 思考中——展开、头部「思考中…」、正文带流式光标；
+   * · 答案到/已落定——折叠成一行「已思考 · 展开/收起」，点头部切换。
+   * 思考正文过长时只显尾部（最近的思考更有价值；避免把气泡撑上天）。
+   */
+  @Builder
+  thinkingBlock() {
+    Column({ space: AdSpace.hairline }) {
+      Row({ space: AdSpace.s1 }) {
+        AdGlyph({
+          kind: this.thinkingShown() ? AdGlyphKind.CHEVRON_UP : AdGlyphKind.CHEVRON_DOWN,
+          glyphSize: 10,
+          color: AdColor.inkTertiary
+        })
+        Text(this.thinkingLive() ? '思考中…' : '已思考').msgNotice(AdColor.inkTertiary)
+      }
+      .alignItems(VerticalAlign.Center)
+      // 思考中折叠正在进行的思考没意义 → 点击忽略；落定后可点折叠回看
+      .onClick((): void => {
+        if (!this.thinkingLive()) {
+          this.thinkingExpanded = !this.thinkingExpanded;
+        }
+      })
+      .accessibilityText(this.thinkingLive() ? '正在思考' : (this.thinkingExpanded ? '收起思考过程' : '展开思考过程'))
+
+      if (this.thinkingShown()) {
+        Row({ space: AdSpace.hairline }) {
+          Text(this.thinkingDisplay())
+            .msgThinking()
+            .layoutWeight(1)
+            .accessibilityLevel('no')   // [R-20] 思考过程不逐字播报
+          if (this.thinkingLive()) {
+            Column()
+              .width(AdStroke.emphasis)
+              .height(AdType.bodyS.lineHeight - 4)
+              .backgroundColor(AdColor.brandFg)
+              .opacity(this.cursorOpacity)
+              .accessibilityLevel('no')
+          }
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Bottom)
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    // 左内缩 + 细左带：思考是「正文的旁白」，视觉上退后一层
+    .padding({ left: AdSpace.s3 })
+    .border({ width: { left: AdStroke.control }, color: AdColor.border })
+  }
+
+  /** 思考展示文本：思考中只显尾部（最近 THINK_TAIL_MAX 字），落定展开显全文。 */
+  private thinkingDisplay(): string {
+    const t: string = this.thinkingText;
+    if (this.thinkingLive() && t.length > AdMessage.THINK_TAIL_MAX) {
+      return `…${t.substring(t.length - AdMessage.THINK_TAIL_MAX)}`;
+    }
+    return t;
+  }
+
+  private static readonly THINK_TAIL_MAX: number = 600;
 
   /**
    * 助手来源头像（混合现代方向）：24vp 圆。有 agent emoji 头像就用它（内容，非标记——

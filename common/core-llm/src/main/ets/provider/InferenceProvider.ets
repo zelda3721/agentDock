@@ -208,7 +208,7 @@ export interface ProviderCaps {
 // 流式协议（统一归一化目标）
 // ============================================================================
 
-export type StreamDeltaType = 'text' | 'tool_call' | 'usage' | 'done';
+export type StreamDeltaType = 'text' | 'reasoning' | 'tool_call' | 'usage' | 'done';
 
 export interface TokenUsage {
   promptTokens: number;
@@ -246,6 +246,12 @@ export interface StreamDelta {
   type: StreamDeltaType;
   /** type==='text'：本次增量文本 */
   text?: string;
+  /**
+   * type==='reasoning'：本次**思考**增量（Qwen3 系推理模型的 reasoning_content / 内联 <think>）。
+   * 思考不是回答——上层据此**流式显示思考过程**（可折叠），但不并入正文、不进摘要/记忆。
+   * 归一化：远程走独立 reasoning_content 字段，本地把内联 <think> 归一到此。
+   */
+  reasoning?: string;
   /** type==='tool_call'：增量到达的工具调用（远程 SSE 分片需由 Provider 内部聚合完整后再发出） */
   toolCall?: ToolCall;
   /** type==='usage'：token 用量（供 §10 指标与 §23.2 预算账本） */

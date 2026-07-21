@@ -109,6 +109,8 @@ export class ChatController {
 
   /** 攒批缓冲：**普通字段，绝不是 @State** —— 见 FLUSH_INTERVAL_MS 的注释 */
   private pendingText: string = '';
+  /** 思考增量攒批缓冲（与 pendingText 同一 flush 节拍，同样绝不是 @State） */
+  private pendingThinking: string = '';
   private flushTimer: number = -1;
   /** 本轮 usage 回吐的完成 token 数；-1 = 尚未回吐（中断态显示时不编造 0） */
   private completionTokens: number = -1;
@@ -361,6 +363,7 @@ export class ChatController {
     this.completionTokens = -1;
     this.lastTurnAssistantId = turn.assistantMessageId;
     this.pendingText = '';
+    this.pendingThinking = '';
     this.appendAssistantPlaceholder(turn.assistantMessageId);
     this.streamingIndex = this.messages.lastIndex();
     this.host.onMessageCountChanged(this.messages.totalCount());
@@ -408,6 +411,7 @@ export class ChatController {
     this.completionTokens = -1;
     this.lastTurnAssistantId = turn.assistantMessageId;
     this.pendingText = '';
+    this.pendingThinking = '';
     // 复用被截断的消息为流式目标：续写增量 append 到它已有的部分答案上
     this.streamingIndex = idx;
     msg.status = AdMessageStatus.STREAMING;
@@ -469,6 +473,11 @@ export class ChatController {
       const delta: string = ev.text !== undefined ? ev.text : '';
       // ← 攒批：只累加字符串，不碰 @State、不 notifyDataChange
       this.pendingText += delta;
+      return;
+    }
+    if (ev.type === 'thinking') {
+      // 思考增量：同样攒批（不碰 @State）。答案一到就折叠思考——见 flushPending。
+      this.pendingThinking += ev.thinking !== undefined ? ev.thinking : '';
       return;
     }
     if (ev.type === 'compressing') {
@@ -549,6 +558,9 @@ export class ChatController {
       return;
     }
     try {
+      // 思考不落库（reloadProvenance 从 DB 重建会丢）：先把本轮流式攒下的思考留一份，落定后补回，
+      // 让「已思考 · 展开」在答案落定后仍在（本会话内；重开会话/重启后思考消失，符合"过程不持久"）。
+      const prevThinking: string = this.thinkingOfLastTurn();
       const records: ChatMessageRecord[] = await this.service.listMessages(this.convId, 200);
       const list: ChatMessageVM[] = records.map((r: ChatMessageRecord): ChatMessageVM => {
         const vm: ChatMessageVM = ChatController.toMessageVM(r);
@@ -556,6 +568,7 @@ export class ChatController {
         // 避免中断态的「已生成 N tok」退化成编造的 0（**未测得就不显示数字**，见渲染侧的 clamp）
         if (vm.id === this.lastTurnAssistantId) {
           vm.generatedTokens = this.completionTokens;
+          vm.thinkingText = prevThinking;
         }
         return vm;
       });
@@ -583,19 +596,38 @@ export class ChatController {
     }
   }
 
-  /** 批量提交：一次 UI 更新写入本批**全部**增量，且只惊动最后一条消息。 */
+  /** 批量提交：一次 UI 更新写入本批**全部**增量（正文 + 思考），且只惊动最后一条消息。 */
   private flushPending(): void {
-    if (this.pendingText.length === 0 || this.streamingIndex < 0) {
+    if ((this.pendingText.length === 0 && this.pendingThinking.length === 0) || this.streamingIndex < 0) {
       return;
     }
     const msg: ChatMessageVM | null = this.messages.itemAt(this.streamingIndex);
     if (msg === null) {
       return;
     }
-    msg.text += this.pendingText;
-    this.pendingText = '';
+    if (this.pendingThinking.length > 0) {
+      msg.thinkingText += this.pendingThinking;
+      this.pendingThinking = '';
+    }
+    if (this.pendingText.length > 0) {
+      msg.text += this.pendingText;
+      this.pendingText = '';
+    }
     this.messages.notifyChanged(this.streamingIndex);
     this.host.onStreamAppended();
+  }
+
+  /** 取本轮流式消息（lastTurnAssistantId）当前累积的思考文本；找不到返回空串。 */
+  private thinkingOfLastTurn(): string {
+    if (this.lastTurnAssistantId.length === 0) {
+      return '';
+    }
+    const idx: number = this.messages.indexOfId(this.lastTurnAssistantId);
+    if (idx < 0) {
+      return '';
+    }
+    const msg: ChatMessageVM | null = this.messages.itemAt(idx);
+    return msg !== null ? msg.thinkingText : '';
   }
 
   private appendAssistantPlaceholder(id: string): ChatMessageVM {

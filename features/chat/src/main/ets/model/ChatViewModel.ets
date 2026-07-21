@@ -50,6 +50,12 @@ export class ChatMessageVM {
    */
   toolCalls: AdToolCall[] = [];
 
+  /**
+   * 本轮**思考**过程（推理模型 reasoning_content / 内联 <think> 归一，T1.0-04c）。流式累积。
+   * 思考不是回答：不落库（重读为空）；流式时展开显示，答案一到就折叠成一行「已思考 · 展开」。
+   */
+  thinkingText: string = '';
+
   /** LazyForEach key 的工具签名：条数 + 各卡状态——卡片增删或落定时 key 变，只重建这一行。 */
   toolSig(): string {
     if (this.toolCalls.length === 0) {

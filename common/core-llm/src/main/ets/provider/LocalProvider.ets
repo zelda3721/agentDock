@@ -307,6 +307,8 @@ export class LocalProvider implements InferenceProvider {
     const toolsEnabled: boolean = opts.tools !== undefined && opts.tools.length > 0;
     const toolFilter: ToolCallTagFilter | null = toolsEnabled ? new ToolCallTagFilter() : null;
     let shownChars: number = 0;
+    // 是否吐过 reasoning 增量：吐过就别再把思考全文兜底当正文（否则思考显示两遍）
+    let reasoningEmitted: boolean = false;
 
     // 抢占/取消的实际生效点（红线 12）：signal → 原生 abort
     const onAbort: AbortListener = (reason: string): void => {
@@ -367,6 +369,12 @@ export class LocalProvider implements InferenceProvider {
         }
         completionTokens++;   // usage 计原始 token（思考真实花了算力，不假装没花）
         const visible: string = think.feed(token);
+        // 思考增量流式吐出（与远程 reasoning_content 同一 'reasoning' 通道，上层可折叠显示）
+        const reasoning: string = think.takeReasoning();
+        if (reasoning.length > 0) {
+          reasoningEmitted = true;
+          queue.push({ type: 'reasoning', reasoning: reasoning });
+        }
         if (visible.length > 0) {
           const shown: string = toolFilter !== null ? toolFilter.feed(visible) : visible;
           if (shown.length > 0) {
@@ -378,6 +386,12 @@ export class LocalProvider implements InferenceProvider {
       }
       if (event.type === 'done') {
         const thinkTail: string = think.flush();
+        // 仍在 <think> 中结束的思考尾巴走 reasoning 通道补一发
+        const reasoningTail: string = think.takeReasoning();
+        if (reasoningTail.length > 0) {
+          reasoningEmitted = true;
+          queue.push({ type: 'reasoning', reasoning: reasoningTail });
+        }
         let shownTail: string = toolFilter !== null ? toolFilter.feed(thinkTail) : thinkTail;
         if (toolFilter !== null) {
           shownTail += toolFilter.flush();
@@ -390,8 +404,8 @@ export class LocalProvider implements InferenceProvider {
         // 回合不执行已捕获的调用——上层收到 'length' 如实收束，绝不带着截断状态续圈。
         const truncated: boolean = completionTokens >= maxTokens;
         const calls: ToolCall[] = toolFilter !== null && !truncated ? toolFilter.capturedCalls() : [];
-        if (calls.length === 0 && shownChars === 0 && think.fallbackThinkText().length > 0) {
-          // 全程只思考、没答案也没工具调用：把思考全文交出（空气泡比看见草稿更糟）
+        if (!reasoningEmitted && calls.length === 0 && shownChars === 0 && think.fallbackThinkText().length > 0) {
+          // 兜底把思考全文当正文，**仅当没走过 reasoning 通道**——否则思考既在折叠块又在正文里显示两遍。
           queue.push({ type: 'text', text: think.fallbackThinkText() });
         }
         for (const call of calls) {

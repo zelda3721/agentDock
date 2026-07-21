@@ -33,6 +33,8 @@ export class ThinkTagFilter {
   private carry: string = '';
   private visibleChars: number = 0;
   private thinkChars: number = 0;
+  /** 自上次 takeReasoning 以来新到的思考增量（供上层流式显示思考过程；drain 语义） */
+  private pendingReasoning: string = '';
   /** 思考全文仅为「全程只思考没答案」的诚实兜底而留存；上限防失控（超限丢弃头部无意义） */
   private thinkText: string = '';
   private static readonly THINK_KEEP_MAX: number = 8192;
@@ -101,6 +103,13 @@ export class ThinkTagFilter {
     return this.visibleChars > 0;
   }
 
+  /** 取走并清空自上次调用以来的思考增量（上层据此流式显示思考过程；无则空串） */
+  takeReasoning(): string {
+    const r: string = this.pendingReasoning;
+    this.pendingReasoning = '';
+    return r;
+  }
+
   /**
    * 诚实兜底：全程只思考、没有任何可见回答时，把思考全文当正文交出——
    * 空气泡比"看见模型的草稿"更糟（用户会以为什么都没发生）。仅在自然结束时使用。
@@ -114,6 +123,7 @@ export class ThinkTagFilter {
       return;
     }
     this.thinkChars += piece.length;
+    this.pendingReasoning += piece;   // 供上层 takeReasoning 流式取走（与 thinkText 全文兜底各管各的）
     if (this.thinkText.length < ThinkTagFilter.THINK_KEEP_MAX) {
       this.thinkText += piece.length > ThinkTagFilter.THINK_KEEP_MAX - this.thinkText.length
         ? piece.substring(0, ThinkTagFilter.THINK_KEEP_MAX - this.thinkText.length)

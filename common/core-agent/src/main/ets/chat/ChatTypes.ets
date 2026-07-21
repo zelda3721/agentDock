@@ -25,12 +25,17 @@ export { FinishReason, TokenUsage };
 // 事件流（合同 §二）
 // ---------------------------------------------------------------------------
 
-export type ChatTurnEventType = 'text' | 'usage' | 'done' | 'error' | 'compressing' | 'tool';
+export type ChatTurnEventType = 'text' | 'thinking' | 'usage' | 'done' | 'error' | 'compressing' | 'tool';
 
 export interface ChatTurnEvent {
   type: ChatTurnEventType;
   /** type==='text' 的增量（UI 侧必须攒批渲染，禁止逐 token setState——S1 实测约束） */
   text?: string;
+  /**
+   * type==='thinking' 的**思考**增量（推理模型的 reasoning_content / 内联 <think> 归一）。
+   * UI 据此流式显示思考过程（可折叠）——思考不是回答，不并入正文、不落库、不进摘要/记忆。
+   */
+  thinking?: string;
   usage?: TokenUsage;
   /** 'stop' | 'length' | 'aborted' | 'error'（core-llm 的 FinishReason 是其超集，含 'tool_calls'） */
   finishReason?: FinishReason;

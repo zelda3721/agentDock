@@ -142,6 +142,8 @@ interface OaiToolCallDelta {
 interface OaiDelta {
   role?: string;
   content?: string;
+  /** Qwen3/DeepSeek 系推理模型的**思考**通道（标准 qwen3.6 走这里，不进 content）。上层流式显示、可折叠。 */
+  reasoning_content?: string;
   tool_calls?: OaiToolCallDelta[];
 }
 
@@ -227,6 +229,8 @@ class ToolCallAccumulator {
 class StreamState {
   /** 已经向消费方推过 text 增量 —— 一旦为 true 就**不能再重试**（会产生重复内容） */
   emitted: boolean = false;
+  /** 本流是否吐过 reasoning 增量：吐过就别再把思考全文兜底当正文（否则思考被显示两遍） */
+  reasoningEmitted: boolean = false;
   firstTokenMs: number = -1;
   completionTokens: number = 0;
   promptTokens: number = 0;
@@ -517,17 +521,41 @@ export class RemoteProvider implements InferenceProvider {
       if (delta === undefined) {
         continue;
       }
+      // 独立思考通道（reasoning_content）：流式显示思考过程（可折叠），不并入正文。
+      // 思考也是真实 token 花费——计入 completionTokens、也算「已产出」（防空流误判）。
+      const reasoning: string = delta.reasoning_content === undefined ? '' : delta.reasoning_content;
+      if (reasoning.length > 0) {
+        // 首字时延从**首个思考字**算起：思考现已可见（用户等的第一个字就是它），
+        // 且 completionTokens 也含思考——两者口径必须一致，否则 tok/s = 含思考的分子 / 只算答案的分母，虚高数倍。
+        // 与 LocalProvider（首 token 含思考）对齐。
+        if (state.firstTokenMs < 0) {
+          state.firstTokenMs = Date.now() - startedAt;
+        }
+        state.emitted = true;
+        state.reasoningEmitted = true;
+        if (!state.usageFromServer) {
+          state.completionTokens++;
+        }
+        queue.push({ type: 'reasoning', reasoning: reasoning });
+      }
       const content: string = delta.content === undefined ? '' : delta.content;
       if (content.length > 0) {
         if (state.firstTokenMs < 0) {
           state.firstTokenMs = Date.now() - startedAt;
         }
         state.emitted = true;
-        if (!state.usageFromServer) {
-          // 服务端没给 usage 时的兜底计数：一个增量≈一个 token（OpenAI 协议下基本成立；含思考——真实花费）
+        // 服务端没给 usage 时的兜底计数：一个增量≈一个 token。同一 delta 若思考+正文都在，
+        // 上面思考分支已计过一次，这里不再重复计（否则把一个 delta 算成两个 token）。
+        if (!state.usageFromServer && reasoning.length === 0) {
           state.completionTokens++;
         }
         const visible: string = state.thinkFilter.feed(content);
+        // 内联 <think> 归一：把过滤器扣下的思考增量也流式吐出（与远程 reasoning_content 同一 'reasoning' 通道）
+        const inlineReasoning: string = state.thinkFilter.takeReasoning();
+        if (inlineReasoning.length > 0) {
+          state.reasoningEmitted = true;
+          queue.push({ type: 'reasoning', reasoning: inlineReasoning });
+        }
         if (visible.length > 0) {
           state.text += visible;
           queue.push({ type: 'text', text: visible });
@@ -551,13 +579,20 @@ export class RemoteProvider implements InferenceProvider {
       tokensPerSec: RemoteProvider.computeTps(state.completionTokens, state.firstTokenMs, latencyMs)
     };
 
-    // 思考过滤的收尾：持留尾巴照吐；全程只思考且无工具调用时兜底交出思考全文（空气泡更糟）
+    // 思考过滤的收尾：持留的可见尾巴照吐；仍在 <think> 中结束的思考尾巴走 reasoning 通道补一发。
     const thinkTail: string = state.thinkFilter.flush();
+    const reasoningTail: string = state.thinkFilter.takeReasoning();
+    if (reasoningTail.length > 0) {
+      state.reasoningEmitted = true;
+      queue.push({ type: 'reasoning', reasoning: reasoningTail });
+    }
     if (thinkTail.length > 0) {
       state.text += thinkTail;
       queue.push({ type: 'text', text: thinkTail });
-    } else if (!state.thinkFilter.hasVisible() && state.toolCalls.size === 0
+    } else if (!state.reasoningEmitted && !state.thinkFilter.hasVisible() && state.toolCalls.size === 0
       && state.thinkFilter.fallbackThinkText().length > 0) {
+      // 兜底把思考全文当正文，**仅当没走过 reasoning 通道**——否则思考会既在折叠块又在正文里显示两遍。
+      // 走过 reasoning 通道的「全程只思考」现在是：折叠思考块 + 空正文（截断则叠 BUDGET_EXHAUSTED + 继续）。
       queue.push({ type: 'text', text: state.thinkFilter.fallbackThinkText() });
     }
 
@@ -973,8 +1008,19 @@ export class RemoteProvider implements InferenceProvider {
         `鉴权失败（HTTP ${statusCode}）：请在「模型」页检查该 Provider 的 API Key${detail}`, false);
     }
     if (statusCode === 429) {
+      // 欠费/额度耗尽的配额错误（OpenAI 系用 429 + insufficient_quota）与短时限流分开说：
+      // 前者要去充值/换 Provider，后者稍后自愈。两者都不是本机的错，也都可在解除后「重试」续做。
+      const quota: boolean = /quota|insufficient|exceeded|欠费|余额|额度/i.test(rawBody);
+      return quota
+        ? new InferenceError(InferenceErrorCode.RATE_LIMITED,
+          `远程模型已达使用上限（配额/余额不足）：请在「模型」页充值或更换 Provider，恢复后可重试${detail}`, true)
+        : new InferenceError(InferenceErrorCode.RATE_LIMITED,
+          `远程模型暂时受使用限制（HTTP 429）：稍后可重试，或更换 Provider${detail}`, true);
+    }
+    if (statusCode === 402) {
+      // Payment Required：欠费/额度用尽的明确信号
       return new InferenceError(InferenceErrorCode.RATE_LIMITED,
-        `请求被限流（HTTP 429）：请稍后重试或更换 Provider${detail}`, true);
+        `远程模型已达使用上限（账户欠费或额度用尽，HTTP 402）：请充值或更换 Provider，恢复后可重试${detail}`, true);
     }
     if (statusCode >= 500) {
       return new InferenceError(InferenceErrorCode.SERVER_ERROR,
