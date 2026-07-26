@@ -340,6 +340,37 @@ export class MemoryService {
     return this.repo.getProfile();
   }
 
+  /** 冲突条目（待人工确认，记忆页红点）。 */
+  async listConflicts(limit: number): Promise<MemoryItem[]> {
+    if (this.repo === null) {
+      return [];
+    }
+    return this.repo.listConflictItems(limit);
+  }
+
+  /** 冲突条目数（红点计数）。 */
+  async conflictCount(): Promise<number> {
+    if (this.repo === null) {
+      return 0;
+    }
+    return this.repo.countConflicts();
+  }
+
+  /**
+   * 人工消解一条冲突记忆：keep=true 保留（conflict→active）；keep=false 删除。
+   * 无论哪种，该条都离开 conflict 态——配对项各自独立消解，红点在全部消解后清零。
+   */
+  async resolveConflict(itemId: string, keep: boolean): Promise<void> {
+    if (this.repo === null) {
+      return;
+    }
+    if (keep) {
+      await this.repo.resolveConflictKeep(itemId);
+    } else {
+      await this.repo.deleteMemory(itemId);
+    }
+  }
+
   private async latestReport(mode: ConsolidationMode): Promise<ConsolidationReport> {
     if (this.repo === null) {
       return MemoryService.emptyReport(mode);

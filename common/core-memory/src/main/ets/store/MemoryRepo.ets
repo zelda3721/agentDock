@@ -298,6 +298,41 @@ export class MemoryRepo implements MemoryInboxRepositoryPort, ConsolidationRepos
       `SELECT COUNT(*) FROM memory_items WHERE layer = 'semantic' AND status = 'active';`, [])) ?? 0;
   }
 
+  /** 冲突条目（§6.3-A conflict：待人工确认，记忆页红点）。 */
+  async listConflictItems(limit: number): Promise<MemoryItem[]> {
+    return this.rdb.queryRows<MemoryItem>(
+      `SELECT id, scope, text, kind, confidence, last_seen_at
+         FROM memory_items
+        WHERE layer = 'semantic' AND status = 'conflict'
+        ORDER BY last_seen_at DESC LIMIT ?;`,
+      [limit] as Array<SqlArg>,
+      (rs: relationalStore.ResultSet): MemoryItem => {
+        const item: MemoryItem = {
+          id: rs.getString(rs.getColumnIndex('id')),
+          scope: rs.getString(rs.getColumnIndex('scope')),
+          text: rs.getString(rs.getColumnIndex('text')),
+          kind: rs.getString(rs.getColumnIndex('kind')) as MemoryKind,
+          confidence: rs.getDouble(rs.getColumnIndex('confidence')),
+          score: 0,
+          lastSeenAt: rs.getLong(rs.getColumnIndex('last_seen_at'))
+        };
+        return item;
+      });
+  }
+
+  /** 冲突条目数（红点计数）。 */
+  async countConflicts(): Promise<number> {
+    return (await this.rdb.queryScalarInt(
+      `SELECT COUNT(*) FROM memory_items WHERE layer = 'semantic' AND status = 'conflict';`, [])) ?? 0;
+  }
+
+  /** 保留一条冲突记忆：status='conflict' → 'active'（用户确认它有效；不删的那条恢复正常）。 */
+  async resolveConflictKeep(itemId: string): Promise<void> {
+    await this.rdb.exec(
+      `UPDATE memory_items SET status = 'active', updated_at = ? WHERE id = ? AND status = 'conflict';`,
+      [Date.now(), itemId] as Array<SqlArg>);
+  }
+
   /**
    * 用户主动删除一条记忆（物理删除条目）。向量留孤儿（检索回查 active 时天然丢弃，
    * 与 KB 同纪律；压实随整库重建）。这是"用户对记忆的控制权"（§6.3 / 隐私）。
