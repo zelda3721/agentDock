@@ -377,6 +377,16 @@ export class ToolBus {
       };
       return missing;
     }
+    return this.runResolved(tool, args, ctx);
+  }
+
+  /**
+   * 执行一个**已解析的** Tool 实例（跳过注册表按名查找）。
+   * 供 Agent-as-Tool 这类**动态构造、未进全局注册表**的工具执行（agent.call:<id> 按会话绑定的
+   * 子智能体现场构造，见 resolveTools）——权限门/Schema 校验/独立超时与 execute 完全一致。
+   */
+  async runResolved(tool: Tool, args: ToolArgs, ctx: ToolContext): Promise<ToolResult> {
+    const name: string = tool.name;
     // confirm 类工具自门控（未授权返回 needs_confirmation 哨兵，由 ChatService 循环弹卡编排，§9.4）；
     // none 直接放行；always_ask（每次必问、不记忆）暂未实现，仍如实拒绝。
     if (tool.permission !== 'none' && tool.permission !== 'confirm') {

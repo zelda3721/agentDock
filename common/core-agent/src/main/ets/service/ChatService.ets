@@ -22,6 +22,7 @@
 import { util } from '@kit.ArkTS';
 import {
   AbortController,
+  AbortSignal,
   ChatMessage,
   FinishReason,
   GenerateOptions,
@@ -52,8 +53,9 @@ import { ChatCompactor, CompactResult, dropCoveredHistory } from '../chat/ChatCo
 import { ChatPromptBuilder, PromptResult } from '../chat/ChatPromptBuilder';
 import { AgentBindingRow, ChatRepository, ConversationRow } from '../chat/ChatRepository';
 import { BudgetLedger, WaterlineStatus } from '../context/ContextGovernor';
-import { ChatBudgetSpec, computeChatBudget } from '../context/GovernorDefaults';
-import { DEFAULT_LOOP_CONFIG } from '../model/AgentDef';
+import { ChatBudgetSpec, computeChatBudget, SUBAGENT_REPORT_MAX_TOKENS } from '../context/GovernorDefaults';
+import { AGENT_CALL_TOOL_PREFIX, DEFAULT_LOOP_CONFIG } from '../model/AgentDef';
+import { AgentCallTool, SubAgentResult, SubAgentTarget } from '../tools/AgentCallTool';
 import { RunFinishReason } from '../runtime/AgentRun';
 import { adjudicateAfterStep, decideNext, GateDecision, RunBudgetSpec, runStateOf } from '../runtime/RunGate';
 import { RunRecorder } from '../runtime/RunRecorder';
@@ -228,8 +230,65 @@ interface ResolvedTools {
   specs: ToolSpec[];
 }
 
-function resolveTools(toolBus: ToolBus | null, binding: AgentBindingRow | null,
-                      provider: InferenceProvider): ResolvedTools {
+/** 子智能体职责摘要（给父模型看，判定何时委派）：取 system prompt 首句/首段，截 80 字。 */
+function subAgentDescOf(binding: AgentBindingRow): string {
+  const sp: string = binding.systemPrompt.trim();
+  if (sp.length === 0) {
+    return '通用助手';
+  }
+  const firstLine: string = sp.split('\n')[0].trim();
+  const brief: string = firstLine.length > 0 ? firstLine : sp;
+  return brief.length > 80 ? `${brief.substring(0, 80)}…` : brief;
+}
+
+/**
+ * §5.3 / §27.2-M6 子智能体一次运行：**独立上下文**（只 system + brief，不带父对话历史）→ 生成
+ * ≤512 token 报告。委托即隔离——父上下文只接收这段蒸馏物。V1.0 子智能体单发（不嵌套工具循环）；
+ * 深度已在 AgentCallTool 层 gate，此处不再嵌套（防递归失控由深度上限保证）。
+ * 子生成 token 计入的精确口径随 T1.0-04 预算账本细化；本版靠深度上限 + 步数上限收束递归。
+ */
+async function runSubAgentTurn(repo: ChatRepository, subAgentId: string, brief: string,
+                               depth: number, signal?: AbortSignal): Promise<SubAgentResult> {
+  void depth;
+  const binding: AgentBindingRow | null = await repo.agentBinding(subAgentId);
+  if (binding === null) {
+    return { ok: false, report: '', error: '子智能体不存在或已删除' };
+  }
+  const resolution: TurnProviderResolution = resolveTurnProvider(binding);
+  const provider: InferenceProvider | null = resolution.provider;
+  if (provider === null) {
+    return { ok: false, report: '', error: resolution.failDetail };
+  }
+  const system: string = systemPromptFrom(binding);
+  const messages: ChatMessage[] = [
+    { role: 'system', content: system },
+    { role: 'user', content: brief }
+  ];
+  // 取消协同（红线 12）：把父 Run 的 AbortSignal 透传给子生成——用户 Stop / 父中断能在 token
+  // 边界停下子流，及时释放本地引擎单飞锁，避免父下一步撞 BUSY；父 generate() 同款接线。
+  const opts: GenerateOptions = { maxTokens: SUBAGENT_REPORT_MAX_TOKENS, temperature: 0.3, signal: signal };
+  try {
+    let text: string = '';
+    const stream: AsyncIterable<StreamDelta> = provider.chatStream(messages, opts);
+    for await (const delta of stream) {
+      // 只收可见正文（think 已在 Provider 侧过滤为独立 reasoning 通道，不并入报告）
+      if (delta.type === 'text' && delta.text !== undefined) {
+        text += delta.text;
+      }
+    }
+    const report: string = text.trim();
+    if (report.length === 0) {
+      return { ok: false, report: '', error: '子智能体没有产出内容' };
+    }
+    return { ok: true, report: report };
+  } catch (e) {
+    return { ok: false, report: '', error: (e as Error).message };
+  }
+}
+
+async function resolveTools(toolBus: ToolBus | null, binding: AgentBindingRow | null,
+                            provider: InferenceProvider, repo: ChatRepository | null,
+                            signal?: AbortSignal): Promise<ResolvedTools> {
   const none: ResolvedTools = { allowed: [], specs: [] };
   if (toolBus === null || binding === null) {
     return none;
@@ -242,7 +301,32 @@ function resolveTools(toolBus: ToolBus | null, binding: AgentBindingRow | null,
   }
   // Agent 白名单 ∪ 技能声明（归一 + 去重，保序：Agent 自配在前——它是作者的显式表达）
   const names: string[] = normalizeToolNames(binding.tools.concat(binding.skillTools));
-  const allowed: Tool[] = toolBus.listFor(names);
+  // agent.call:<id> 拆出：这些是"委派子智能体"声明，不进注册表按名查找，而是现场构造一个 agent.call 工具
+  const regularNames: string[] = [];
+  const subIds: string[] = [];
+  for (const n of names) {
+    if (n.startsWith(AGENT_CALL_TOOL_PREFIX)) {
+      subIds.push(n.substring(AGENT_CALL_TOOL_PREFIX.length));
+    } else {
+      regularNames.push(n);
+    }
+  }
+  const allowed: Tool[] = toolBus.listFor(regularNames);
+  // Agent-as-Tool（§5.3）：把声明的子智能体解析成 agent.call 工具的候选目标（已删/无名的如实缺席）
+  if (subIds.length > 0 && repo !== null) {
+    const targets: SubAgentTarget[] = [];
+    for (const id of subIds) {
+      const sub: AgentBindingRow | null = await repo.agentBinding(id);
+      if (sub !== null) {
+        targets.push({ id: id, name: sub.name, description: subAgentDescOf(sub) });
+      }
+    }
+    if (targets.length > 0) {
+      const runner: (sid: string, b: string, d: number) => Promise<SubAgentResult> =
+        (sid: string, b: string, d: number): Promise<SubAgentResult> => runSubAgentTurn(repo, sid, b, d, signal);
+      allowed.push(new AgentCallTool(targets, runner));
+    }
+  }
   const specs: ToolSpec[] = allowed.map((t: Tool): ToolSpec => {
     const spec: ToolSpec = {
       type: 'function',
@@ -600,7 +684,8 @@ class ChatTurn implements ChatTurnHandle {
       // ---- [3a] 工具声明（T1.0-01/02）：Agent 白名单 ∩ 注册表 ∩ Provider 能力 ----
       // 三关都过才带 tools：Agent 没声明/总线未装配/Provider 不支持工具调用（如本地模型的
       // tool-call 解析未落地）任一不满足即不带——模型看不到工具就不会调用，诚实缺席。
-      const resolvedTools: ResolvedTools = resolveTools(this.toolBus, binding, provider);
+      const resolvedTools: ResolvedTools = await resolveTools(this.toolBus, binding, provider, this.repo,
+        this.controller.signal);
       const allowedTools: Tool[] = resolvedTools.allowed;
       const toolSpecs: ToolSpec[] = resolvedTools.specs;
       if (this.toolBus !== null && binding !== null && binding.tools.length > 0
@@ -926,6 +1011,11 @@ class ChatTurn implements ChatTurnHandle {
         // Agent 工具白名单在**执行点**再守一次（[3a] 只决定声明；服务端幻觉/网关注入的名字不在
         // 白名单内绝不执行——授权以 Agent 声明为准，不以模型输出为准）
         const allowedNames: string[] = allowedTools.map((t: Tool): string => t.name);
+        // 按名索引已解析工具：agent.call 等**动态构造、未进全局注册表**的工具从这里取（走 runResolved）
+        const allowedByName: Map<string, Tool> = new Map<string, Tool>();
+        for (const t of allowedTools) {
+          allowedByName.set(t.name, t);
+        }
         let executedCount: number = 0;
         for (const call of step.toolCalls) {
           const toolName: string = call.function.name;
@@ -973,7 +1063,9 @@ class ChatTurn implements ChatTurnHandle {
               targetProviderIsRemote: provider.kind === 'remote',
               kbLibIds: binding !== null ? binding.libIds : []
             };
-            result = await this.toolBus.execute(toolName, parsedArgs, toolCtx);
+            result = allowedByName.get(toolName) !== undefined
+              ? await this.toolBus.runResolved(allowedByName.get(toolName) as Tool, parsedArgs, toolCtx)
+              : await this.toolBus.execute(toolName, parsedArgs, toolCtx);
             // 交互式确认（§9.4）：工具对未授权域名返回 needs_confirmation 哨兵 →
             // 弹确认卡、挂起本轮等用户决策，获批后带 confirmed 复跑。
             if (result.errorCode === 'needs_confirmation') {
@@ -992,7 +1084,9 @@ class ChatTurn implements ChatTurnHandle {
               if (decision === 'allow_once' || decision === 'allow_domain') {
                 toolCtx.confirmed = true;
                 toolCtx.rememberGrant = decision === 'allow_domain';
-                result = await this.toolBus.execute(toolName, parsedArgs, toolCtx);
+                result = allowedByName.get(toolName) !== undefined
+              ? await this.toolBus.runResolved(allowedByName.get(toolName) as Tool, parsedArgs, toolCtx)
+              : await this.toolBus.execute(toolName, parsedArgs, toolCtx);
               } else {
                 // deny 与任何未知决策（安全默认）：不抓取，如实回填
                 result = {
@@ -1601,7 +1695,7 @@ export class ChatService {
     const devCtxOverride: number = await repo.devCtxOverride();   // 仅开发用
     const budget: ChatBudgetSpec = budgetOf(provider.capabilities(), devCtxOverride);
     // 工具声明段计入水位（与 send 的预算同源，[R-18]）：带工具的 Agent 的 # Tools 段真实占 prompt
-    const rt: ResolvedTools = resolveTools(this.toolBus, binding, provider);
+    const rt: ResolvedTools = await resolveTools(this.toolBus, binding, provider, repo);
     const used: number = await provider.countTokens(assembly.messages,
       rt.specs.length > 0 ? rt.specs : undefined);
     const usage: CtxUsage = {

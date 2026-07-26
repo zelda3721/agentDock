@@ -22,6 +22,7 @@ import { relationalStore } from '@kit.ArkData';
 import { util } from '@kit.ArkTS';
 import { AppRdbStore, SqlArg } from 'core-data';
 import {
+  AGENT_CALL_TOOL_PREFIX,
   AgentDef,
   AgentKnowledgeConfig,
   AgentLoopConfig,
@@ -168,9 +169,11 @@ const BUILTIN_AGENT_SEEDS: AgentDef[] = [
     name: '写作助手',
     avatar: '✍️',
     systemPrompt: '你是中文写作助手。帮用户起草、润色、改写文字：让表达更清晰、简洁、通顺，保留原意和语气。' +
-      '用户没特别说明时，直接给出改写后的版本；用户要求解释改动时，再逐条说明。不无中生有地添加事实。',
+      '用户没特别说明时，直接给出改写后的版本；用户要求解释改动时，再逐条说明。不无中生有地添加事实。' +
+      '当用户要求把成稿翻成英文（或其他语言）时，用 agent.call 工具把译文交给「翻译助手」子智能体完成，' +
+      '把中文定稿作为 brief 传给它，再把它回传的译文并入你的答复。',
     model: UNBOUND_MODEL,
-    tools: BUILTIN_SEED_TOOLS,
+    tools: BUILTIN_SEED_TOOLS.concat([AGENT_CALL_TOOL_PREFIX + 'builtin-translator']),
     loop: DEFAULT_LOOP_CONFIG,
     createdAt: 0,
     updatedAt: 0
@@ -271,9 +274,12 @@ export class AgentRepo implements AgentRepositoryPort {
    * 首启/版本升级播种内置模板（T1.0-10①）。逐条判存：已在册（含用户改过的）就跳过、绝不覆盖，
    * 只插缺失的模板（builtin=1 不可删）。幂等——重复调用安全。返回本次新插入的条数。
    *
-   * tools 列例外地对既有 builtin 行**同步种子值**：V0.9/V1.0 编辑器不暴露 tools（用户不可能改过它），
-   * 同步不会冲掉用户改动；这让先装后升的老用户也能拿到 T1.0-01 起为内置模板配的工具白名单。
-   * 一旦编辑器暴露 tools 字段，此同步必须改为版本化迁移（种子升级不得冲掉用户改动）。
+   * 既有 builtin 行的种子回灌分两档：
+   * - tools：无条件同步（编辑器不暴露 tools，用户不可能改过它，同步不冲改动）——一旦编辑器暴露 tools，
+   *   此档也必须改为下面的版本化迁移。
+   * - system_prompt：编辑器**暴露**它（save() 写 prompt 且 def_version+1），故只对 def_version=1
+   *   （用户从未编辑）的行回灌，改过的绝不覆盖——这是种子升级不冲用户改动的版本化迁移。
+   * 让先装后升的老用户也拿到工具白名单与种子文案更新（如写作助手新增的委派指令）。
    */
   async seedBuiltins(): Promise<number> {
     const now: number = Date.now();
@@ -286,10 +292,19 @@ export class AgentRepo implements AgentRepositoryPort {
           [seed.id] as Array<SqlArg>
         );
         if (exists !== null && exists > 0) {
-          // 已在册：只同步 tools（见方法注释），其余字段不触碰
+          // 已在册：同步 tools（见方法注释），其余字段不触碰
           await this.rdb.exec(
             `UPDATE agent_defs SET tools = ? WHERE id = ? AND builtin = 1 AND tools != ?;`,
             [toolsJson, seed.id, toolsJson] as Array<SqlArg>
+          );
+          // system_prompt 版本化迁移：编辑器**暴露** prompt（save() 会写它并 def_version+1），
+          // 故不能像 tools 那样无条件同步——只对**用户从未编辑过**的内置行（def_version=1）回灌种子文案，
+          // 用户改过的（def_version>1）绝不冲掉。system_prompt != ? 让已同步过的成为幂等 no-op。
+          // 这让先装后升的老用户也拿到种子 prompt 的更新（如写作助手新增的"委派翻译助手"指令）。
+          await this.rdb.exec(
+            `UPDATE agent_defs SET system_prompt = ?
+               WHERE id = ? AND builtin = 1 AND def_version = 1 AND system_prompt != ?;`,
+            [seed.systemPrompt, seed.id, seed.systemPrompt] as Array<SqlArg>
           );
           continue;
         }
