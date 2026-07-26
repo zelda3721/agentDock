@@ -7,15 +7,18 @@ import { InferenceProvider } from 'core-llm';
 import { Logger } from 'core-infra';
 import { OnlineExtractor, SessionEndEvent, SessionEndTrigger } from '../extract/OnlineExtractor';
 import { RecallOptions, RecallService } from '../recall/RecallService';
-import { MemoryRepo } from '../store/MemoryRepo';
+import { MemoryRepo, ReportRow } from '../store/MemoryRepo';
 import { MemoryVectorStore } from '../store/MemoryVectorStore';
-import { LocalProviderAccessor, NanoAdapter, RecallRepoAdapter } from '../store/MemoryPorts';
+import { LocalProviderAccessor, MemoryVectorPortAdapter, NanoAdapter, RecallRepoAdapter } from '../store/MemoryPorts';
+import { ConsolidationEngine, ConsolidationStepResult } from '../consolidation/ConsolidationEngine';
+import { OpLog, OpLogEntry } from '../consolidation/OpLog';
 import {
   ConsolidationReport,
   MemoryInboxItem,
   MemoryItem,
   MemoryScope,
-  SemanticMemoryItem
+  SemanticMemoryItem,
+  UserProfile
 } from '../model/MemoryTypes';
 
 const TAG: string = 'MemoryService';
@@ -47,7 +50,11 @@ export class MemoryService {
   private store: MemoryVectorStore | null = null;
   private recallService: RecallService | null = null;
   private extractor: OnlineExtractor | null = null;
+  private engine: ConsolidationEngine | null = null;
+  private oplog: OpLog | null = null;
   private accessor: LocalProviderAccessor = (): InferenceProvider | null => null;
+  /** 单飞：整理不可并发（同一游标两个跑者会重复/漏处理）；进行中再触发直接返回。 */
+  private consolidating: boolean = false;
   /** 每会话上次抽取覆盖的消息水位（进程内节流） */
   private readonly extractWatermark: Map<string, number> = new Map<string, number>();
 
@@ -80,6 +87,9 @@ export class MemoryService {
     this.accessor = accessor;
     this.recallService = new RecallService(new RecallRepoAdapter(repo, store, accessor));
     this.extractor = new OnlineExtractor(new NanoAdapter(accessor), repo);
+    // 整理引擎：repo 直接实现 Consolidation/OpLog 端口；向量/Nano 走适配器。
+    this.engine = new ConsolidationEngine(repo, new MemoryVectorPortAdapter(store, accessor, repo), new NanoAdapter(accessor));
+    this.oplog = new OpLog(repo);
     this.ready = true;
     if (this.readyResolve !== null) {
       this.readyResolve();
@@ -159,50 +169,70 @@ export class MemoryService {
     if (this.repo === null || this.store === null || this.accessor() === null) {
       return 0;
     }
-    const repo: MemoryRepo = this.repo;
-    const store: MemoryVectorStore = this.store;
-    const pending: MemoryInboxItem[] = await repo.listPendingInbox(0, PROMOTE_BATCH);
-    let promoted: number = 0;
-    for (const cand of pending) {
-      try {
-        const provider = this.accessor();
-        if (provider === null) {
-          break;
-        }
-        const vecs: Float32Array[] = await provider.embed([cand.text]);
-        if (vecs.length === 0) {
-          break;
-        }
-        const hits = await store.search(vecs[0], 3);
-        if (hits.length > 0 && hits[0].score >= DEDUP_THRESHOLD) {
-          const byRef: Map<number, MemoryItem> = await repo.activeItemsByVecRefs(['*'], [hits[0].chunkId]);
-          const dup: MemoryItem | undefined = byRef.get(hits[0].chunkId);
-          if (dup !== undefined) {
-            const full: SemanticMemoryItem | null = await repo.getItem(dup.id);
-            if (full !== null) {
-              full.confidence = Math.min(1, full.confidence + 0.1);
-              full.lastSeenAt = Date.now();
-              await repo.saveItem(full, this.refOf(full));
-            }
+    // 单飞：与整理引擎 / 彼此互斥（同一 pending 被两条路径同时转正会造重复 active，红线 6）。
+    // 单线程下"检查+置位"之间无 await，不会 TOCTOU。
+    if (this.consolidating) {
+      return 0;
+    }
+    this.consolidating = true;
+    try {
+      const repo: MemoryRepo = this.repo;
+      const store: MemoryVectorStore = this.store;
+      const pending: MemoryInboxItem[] = await repo.listPendingInbox(0, '', PROMOTE_BATCH);
+      let promoted: number = 0;
+      for (const cand of pending) {
+        try {
+          // ① 精确文本去重（首选，向量失效也生效）：库中已有完全相同 → 提升既有、丢弃候选。
+          const exact: SemanticMemoryItem | null = await repo.findActiveByText(cand.scope, cand.text);
+          if (exact !== null) {
+            exact.confidence = Math.min(1, exact.confidence + 0.1);
+            exact.lastSeenAt = Date.now();
+            await repo.saveItem(exact, this.refOf(exact));
             await repo.markInboxState(cand.id, 'discarded');
             continue;
           }
+          // ② 语义近似去重（需 embedder）
+          const provider = this.accessor();
+          if (provider === null) {
+            break;
+          }
+          const vecs: Float32Array[] = await provider.embed([cand.text]);
+          if (vecs.length === 0) {
+            break;
+          }
+          const hits = await store.search(vecs[0], 3);
+          if (hits.length > 0 && hits[0].score >= DEDUP_THRESHOLD) {
+            const byRef: Map<number, MemoryItem> = await repo.activeItemsByVecRefs(['*'], [hits[0].chunkId]);
+            const dup: MemoryItem | undefined = byRef.get(hits[0].chunkId);
+            if (dup !== undefined) {
+              const full: SemanticMemoryItem | null = await repo.getItem(dup.id);
+              if (full !== null) {
+                full.confidence = Math.min(1, full.confidence + 0.1);
+                full.lastSeenAt = Date.now();
+                await repo.saveItem(full, this.refOf(full));
+              }
+              await repo.markInboxState(cand.id, 'discarded');
+              continue;
+            }
+          }
+          const refs: number[] = await store.add([vecs[0]]);
+          const item: SemanticMemoryItem = {
+            id: util.generateRandomUUID(true), scope: cand.scope, text: cand.text, kind: cand.kind,
+            confidence: cand.confidence, sourceRefs: cand.sourceRefs, status: 'active',
+            accessCount: 0, createdAt: cand.createdAt, lastSeenAt: Date.now()
+          };
+          await repo.saveItem(item, refs.length > 0 ? refs[0] : null);
+          await repo.markInboxState(cand.id, 'accepted');
+          promoted++;
+        } catch (e) {
+          await repo.markInboxState(cand.id, 'discarded');
+          Logger.warn(TAG, 'promote candidate failed (discarded)', [{ key: 'err', value: (e as Error).message }]);
         }
-        const refs: number[] = await store.add([vecs[0]]);
-        const item: SemanticMemoryItem = {
-          id: util.generateRandomUUID(true), scope: cand.scope, text: cand.text, kind: cand.kind,
-          confidence: cand.confidence, sourceRefs: cand.sourceRefs, status: 'active',
-          accessCount: 0, createdAt: cand.createdAt, lastSeenAt: Date.now()
-        };
-        await repo.saveItem(item, refs.length > 0 ? refs[0] : null);
-        await repo.markInboxState(cand.id, 'accepted');
-        promoted++;
-      } catch (e) {
-        await repo.markInboxState(cand.id, 'discarded');
-        Logger.warn(TAG, 'promote candidate failed (discarded)', [{ key: 'err', value: (e as Error).message }]);
       }
+      return promoted;
+    } finally {
+      this.consolidating = false;
     }
-    return promoted;
   }
 
   // --- 记忆管理页数据口（features/memory） ----------------------------------
@@ -231,20 +261,109 @@ export class MemoryService {
     await this.repo.deleteMemory(itemId);
   }
 
-  /** manual 触发即跑一次收编（scheduled/workScheduler 调度留待 T1.0-07）。 */
+  /** 每次整理最多分段数（防坏数据/无 embedder 时的无限循环兜底） */
+  private static readonly MAX_SEGMENTS: number = 2000;
+
+  /**
+   * 整理引擎全链路（§6.3 Phase A/C/D/E；B 直通 Should）。分段 runSegment 直至 finished，
+   * 每段「变更+oplog+游标」同事务落盘——**被系统强杀后下次从游标续跑**（§6.4-2 M4 验收）。
+   * 单飞：进行中再触发返回当前报告。无 embedder（首段无进展）则如实中止，报告留 running 待续。
+   */
   async runConsolidation(mode: ConsolidationMode): Promise<ConsolidationReport> {
-    const startedAt: number = Date.now();
-    const promoted: number = await this.promoteInbox();
+    if (this.engine === null || this.repo === null) {
+      return MemoryService.emptyReport(mode);
+    }
+    if (this.consolidating) {
+      return this.latestReport(mode);
+    }
+    this.consolidating = true;
+    try {
+      const engine: ConsolidationEngine = this.engine;
+      let guard: number = 0;
+      let prevKey: string = '';
+      let stuck: number = 0;
+      while (guard < MemoryService.MAX_SEGMENTS) {
+        const step: ConsolidationStepResult = await engine.runSegment(mode);
+        guard++;
+        if (step.finished) {
+          break;
+        }
+        // 游标两段不变 = 卡住（如无 embedder 中止 Phase A）→ 停，报告留 running 待下轮续跑
+        const key: string = `${step.cursor.phase}:${step.cursor.lastInboxAt}:${step.cursor.lastItemId}`;
+        if (key === prevKey) {
+          stuck++;
+          if (stuck >= 1) {
+            break;
+          }
+        } else {
+          stuck = 0;
+        }
+        prevKey = key;
+      }
+      return this.latestReport(mode);
+    } finally {
+      this.consolidating = false;
+    }
+  }
+
+  /** §6.3 撤销：按 oplog 反向操作（reverse + markUndone 同事务）。 */
+  async undo(oplogId: string): Promise<void> {
+    if (this.oplog === null) {
+      throw new Error('记忆服务未就绪');
+    }
+    await this.oplog.undo(oplogId);
+  }
+
+  // --- 记忆管理页数据口：报告时间线 / 明细 / 冲突 / 画像（features/memory，T1.0-11） -------
+
+  /** 整理报告时间线（最近 limit 轮）。 */
+  async listReports(limit: number): Promise<ReportRow[]> {
+    if (this.repo === null) {
+      return [];
+    }
+    return this.repo.listReports(limit);
+  }
+
+  /** 某轮报告的操作明细（逐条可撤销）。 */
+  async listReportOps(reportId: string): Promise<OpLogEntry[]> {
+    if (this.oplog === null) {
+      return [];
+    }
+    return this.oplog.listByReport(reportId);
+  }
+
+  /** L3 用户画像（记忆页展示 + diff）。 */
+  async getProfile(): Promise<UserProfile | undefined> {
+    if (this.repo === null) {
+      return undefined;
+    }
+    return this.repo.getProfile();
+  }
+
+  private async latestReport(mode: ConsolidationMode): Promise<ConsolidationReport> {
+    if (this.repo === null) {
+      return MemoryService.emptyReport(mode);
+    }
+    const reports: ReportRow[] = await this.repo.listReports(1);
+    if (reports.length === 0) {
+      return MemoryService.emptyReport(mode);
+    }
+    const r: ReportRow = reports[0];
     const report: ConsolidationReport = {
-      id: util.generateRandomUUID(true), round: 1, mode: mode, startedAt: startedAt, finishedAt: Date.now(),
-      added: promoted, merged: 0, archived: 0, purged: 0, conflicts: 0, profileUpdated: false, completed: true
+      id: r.id, round: r.round, mode: r.trigger === 'manual' ? 'manual' : 'scheduled',
+      startedAt: r.startedAt, finishedAt: r.endedAt > 0 ? r.endedAt : Date.now(),
+      added: r.stats.added, merged: r.stats.merged, archived: r.stats.archived, purged: r.stats.purged,
+      conflicts: r.stats.conflicts, profileUpdated: r.stats.profileUpdated, completed: r.state === 'done'
     };
     return report;
   }
 
-  /** §6.3 撤销：完整 oplog 逐条撤销留待 T1.0-08。 */
-  undo(oplogId: string): Promise<void> {
-    throw new Error('Not implemented: T1.0-08（oplog 逐条撤销随完整整理引擎交付）');
+  private static emptyReport(mode: ConsolidationMode): ConsolidationReport {
+    const now: number = Date.now();
+    return {
+      id: util.generateRandomUUID(true), round: 0, mode: mode, startedAt: now, finishedAt: now,
+      added: 0, merged: 0, archived: 0, purged: 0, conflicts: 0, profileUpdated: false, completed: false
+    };
   }
 
   private refOf(item: SemanticMemoryItem): number | null {

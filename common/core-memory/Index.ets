@@ -22,7 +22,7 @@ export * from './src/main/ets/consolidation/OpLog';
 export * from './src/main/ets/recall/RecallService';
 
 // 仓储与端口适配（entry 装配依赖注入用；features/core-agent 只依赖 MemoryService）
-export { MemoryRepo } from './src/main/ets/store/MemoryRepo';
+export { MemoryRepo, ReportRow } from './src/main/ets/store/MemoryRepo';
 export { MemoryVectorStore } from './src/main/ets/store/MemoryVectorStore';
 export {
   NanoAdapter, MemoryVectorPortAdapter, RecallRepoAdapter,

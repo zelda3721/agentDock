@@ -12,15 +12,12 @@
  */
 
 import { InferenceProvider, ChatMessage, GenerateOptions, StreamDelta } from 'core-llm';
-import { Logger } from 'core-infra';
 import { MemoryRepo } from './MemoryRepo';
 import { MemoryVectorStore } from './MemoryVectorStore';
 import { NanoExtractPort } from '../extract/OnlineExtractor';
-import { NanoJudgePort, MemoryVectorPort, SimilarityVerdict } from '../consolidation/ConsolidationEngine';
+import { NanoJudgePort, MemoryVectorPort, ScoredMemoryItem, SimilarityVerdict } from '../consolidation/ConsolidationEngine';
 import { RecallRepositoryPort } from '../recall/RecallService';
 import { MemoryItem, MemoryScope, SemanticMemoryItem, UserProfile } from '../model/MemoryTypes';
-
-const TAG: string = 'MemoryPorts';
 
 /** 活跃本地 embed/抽取 Provider 访问器（模型切换后取到新的；无则 null）。 */
 export type LocalProviderAccessor = () => InferenceProvider | null;
@@ -151,8 +148,8 @@ export class MemoryVectorPortAdapter implements MemoryVectorPort {
     return vecs.map((v: Float32Array): number[] => f32ToNums(v));
   }
 
-  /** 在 L2 索引中检索相似条目（Phase A 去重用）。返回 active 条目（回查 RDB）。 */
-  async searchSimilar(vector: number[], topK: number): Promise<SemanticMemoryItem[]> {
+  /** 在 L2 索引中检索相似条目（Phase A 去重用），带得分。返回 active 条目（回查 RDB）。 */
+  async searchSimilarScored(vector: number[], topK: number): Promise<ScoredMemoryItem[]> {
     const hits = await this.store.search(numsToF32(vector), topK);
     const refs: number[] = [];
     for (const h of hits) {
@@ -162,28 +159,23 @@ export class MemoryVectorPortAdapter implements MemoryVectorPort {
     const byRef: Map<number, MemoryItem> = await this.repo.activeItemsByVecRefs(['*'], refs);
     // Phase A 需要完整 SemanticMemoryItem；activeItemsByVecRefs 返回 MemoryItem（召回投影），
     // 逐条 getItem 补全（Phase A 批量小，N+1 可接受；真机整理为后台任务）
-    const out: SemanticMemoryItem[] = [];
+    const out: ScoredMemoryItem[] = [];
     for (const h of hits) {
       const lite: MemoryItem | undefined = byRef.get(h.chunkId);
       if (lite !== undefined) {
         const full: SemanticMemoryItem | null = await this.repo.getItem(lite.id);
         if (full !== null) {
-          out.push(full);
+          out.push({ item: full, score: h.score });
         }
       }
     }
     return out;
   }
 
-  async upsert(itemId: string, vector: number[]): Promise<void> {
-    // 单条 upsert 走批量 add 语义（记忆整理逐条转正）；vec_ref 回填由调用方 saveItem 完成
-    await this.store.add([numsToF32(vector)]);
-  }
-
-  async remove(itemId: string): Promise<void> {
-    // 平面文件为追加式，单条删除留孤儿向量（检索侧回查 active 时自然丢弃，与 KB 同纪律）；
-    // 压实随整库重建（T1.0）。此处 no-op 但如实记账。
-    Logger.info(TAG, 'memory vector remove is a no-op (orphan pruned at query time)', [{ key: 'item', value: itemId }]);
+  /** 追加一条向量，返回 vec_ref（平面文件行号）；无 embedder 时 null。 */
+  async addVector(vector: number[]): Promise<number | null> {
+    const refs: number[] = await this.store.add([numsToF32(vector)]);
+    return refs.length > 0 ? refs[0] : null;
   }
 }
 

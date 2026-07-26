@@ -26,6 +26,17 @@ import { util } from '@kit.ArkTS';
 import { AppRdbStore, SqlArg } from 'core-data';
 import { MemoryInboxRepositoryPort } from '../extract/OnlineExtractor';
 import {
+  ConsolidationBatch,
+  ConsolidationCursor,
+  ConsolidationPhase,
+  ConsolidationRepositoryPort,
+  ConsolidationStats,
+  DuplicateTextGroup,
+  RunningReport
+} from '../consolidation/ConsolidationEngine';
+import { MemoryOpKind, OpLogEntry, OpLogRepositoryPort } from '../consolidation/OpLog';
+import {
+  ConsolidationReport,
   EpisodicMemory,
   MemoryInboxItem,
   MemoryItem,
@@ -36,6 +47,19 @@ import {
   SourceRef,
   UserProfile
 } from '../model/MemoryTypes';
+
+/** memory_reports 摘要行（记忆页时间线） */
+export interface ReportRow {
+  id: string;
+  round: number;
+  trigger: string;
+  state: string;
+  phase: string;
+  stats: ConsolidationStats;
+  startedAt: number;
+  endedAt: number;
+  durationMs: number;
+}
 
 /** loadConversationForExtraction 的返回（ArkTS 禁止内联对象字面量类型）。 */
 export interface ConvExtractionText {
@@ -64,7 +88,7 @@ function mapStatus(dbStatus: string): MemoryStatus {
   return 'active';   // 'active' 与 'conflict' 都按 active 载出（conflict 另用布尔标志承载）
 }
 
-export class MemoryRepo implements MemoryInboxRepositoryPort {
+export class MemoryRepo implements MemoryInboxRepositoryPort, ConsolidationRepositoryPort, OpLogRepositoryPort {
   private readonly rdb: AppRdbStore;
 
   constructor(rdb: AppRdbStore) {
@@ -120,13 +144,18 @@ export class MemoryRepo implements MemoryInboxRepositoryPort {
     );
   }
 
-  /** 列出待收编的 inbox 候选（Phase A 增量收编，按 created_at 升序游标推进）。 */
-  async listPendingInbox(afterCreatedAt: number, limit: number): Promise<MemoryInboxItem[]> {
+  /**
+   * 列出待收编的 inbox 候选（Phase A 增量收编）。**键集分页 (created_at, id)**：
+   * 一次抽取的全部候选盖同一 created_at（同 ms），严格 `> created_at` 会跨批漏掉同 ms 的剩余条目；
+   * 带 id 破并列（created_at 相同再比 id）保证"不遗漏不重复"（红线 6）。
+   */
+  async listPendingInbox(afterCreatedAt: number, afterId: string, limit: number): Promise<MemoryInboxItem[]> {
     return this.rdb.queryRows<MemoryInboxItem>(
       `SELECT id, conv_id, scope, text, kind, confidence, source_refs, created_at
-         FROM memory_inbox WHERE state = 'pending' AND created_at > ?
-        ORDER BY created_at ASC LIMIT ?;`,
-      [afterCreatedAt, limit] as Array<SqlArg>,
+         FROM memory_inbox
+        WHERE state = 'pending' AND (created_at > ? OR (created_at = ? AND id > ?))
+        ORDER BY created_at ASC, id ASC LIMIT ?;`,
+      [afterCreatedAt, afterCreatedAt, afterId, limit] as Array<SqlArg>,
       (rs: relationalStore.ResultSet): MemoryInboxItem => {
         const item: MemoryInboxItem = {
           id: rs.getString(rs.getColumnIndex('id')),
@@ -326,6 +355,375 @@ export class MemoryRepo implements MemoryInboxRepositoryPort {
       }
     );
     return p === null ? undefined : p;
+  }
+
+  // ========================= 整理引擎：ConsolidationRepositoryPort =========================
+
+  /** 精确文本去重（Phase A 首选）：同 scope 同 text 的 active 条目（置信度最高的一条）；无则 null。 */
+  async findActiveByText(scope: string, text: string): Promise<SemanticMemoryItem | null> {
+    return this.rdb.queryOne<SemanticMemoryItem>(
+      `SELECT ${MemoryRepo.ITEM_COLS} FROM memory_items
+        WHERE layer = 'semantic' AND status = 'active' AND scope = ? AND text = ?
+        ORDER BY confidence DESC LIMIT 1;`,
+      [scope, text] as Array<SqlArg>, MemoryRepo.mapItem);
+  }
+
+  /** Phase B 精确合并：同 scope 同 text 且 active 条数 >1 的重复组（组内条数降序，先收敛大组）。 */
+  async findDuplicateGroups(limit: number): Promise<DuplicateTextGroup[]> {
+    return this.rdb.queryRows<DuplicateTextGroup>(
+      `SELECT scope, text FROM memory_items
+        WHERE layer = 'semantic' AND status = 'active'
+        GROUP BY scope, text HAVING COUNT(*) > 1
+        ORDER BY COUNT(*) DESC LIMIT ?;`,
+      [limit] as Array<SqlArg>,
+      (rs: relationalStore.ResultSet): DuplicateTextGroup => {
+        const g: DuplicateTextGroup = {
+          scope: rs.getString(rs.getColumnIndex('scope')),
+          text: rs.getString(rs.getColumnIndex('text'))
+        };
+        return g;
+      });
+  }
+
+  /** 某重复组的全部 active 条目（置信度降序，取首个为保留项）。 */
+  async activeItemsByText(scope: string, text: string): Promise<SemanticMemoryItem[]> {
+    return this.rdb.queryRows<SemanticMemoryItem>(
+      `SELECT ${MemoryRepo.ITEM_COLS} FROM memory_items
+        WHERE layer = 'semantic' AND status = 'active' AND scope = ? AND text = ?
+        ORDER BY confidence DESC, created_at ASC;`,
+      [scope, text] as Array<SqlArg>, MemoryRepo.mapItem);
+  }
+
+  /** Phase C 增量遍历：按 id 升序分页列出 active semantic 条目。 */
+  async listActiveSemantic(afterId: string, limit: number): Promise<SemanticMemoryItem[]> {
+    return this.rdb.queryRows<SemanticMemoryItem>(
+      `SELECT ${MemoryRepo.ITEM_COLS} FROM memory_items
+        WHERE layer = 'semantic' AND status = 'active' AND id > ?
+        ORDER BY id ASC LIMIT ?;`,
+      [afterId, limit] as Array<SqlArg>, MemoryRepo.mapItem);
+  }
+
+  /** Phase D 蒸馏输入：高置信 active 条目（置信度降序）。 */
+  async topConfidentItems(limit: number, minConfidence: number): Promise<SemanticMemoryItem[]> {
+    return this.rdb.queryRows<SemanticMemoryItem>(
+      `SELECT ${MemoryRepo.ITEM_COLS} FROM memory_items
+        WHERE layer = 'semantic' AND status = 'active' AND confidence >= ?
+        ORDER BY confidence DESC, access_count DESC LIMIT ?;`,
+      [minConfidence, limit] as Array<SqlArg>, MemoryRepo.mapItem);
+  }
+
+  /** 找运行中/被中断的报告（续跑凭据）；无则 undefined。 */
+  async loadRunningReport(): Promise<RunningReport | undefined> {
+    interface Row {
+      running: RunningReport;
+    }
+    const r: Row | null = await this.rdb.queryOne<Row>(
+      `SELECT id, trigger, cursor, stats, started_at FROM memory_reports
+        WHERE state IN ('running','interrupted') ORDER BY created_at DESC LIMIT 1;`,
+      [] as Array<SqlArg>,
+      (rs: relationalStore.ResultSet): Row => {
+        const cursor: ConsolidationCursor = MemoryRepo.parseCursor(rs.getString(rs.getColumnIndex('cursor')));
+        const running: RunningReport = {
+          reportId: rs.getString(rs.getColumnIndex('id')),
+          round: cursor.round,
+          mode: rs.getString(rs.getColumnIndex('trigger')) === 'manual' ? 'manual' : 'scheduled',
+          cursor: cursor,
+          stats: MemoryRepo.parseStats(rs.getString(rs.getColumnIndex('stats'))),
+          startedAt: rs.getLong(rs.getColumnIndex('started_at'))
+        };
+        const row: Row = { running: running };
+        return row;
+      });
+    return r === null ? undefined : r.running;
+  }
+
+  /** 开新一轮：建 running 报告行 + 初始游标。 */
+  async createReport(round: number, mode: string, cursor: ConsolidationCursor): Promise<RunningReport> {
+    const id: string = util.generateRandomUUID(true);
+    const now: number = Date.now();
+    const stats: ConsolidationStats = MemoryRepo.emptyStats();
+    await this.rdb.exec(
+      `INSERT INTO memory_reports (id, trigger, state, phase, cursor, stats, detail, started_at, created_at)
+       VALUES (?, ?, 'running', 'A', ?, ?, '{}', ?, ?);`,
+      [id, mode === 'manual' ? 'manual' : 'auto', JSON.stringify(cursor), JSON.stringify(stats), now, now] as Array<SqlArg>);
+    const running: RunningReport = {
+      reportId: id, round: round, mode: mode, cursor: cursor, stats: stats, startedAt: now
+    };
+    return running;
+  }
+
+  /** 最近一次轮次编号（新轮 round = +1）。 */
+  async lastRound(): Promise<number> {
+    const cursorJson: string | null = await this.rdb.queryScalarString(
+      `SELECT cursor FROM memory_reports ORDER BY created_at DESC LIMIT 1;`, []);
+    if (cursorJson === null) {
+      return 0;
+    }
+    return MemoryRepo.parseCursor(cursorJson).round;
+  }
+
+  /** 组装最终报告（纯函数；落库已在 commitBatch 的 reportState='done'）。 */
+  finalizeReport(running: RunningReport): ConsolidationReport {
+    const s: ConsolidationStats = running.stats;
+    const report: ConsolidationReport = {
+      id: running.reportId, round: running.round, mode: running.mode,
+      startedAt: running.startedAt, finishedAt: Date.now(),
+      added: s.added, merged: s.merged, archived: s.archived, purged: s.purged,
+      conflicts: s.conflicts, profileUpdated: s.profileUpdated, completed: true
+    };
+    return report;
+  }
+
+  /**
+   * 原子提交一批整理变更（红线 6：条目变更 + 状态变更 + inbox 终态 + 画像 + oplog + 游标/报告
+   * **同一事务**）。向量文件已在事务外由引擎 resolveVectors 落好并回填 vecRef。
+   */
+  async commitBatch(batch: ConsolidationBatch): Promise<void> {
+    const now: number = Date.now();
+    await this.rdb.withTransaction<void>(async (): Promise<void> => {
+      for (const w of batch.writes) {
+        await this.execItemUpsert(w.item, w.vecRef, null);
+      }
+      for (const sc of batch.statusChanges) {
+        await this.rdb.exec(
+          `UPDATE memory_items SET status = ?, superseded_by = ?, archived_at = ?,
+             confidence = COALESCE(?, confidence), last_seen_at = COALESCE(?, last_seen_at), updated_at = ?
+           WHERE id = ?;`,
+          [sc.status, sc.supersededBy, sc.archivedAt, sc.confidence, sc.lastSeenAt, now, sc.itemId] as Array<SqlArg>);
+      }
+      for (const ib of batch.inboxStates) {
+        await this.rdb.exec(
+          `UPDATE memory_inbox SET state = ?, processed_at = ? WHERE id = ?;`,
+          [ib.state, now, ib.inboxId] as Array<SqlArg>);
+      }
+      if (batch.profile !== null) {
+        const p: UserProfile = batch.profile;
+        const meta: string = JSON.stringify({ version: p.version, sourceItemIds: p.sourceItemIds });
+        await this.rdb.exec(
+          `INSERT OR REPLACE INTO memory_items
+             (id, layer, scope, text, kind, confidence, source_refs, vec_ref, meta, cluster_id, score,
+              access_count, last_seen_at, status, superseded_by, privacy_level, archived_at, created_at, updated_at)
+           VALUES (?, 'profile', 'user_profile', ?, 'profile', 1, '[]', NULL, ?, NULL, 0, 0, ?, 'active', NULL,
+                   'local_only', NULL, ?, ?);`,
+          [p.id, p.text, meta, now, p.updatedAt, now] as Array<SqlArg>);
+      }
+      for (const op of batch.oplog) {
+        await this.rdb.exec(
+          `INSERT INTO memory_oplog (id, report_id, phase, op, target_table, target_id, before_json, after_json, undone, created_at)
+           VALUES (?, ?, ?, ?, 'memory_items', ?, ?, ?, 0, ?);`,
+          [op.id, batch.reportId, op.phase, MemoryRepo.mapKindToOp(op.kind), op.targetId,
+            op.before ?? null, op.after ?? null, op.ts] as Array<SqlArg>);
+      }
+      const done: boolean = batch.reportState === 'done';
+      await this.rdb.exec(
+        `UPDATE memory_reports SET cursor = ?, stats = ?, phase = ?, state = ?,
+           ended_at = CASE WHEN ? THEN ? ELSE ended_at END,
+           duration_ms = CASE WHEN ? THEN ? - started_at ELSE duration_ms END
+         WHERE id = ?;`,
+        [JSON.stringify(batch.cursor), JSON.stringify(batch.stats),
+          done ? null : batch.cursor.phase, batch.reportState,
+          done ? 1 : 0, now, done ? 1 : 0, now, batch.reportId] as Array<SqlArg>);
+    });
+  }
+
+  /** 记忆页时间线：最近整理报告（round 从 cursor 解出）。 */
+  async listReports(limit: number): Promise<ReportRow[]> {
+    return this.rdb.queryRows<ReportRow>(
+      `SELECT id, trigger, state, phase, cursor, stats, started_at, ended_at, duration_ms
+         FROM memory_reports ORDER BY created_at DESC LIMIT ?;`,
+      [limit] as Array<SqlArg>,
+      (rs: relationalStore.ResultSet): ReportRow => {
+        const endedIdx: number = rs.getColumnIndex('ended_at');
+        const durIdx: number = rs.getColumnIndex('duration_ms');
+        const phaseIdx: number = rs.getColumnIndex('phase');
+        const row: ReportRow = {
+          id: rs.getString(rs.getColumnIndex('id')),
+          round: MemoryRepo.parseCursor(rs.getString(rs.getColumnIndex('cursor'))).round,
+          trigger: rs.getString(rs.getColumnIndex('trigger')),
+          state: rs.getString(rs.getColumnIndex('state')),
+          phase: rs.isColumnNull(phaseIdx) ? '' : rs.getString(phaseIdx),
+          stats: MemoryRepo.parseStats(rs.getString(rs.getColumnIndex('stats'))),
+          startedAt: rs.getLong(rs.getColumnIndex('started_at')),
+          endedAt: rs.isColumnNull(endedIdx) ? 0 : rs.getLong(endedIdx),
+          durationMs: rs.isColumnNull(durIdx) ? 0 : rs.getLong(durIdx)
+        };
+        return row;
+      });
+  }
+
+  // ========================= oplog：OpLogRepositoryPort =========================
+
+  /** 单条日志追加（OpLog.record；整理引擎的批量日志走 commitBatch 内联，不经此）。 */
+  async append(entry: OpLogEntry): Promise<void> {
+    await this.rdb.exec(
+      `INSERT INTO memory_oplog (id, report_id, phase, op, target_table, target_id, before_json, after_json, undone, created_at)
+       VALUES (?, NULL, ?, ?, 'memory_items', ?, ?, ?, 0, ?);`,
+      [entry.id, entry.phase, MemoryRepo.mapKindToOp(entry.kind), entry.targetId,
+        entry.before ?? null, entry.after ?? null, entry.ts] as Array<SqlArg>);
+  }
+
+  async get(oplogId: string): Promise<OpLogEntry | undefined> {
+    const e: OpLogEntry | null = await this.rdb.queryOne<OpLogEntry>(
+      `SELECT id, phase, op, target_id, before_json, after_json, undone, created_at
+         FROM memory_oplog WHERE id = ?;`,
+      [oplogId] as Array<SqlArg>, MemoryRepo.mapOpLog);
+    return e === null ? undefined : e;
+  }
+
+  async listByReport(reportId: string): Promise<OpLogEntry[]> {
+    return this.rdb.queryRows<OpLogEntry>(
+      `SELECT id, phase, op, target_id, before_json, after_json, undone, created_at
+         FROM memory_oplog WHERE report_id = ? ORDER BY created_at ASC;`,
+      [reportId] as Array<SqlArg>, MemoryRepo.mapOpLog);
+  }
+
+  /**
+   * 执行反向操作并标记该 oplog 为 undone——**同一事务**（避免"回滚了但日志没标 undone"）。
+   * 反向语义按 kind 分派（见 OpLog.undo 的反向操作表）。
+   */
+  async applyUndo(entry: OpLogEntry): Promise<void> {
+    const now: number = Date.now();
+    await this.rdb.withTransaction<void>(async (): Promise<void> => {
+      if (entry.kind === 'insert') {
+        // 反向=删除该条目（向量留孤儿，检索回查 active 时天然丢弃）
+        await this.rdb.exec(`DELETE FROM memory_items WHERE id = ?;`, [entry.targetId] as Array<SqlArg>);
+      } else if (entry.kind === 'profile_rewrite') {
+        // 反向=删除本次新增的画像版本，上一版自然回到最新
+        await this.rdb.exec(`DELETE FROM memory_items WHERE id = ? AND layer = 'profile';`,
+          [entry.targetId] as Array<SqlArg>);
+      } else if (entry.before !== undefined) {
+        // update/supersede/archive/conflict/confidence_bump：**定点还原** consolidation 改过的字段
+        // （status/confidence/superseded_by/archived_at/source_refs），**保留** access_count/last_seen_at
+        // ——整理之后 recall.bumpAccess 的用量反哺不该被撤销抹掉（否则记忆热度被回滚，[6]）。
+        const snap: SemanticMemoryItem = JSON.parse(entry.before) as SemanticMemoryItem;
+        const dbStatus: string = snap.conflict === true ? 'conflict'
+          : (snap.status === 'superseded_by' ? 'superseded' : snap.status);
+        await this.rdb.exec(
+          `UPDATE memory_items SET status = ?, confidence = ?, superseded_by = ?, archived_at = NULL,
+             source_refs = ?, updated_at = ? WHERE id = ?;`,
+          [dbStatus, snap.confidence, snap.supersededBy ?? null, JSON.stringify(snap.sourceRefs),
+            now, snap.id] as Array<SqlArg>);
+      } else {
+        throw new Error('该操作缺少变更前快照，无法撤销');
+      }
+      // 配对新条目（update/conflict 促的新 active）：一并删除，避免撤销后旧+新两条重复（[5]）
+      if (entry.relatedIds !== undefined) {
+        for (const rid of entry.relatedIds) {
+          await this.rdb.exec(`DELETE FROM memory_items WHERE id = ?;`, [rid] as Array<SqlArg>);
+        }
+      }
+      await this.rdb.exec(
+        `UPDATE memory_oplog SET undone = 1, undone_at = ? WHERE id = ?;`,
+        [now, entry.id] as Array<SqlArg>);
+    });
+  }
+
+  /** 全字段写入一条 semantic 条目（转正/更新/撤销回滚共用；须在事务内调用，自身不开事务）。 */
+  private async execItemUpsert(item: SemanticMemoryItem, vecRef: number | null, archivedAt: number | null): Promise<void> {
+    const now: number = Date.now();
+    const dbStatus: string = item.conflict === true ? 'conflict'
+      : (item.status === 'superseded_by' ? 'superseded' : item.status);
+    await this.rdb.exec(
+      `INSERT OR REPLACE INTO memory_items
+         (id, layer, scope, text, kind, confidence, source_refs, vec_ref, meta, cluster_id, score,
+          access_count, last_seen_at, status, superseded_by, privacy_level, archived_at, created_at, updated_at)
+       VALUES (?, 'semantic', ?, ?, ?, ?, ?, ?, '{}', NULL, 0, ?, ?, ?, ?, 'local_only', ?, ?, ?);`,
+      [item.id, item.scope, item.text, item.kind, item.confidence, JSON.stringify(item.sourceRefs),
+        vecRef, item.accessCount, item.lastSeenAt, dbStatus, item.supersededBy ?? null,
+        archivedAt, item.createdAt, now] as Array<SqlArg>);
+  }
+
+  private static parseCursor(json: string): ConsolidationCursor {
+    try {
+      const c: ConsolidationCursor = JSON.parse(json) as ConsolidationCursor;
+      if (typeof c.round === 'number' && typeof c.phase === 'string') {
+        return c;
+      }
+    } catch (e) {
+      // 脏游标：退回新轮（不致命）
+    }
+    return { round: 0, phase: 'A', lastInboxAt: 0, lastItemId: '', startedAt: 0, updatedAt: 0 };
+  }
+
+  private static parseStats(json: string): ConsolidationStats {
+    try {
+      const s: ConsolidationStats = JSON.parse(json) as ConsolidationStats;
+      if (typeof s.added === 'number') {
+        return s;
+      }
+    } catch (e) {
+      // 脏统计：归零
+    }
+    return MemoryRepo.emptyStats();
+  }
+
+  private static emptyStats(): ConsolidationStats {
+    return { added: 0, merged: 0, archived: 0, purged: 0, conflicts: 0, profileUpdated: false };
+  }
+
+  /** 从 after_json 解出配对新条目 id（update/conflict 的 relatedIds）；解析失败/非此结构返回空。 */
+  private static relatedIdsOf(afterJson: string): string[] {
+    try {
+      const parsed: Record<string, Object> = JSON.parse(afterJson) as Record<string, Object>;
+      const ids: Object | undefined = parsed['relatedIds'];
+      if (Array.isArray(ids)) {
+        return ids as string[];
+      }
+    } catch (e) {
+      // 非 relatedIds 结构（如 insert 的条目快照）：忽略
+    }
+    return [];
+  }
+
+  /** MemoryOpKind → memory_oplog.op（CHECK 域）。confidence_bump 归 'update'（反向语义相同）。 */
+  private static mapKindToOp(kind: MemoryOpKind): string {
+    if (kind === 'insert') {
+      return 'create';
+    }
+    if (kind === 'confidence_bump' || kind === 'update') {
+      return 'update';
+    }
+    if (kind === 'purge') {
+      return 'delete';
+    }
+    return kind;   // supersede / merge / archive / conflict / profile_rewrite 同名
+  }
+
+  /** memory_oplog.op → MemoryOpKind（读回；'update' 统一还原为 update，反向=覆盖 before）。 */
+  private static mapOpToKind(op: string): MemoryOpKind {
+    if (op === 'create') {
+      return 'insert';
+    }
+    if (op === 'delete') {
+      return 'purge';
+    }
+    return op as MemoryOpKind;
+  }
+
+  private static mapOpLog(rs: relationalStore.ResultSet): OpLogEntry {
+    const beforeIdx: number = rs.getColumnIndex('before_json');
+    const afterIdx: number = rs.getColumnIndex('after_json');
+    const entry: OpLogEntry = {
+      id: rs.getString(rs.getColumnIndex('id')),
+      round: 0,   // 轮次由所属 report 承载；undo 不依赖 round
+      phase: rs.getString(rs.getColumnIndex('phase')) as ConsolidationPhase,
+      kind: MemoryRepo.mapOpToKind(rs.getString(rs.getColumnIndex('op'))),
+      targetId: rs.getString(rs.getColumnIndex('target_id')),
+      ts: rs.getLong(rs.getColumnIndex('created_at')),
+      undone: rs.getLong(rs.getColumnIndex('undone')) === 1
+    };
+    if (!rs.isColumnNull(beforeIdx)) {
+      entry.before = rs.getString(beforeIdx);
+    }
+    if (!rs.isColumnNull(afterIdx)) {
+      const after: string = rs.getString(afterIdx);
+      entry.after = after;
+      const related: string[] = MemoryRepo.relatedIdsOf(after);
+      if (related.length > 0) {
+        entry.relatedIds = related;   // 撤销时一并删除的配对新条目
+      }
+    }
+    return entry;
   }
 
   private static readonly ITEM_COLS: string =
