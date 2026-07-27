@@ -17,7 +17,8 @@ import {
   COMPACTION_TRIGGER_RATIO,
   EMERGENCY_RATIO,
   COMPACTION_TARGET_RATIO,
-  ARTIFACT_HEAD_MAX_TOKENS
+  ARTIFACT_HEAD_MAX_TOKENS,
+  RECITATION_MAX_TOKENS
 } from './GovernorDefaults.ts';
 import {
   extractEntities,
@@ -33,6 +34,7 @@ import {
 } from './ContextGovernor.ts';
 import { ChatPromptBuilder, SUMMARY_SEGMENT_HEADER } from './ChatPromptBuilder.ts';
 import { ChatCompactor, foldCountFor, dropCoveredHistory } from './ChatCompactor.ts';
+import { renderTraceStep, TRACE_FIELD_MAX_CHARS } from './TraceRender.ts';
 
 // ============================ 极简断言器（零依赖） ============================
 
@@ -419,6 +421,120 @@ async function main(): Promise<void> {
       'H10 即便 reject，附录兜底版仍寻回实体（宁可长，不可丢）');
   }
 
+  section('I. L2 观察折叠（ContextGovernor.foldObservations / renderFoldStub / extractArtifactId，T1.0-04）');
+
+  {
+    const gov = new ContextGovernor(new MemArtifactStore(), new ScriptedNano(() => ''), 'interactive');
+    // 距当前 ≥FOLD_AFTER_STEPS(3) 步的工具观察折叠；近窗内的新观察与 user/assistant 不动
+    const turns = [
+      { role: 'user', content: '原始问题', stepIndex: 0 },
+      { role: 'tool', content: '旧观察A [全文 artifact:aa11-bb22（可用 artifact.read 回读）]', stepIndex: 1 },
+      { role: 'tool', content: '旧观察B 无指针，关键值 424242 与更多正文', stepIndex: 1 },
+      { role: 'tool', content: '新观察不折', stepIndex: 4 },
+      { role: 'assistant', content: '助手回答', stepIndex: 5 },
+    ];
+    const folded = gov.foldObservations(turns, 5);
+    eq(folded.length, 5, 'I1 折叠不增删消息（只改内容，保 toolCall 配对）');
+    ok(folded[1].content.includes('artifact:aa11-bb22') && folded[1].content.includes('artifact.read'),
+      'I2 已外置的旧观察折成 artifact.read 指针桩（可逆指针保留）');
+    ok(folded[2].content.includes('trace.read(1,1)') && folded[2].content.includes('观察已折叠'),
+      'I3 未外置的旧观察折成 trace.read 提示桩（带步号指针）');
+    eq(folded[3].content, '新观察不折', 'I4 近窗内（距当前 <3 步）的新观察原样保留');
+    ok(folded[0].content === '原始问题' && folded[4].content === '助手回答', 'I5 user/assistant 消息不折');
+    ok(folded[1].stepIndex === 1 && folded[2].stepIndex === 1, 'I6 折叠桩保留原步号（溯源指针，红线 25）');
+  }
+  {
+    const stub = ContextGovernor.renderArtifactStub(7, 'kb.search', '摘要头内容', 'uuid-x');
+    ok(stub.includes('step7') && stub.includes('artifact:uuid-x') && stub.includes('artifact.read'),
+      'I7 L1 桩体 = 步号 + 摘要头 + artifact.read 指针（externalize 与 ChatService 同源渲染）');
+    ok(ContextGovernor.renderFoldStub(9, 'uuid-y', 'raw').includes('artifact:uuid-y（artifact.read 回读）'),
+      'I8 折叠桩 artifact 分支 → artifact.read 指针');
+    const digestStub = ContextGovernor.renderFoldStub(9, null, '很长的工具原文内容片段'.repeat(40));
+    ok(digestStub.includes('trace.read(9,9)') && estimateTokens(digestStub) < 120,
+      'I9 折叠桩 digest 分支 → trace.read 提示，且 digest 有界（≤FOLD_DIGEST + 框架）', `${estimateTokens(digestStub)} tok`);
+  }
+  {
+    eq(ContextGovernor.extractArtifactId('全文 artifact:3f2a9b1c-0011-4a2b（回读）'), '3f2a9b1c-0011-4a2b',
+      'I10 extractArtifactId 抽取至分隔符');
+    eq(ContextGovernor.extractArtifactId('没有指针的普通工具文本'), null, 'I11 无指针 → null（未外置观察走 digest+trace.read 分支）');
+    eq(ContextGovernor.extractArtifactId('artifact:abc123（x）'), 'abc123', 'I12 遇全角括号即停');
+  }
+
+  section('J. trace.read 补救 + 可逆金标（renderTraceStep / L1→L2 往返，核对项：补救后实体召回）');
+
+  {
+    // Fix：tool 步的 result **不截断**（回读原文），args/error 截到 TRACE_FIELD_MAX_CHARS（概览）
+    const longResult = 'A'.repeat(300) + ' 关键编号 SN-778899 ' + 'B'.repeat(300);   // 关键实体在第 ~300 字（超 200 护栏）
+    const rendered = renderTraceStep({
+      seq: 5, type: 'tool', toolName: 'kb.search',
+      toolArgs: '{"query":"' + 'x'.repeat(400) + '"}',
+      toolResult: longResult, state: 'done', tokensOutput: 0, error: null
+    });
+    ok(rendered.includes('SN-778899'), 'J1 trace.read 结果不截断：超 200 字处的关键实体仍可回读（兑现折叠桩"回读原文"承诺）');
+    ok(!rendered.includes('x'.repeat(300)) && rendered.includes('…'), 'J2 args 概览字段仍截断（不是原文阅读器的是 args/error）');
+    eq(TRACE_FIELD_MAX_CHARS, 200, 'J3 概览护栏常量口径 = 200');
+  }
+  {
+    ok(renderTraceStep({ seq: 6, type: 'tool', toolName: 'http.fetch', toolArgs: null, toolResult: null, state: 'failed', tokensOutput: 0, error: '超时' }).includes('failed') === true,
+      'J4 失败步渲染 state（+ error 概览）');
+    eq(renderTraceStep({ seq: 7, type: 'llm', toolName: null, toolArgs: null, toolResult: null, state: 'done', tokensOutput: 128, error: null }),
+      '[step7 llm → 生成 128 tok]', 'J5 llm 步渲染');
+  }
+  {
+    // 端到端可逆金标：植入实体 → L1 外置 → L2 折叠 → 指针存活 → artifact.read 回读 = 100%（压缩可逆，零损失）
+    const store = new MemArtifactStore();
+    const gov = new ContextGovernor(store, new ScriptedNano(() => ''), 'interactive');
+    const planted = ['SKU-A17', '8500', '2026-08-01', '/docs/plan.md', 'https://x.com/v2/9001'];
+    const full = '工具原文起始 ' + 'C'.repeat(2000) + ' ' + planted.join(' ') + ' 工具原文结束';
+    const stub = await gov.externalize('runX', 12, 'kb.search', full);           // L1 外置
+    const folded = gov.foldObservations([{ role: 'tool', content: stub.text, stepIndex: 12 }], 20);  // L2 折叠（age=8≥3）
+    const artId = ContextGovernor.extractArtifactId(folded[0].content);
+    ok(artId !== null, 'J6 L2 折叠后 artifact 指针仍在折叠桩里（L1→L2 指针不丢）');
+    const recovered = await store.read(artId as string, 0, full.length);        // 模型 artifact.read 回读
+    const before = keysOf(full);
+    const after = keysOf(recovered);
+    let hit = 0;
+    for (const k of before) { if (after.has(k)) hit++; }
+    const recall = before.size === 0 ? 1 : hit / before.size;
+    ok(recall === 1, `J7 外置→折叠→回读后实体召回 = 100%（${hit}/${before.size}）——可逆缓存淘汰，非信息销毁`);
+    ok(planted.every((p) => recovered.includes(p)), 'J8 全部植入实体（编号/金额/日期/路径/URL）逐字回读可得');
+  }
+  {
+    // 实体召回金标（§27.3 ≥95%）：源文 20 实体，摘要器只留 2，保真门机械回填后召回 ≥95%（实为 100%）
+    const items: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      items.push(`EN-${2000 + i}`);
+    }
+    const src = '清单：' + items.join(' ');
+    const r = checkFidelity(src, '结论：处理了前几项 EN-2000 EN-2001');
+    const srcKeys = keysOf(src);
+    const outKeys = keysOf(r.repairedSummary);
+    let hit = 0;
+    for (const k of srcKeys) { if (outKeys.has(k)) hit++; }
+    const recall = srcKeys.size === 0 ? 1 : hit / srcKeys.size;
+    ok(recall >= 0.95, `J9 保真门机械回填后实体召回 ≥95%（§27.3 金标；实际 ${Math.round(recall * 100)}% = ${hit}/${srcKeys.size}）`);
+  }
+
+  section('K. M3 复诵节（ContextGovernor.renderRecitation，≤200 token，尾部复诵原始目标，T1.0-04）');
+
+  {
+    const nextAct = '综合上面的工具结果继续；还需要更多信息就调用工具，信息够了就直接给出最终答复，不要重复调用同一个工具。';
+    const longGoal = '根据产品手册第三章对比 A 型号与 B 型号在满载工况下的最大扭矩额定功率与能效比'.repeat(6);
+    const r = ContextGovernor.renderRecitation(longGoal, '', nextAct, 5);
+    ok(estimateTokens(r) <= RECITATION_MAX_TOKENS, `K1 复诵节 ≤${RECITATION_MAX_TOKENS} token`, `实际 ${estimateTokens(r)}`);
+    ok(r.includes('【剩余预算】还剩 5 步'), 'K2 固定行开销实测预留：剩余预算行不被末尾 200 截断吃掉（Fix）');
+    ok(r.includes('不要重复调用同一个工具'), 'K3 现在该做行完整（不被截半句）');
+    ok(r.includes('【原始目标】') && r.includes('根据产品手册第三章'), 'K4 原始目标原文引用（保头截断）');
+  }
+  {
+    const r = ContextGovernor.renderRecitation('把这句话翻成英文', '', '继续', 3);
+    ok(r.includes('把这句话翻成英文') && r.includes('还剩 3 步'), 'K5 短目标逐字保留 + 剩余预算');
+    ok(!ContextGovernor.renderRecitation('目标', '规划阶段', '', 2).includes('【现在该做】'),
+      'K6 nextAction 为空则不渲染该行');
+    ok(ContextGovernor.renderRecitation('目标', '规划阶段', '', 2).includes('【当前阶段】规划阶段'),
+      'K7 phase 非空则渲染阶段行');
+  }
+
   // ============================ 汇总 ============================
 
   console.log(`\n共 ${passed + failed} 项：通过 ${passed}，失败 ${failed}`);
@@ -429,7 +545,7 @@ async function main(): Promise<void> {
     }
     process.exit(1);
   }
-  console.log('压缩回归 V0.9 最小子集：全部通过（红线 27 门禁放行）');
+  console.log('压缩回归 v1（T1.0-12：L1/L2/L3 + trace.read 补救 + M3 复诵）：全部通过（红线 27 门禁放行）');
 }
 
 main().catch((e: Error) => {

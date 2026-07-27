@@ -32,6 +32,8 @@ const SOURCES = [
   'common/core-agent/src/main/ets/chat/ChatTypes.ets',
   'common/core-agent/src/main/ets/chat/ChatPromptBuilder.ets',
   'common/core-agent/src/main/ets/chat/ChatCompactor.ets',
+  // T1.0-04：L2 折叠 / M3 复诵在 ContextGovernor（已在上表）；trace.read 纯渲染抽在 TraceRender（零平台依赖）
+  'common/core-agent/src/main/ets/runtime/TraceRender.ets',
 ];
 
 // Node 版本闸：transform-types 是 22.7+ 的能力，版本不够就直说，不让用户看一屏语法错误

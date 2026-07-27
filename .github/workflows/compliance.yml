@@ -91,7 +91,7 @@ jobs:
         run: node tools/license/gen-rawfile.mjs --check
 
   compression-regression:
-    name: 压缩回归 V0.9 最小子集（红线 27）
+    name: 压缩回归 v1（L1/L2/L3 + trace.read 补救 + M3，红线 27）
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
@@ -104,7 +104,8 @@ jobs:
 
       # 红线 27：压缩逻辑改动没有回归套件不许合并（无豁免期）。
       # 套件转译并直接运行 common/core-agent 下的真实 .ets 源码（FidelityGate/ContextGovernor/
-      # ChatCompactor/ChatPromptBuilder…），三项机械核对：溯源指针可寻回 / 实体机械核对 / 植入约束召回。
+      # ChatCompactor/ChatPromptBuilder/TraceRender…）。v1（T1.0-12）核对：溯源指针可寻回 / 实体机械核对
+      # (≥95%) / 植入约束召回(100%) / L2 折叠 / trace.read 补救后 100% / M3 复诵节 ≤200 token。
       # 全仓 PR 恒跑（套件秒级，不做路径过滤——过滤条件本身也会腐烂）。
       - name: 压缩回归（跑真实源码）
         run: node tools/eval/compression-regression/run-regression.mjs

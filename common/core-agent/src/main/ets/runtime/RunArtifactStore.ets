@@ -17,6 +17,7 @@ import { relationalStore } from '@kit.ArkData';
 import { AppRdbStore, SqlArg } from 'core-data';
 import { ARTIFACT_HEAD_MAX_TOKENS, truncateToTokens } from '../context/GovernorDefaults';
 import { ArtifactStorePort } from '../context/ContextGovernor';
+import { renderTraceStep, TraceStepRow } from './TraceRender';
 
 /** 计 UTF-8 字节数（run_artifacts.size 语义为字节）——不分配中间数组，逐码点累加。 */
 function utf8ByteLength(s: string): number {
@@ -106,27 +107,9 @@ export interface TraceReaderPort {
   readTrace(runId: string, from: number, to: number, maxTokens: number): Promise<string>;
 }
 
-interface TraceStepRow {
-  seq: number;
-  type: string;
-  toolName: string | null;
-  toolArgs: string | null;
-  toolResult: string | null;
-  state: string;
-  tokensOutput: number;
-  error: string | null;
-}
-
 /**
- * tool_args / error 这类**概览字段**渲染进轨迹时的字符护栏。tool_result（工具结果摘要）**不**走这个护栏——
- * 折叠桩承诺「trace.read 回读原文」，若把结果也截到 200 字，chars 200-800 就永远回读不到（自相矛盾）；
- * 结果整体已由 readTrace 的 maxTokens（§27.4：≤2k token）兜住，单步 ≤800 字远在预算内。
- */
-const TRACE_FIELD_MAX_CHARS: number = 200;
-
-/**
- * run_steps 上的 trace.read 实现（§27.2-M1）。按 run_id + seq 区间取步，渲染成一行一步的轨迹：
- * `[step<seq> <type> <tool>(<args>) → <result/state>]`，整体截到 maxTokens（§27.4：单次 ≤2k token）。
+ * run_steps 上的 trace.read 实现（§27.2-M1）。按 run_id + seq 区间取步，纯渲染逻辑（一行一步、结果不截断）
+ * 抽在 TraceRender（回归门禁可转译考核），整体截到 maxTokens（§27.4：单次 ≤2k token）。
  * 步号口径 = run_steps.seq（Run 内递增步号；与 L1/L2 折叠桩里嵌的步号同源，模型照抄即可命中）。
  */
 export class RunTraceReader implements TraceReaderPort {
@@ -164,36 +147,8 @@ export class RunTraceReader implements TraceReaderPort {
     }
     const lines: string[] = [];
     for (const r of rows) {
-      lines.push(RunTraceReader.renderStep(r));
+      lines.push(renderTraceStep(r));
     }
     return truncateToTokens(lines.join('\n'), maxTokens);
-  }
-
-  /** 概览字段（args/error）截断到 TRACE_FIELD_MAX_CHARS。 */
-  private static clip(s: string): string {
-    const t: string = s.replace(/\s+/g, ' ').trim();
-    return t.length > TRACE_FIELD_MAX_CHARS ? `${t.substring(0, TRACE_FIELD_MAX_CHARS)}…` : t;
-  }
-
-  /** 结果原文回读：只折叠空白、不截断（回读原文的承诺靠它兑现；整体额度由 readTrace 的 maxTokens 兜）。 */
-  private static oneLine(s: string): string {
-    return s.replace(/\s+/g, ' ').trim();
-  }
-
-  private static renderStep(r: TraceStepRow): string {
-    if (r.type === 'tool') {
-      const args: string = r.toolArgs !== null ? RunTraceReader.clip(r.toolArgs) : '';
-      const outcome: string = r.state === 'done'
-        ? (r.toolResult !== null ? RunTraceReader.oneLine(r.toolResult) : '(无摘要)')
-        : `${r.state}${r.error !== null ? '：' + RunTraceReader.clip(r.error) : ''}`;
-      return `[step${r.seq} tool ${r.toolName ?? '?'}(${args}) → ${outcome}]`;
-    }
-    if (r.type === 'llm') {
-      return `[step${r.seq} llm → 生成 ${r.tokensOutput} tok]`;
-    }
-    if (r.type === 'compaction') {
-      return `[step${r.seq} 压缩 → 历史滚动摘要]`;
-    }
-    return `[step${r.seq} ${r.type}]`;
   }
 }

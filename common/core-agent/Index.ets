@@ -16,6 +16,7 @@ export * from './src/main/ets/runtime/ReActLoop';
 export * from './src/main/ets/runtime/RunGate';
 export * from './src/main/ets/runtime/RunRecorder';
 export * from './src/main/ets/runtime/RunArtifactStore';
+export * from './src/main/ets/runtime/TraceRender';
 
 // 工具总线（§5.2 / §9.4）+ 内置工具（T1.0-02：datetime / kb.search，entry 装配时注册）
 export * from './src/main/ets/tools/ToolBus';
