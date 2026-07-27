@@ -19,7 +19,7 @@
 import { AdButton, AdButtonSize, AdButtonVariant, AdColor, AdSpace, AdStroke, AdType } from 'design-system';
 import { ChatPage } from 'chat';
 import { ModelFacade, ModelListPage, ProviderConfigPage } from 'models';
-import { AgentEditor, AgentListPage, SkillManagerPane } from 'agents';
+import { AgentEditor, AgentListPage, AgentRunReplay, SkillManagerPane } from 'agents';
 import { KbDocumentList, KbListPage } from 'knowledge';
 import { LicensePage, SettingsPage } from 'settings';
 import { MemoryPage } from 'memory';
@@ -60,6 +60,9 @@ struct Index {
   @State private agentEditorOpen: boolean = false;
   /** 技能管理面板（T1.0-10②）：开着时占满智能体 Tab（短暂管理任务，不做主从常驻） */
   @State private skillManagerOpen: boolean = false;
+  /** Run 轨迹回放（§5.4，T1.0-10②）：全屏覆盖，从编辑器「运行历史」打开 */
+  @State private agentReplayOpen: boolean = false;
+  @State private agentReplayName: string = '';
   /** 列表刷新信号：编辑器保存/删除后 +1，AgentListPage @Watch 重拉 */
   @State private agentsRefreshTick: number = 0;
   /** 跨 Tab 指令：用智能体新建的会话 id，ChatPage @Watch 收到即打开（T0.9-16） */
@@ -129,7 +132,15 @@ struct Index {
    */
   @Builder
   AgentsPane() {
-    if (this.skillManagerOpen) {
+    if (this.agentReplayOpen) {
+      AgentRunReplay({
+        agentId: this.agentSelectedId,
+        agentName: this.agentReplayName,
+        onClose: (): void => {
+          this.agentReplayOpen = false;
+        }
+      })
+    } else if (this.skillManagerOpen) {
       SkillManagerPane({
         onClose: (): void => {
           this.skillManagerOpen = false;
@@ -154,6 +165,11 @@ struct Index {
           },
           onCancel: (): void => {
             this.agentEditorOpen = false;
+          },
+          onOpenReplay: (id: string, name: string): void => {
+            this.agentSelectedId = id;
+            this.agentReplayName = name;
+            this.agentReplayOpen = true;
           }
         })
       } else {
@@ -225,6 +241,11 @@ struct Index {
               },
               onCancel: (): void => {
                 this.agentEditorOpen = false;
+              },
+              onOpenReplay: (id: string, name: string): void => {
+                this.agentSelectedId = id;
+                this.agentReplayName = name;
+                this.agentReplayOpen = true;
               }
             })
           } else {

@@ -75,6 +75,8 @@ export struct AgentEditor {
   public onDeleted: (agentId: string) => void = () => {};
   /** 取消回调。 */
   public onCancel: () => void = () => {};
+  /** 打开该智能体的运行轨迹回放（§5.4，T1.0-10②）；仅编辑既有智能体时可用。 */
+  public onOpenReplay: (agentId: string, agentName: string) => void = () => {};
 
   @State private draft: AgentDraftV09 = new AgentFacade().blankDraft();
   @State private providers: ProviderOption[] = [];
@@ -188,10 +190,22 @@ export struct AgentEditor {
 
   build() {
     Column({ space: AdSpace.s3 }) {
-      Row() {
+      Row({ space: AdSpace.s2 }) {
         Text(this.agentId.length > 0 ? '编辑智能体' : '新建智能体').editorTitle().layoutWeight(1)
+        if (this.agentId.length > 0) {
+          AdButton({
+            label: '运行历史',
+            variant: AdButtonVariant.GHOST,
+            btnSize: AdButtonSize.SM,
+            a11yText: `查看智能体 ${this.draft.name} 的运行轨迹回放`,
+            onAction: () => {
+              this.onOpenReplay(this.agentId, this.draft.name);
+            }
+          })
+        }
       }
       .width('100%')
+      .alignItems(VerticalAlign.Center)
 
       Scroll() {
         Column({ space: AdSpace.s3 }) {

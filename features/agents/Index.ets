@@ -7,6 +7,7 @@
  */
 export { AgentListPage } from './src/main/ets/components/AgentListPage';
 export { AgentEditor } from './src/main/ets/components/AgentEditor';
+export { AgentRunReplay } from './src/main/ets/components/AgentRunReplay';
 export { SkillManagerPane } from './src/main/ets/components/SkillManagerPane';
 export { AgentDraftV09, AgentFacade, AgentListItem, BreakpointKey, KbOption,
   ProviderOption } from './src/main/ets/model/AgentViewModel';
