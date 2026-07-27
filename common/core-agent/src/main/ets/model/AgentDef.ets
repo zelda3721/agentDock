@@ -105,6 +105,16 @@ export const DEFAULT_LOOP_CONFIG: AgentLoopConfig = {
   reflection: false
 };
 
+/**
+ * 出厂默认记忆策略（§6.1）：读写皆开、scopes 空 = 用运行时默认范围（user_profile + agent:<自身>）。
+ * 与旧行为一致——此前无 agent 级策略时，召回受对话级开关门控、捕获恒开；据此默认 read/write 皆 true。
+ */
+export const DEFAULT_MEMORY_POLICY: AgentMemoryPolicy = {
+  read: true,
+  write: true,
+  scopes: []
+};
+
 /** 出厂默认知识库检索参数（§4.3） */
 export const DEFAULT_KNOWLEDGE_TOP_K: number = 6;
 

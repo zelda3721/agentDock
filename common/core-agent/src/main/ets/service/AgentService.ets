@@ -10,7 +10,8 @@ import { AgentRepo } from './AgentRepo';
 import { Skill, SkillRepo } from './SkillRepo';
 import { Tool, ToolBus } from '../tools/ToolBus';
 import { normalizeToolName } from '../tools/ToolAliases';
-import { RunRecorder } from '../runtime/RunRecorder';
+import { RunRecorder, RunStepRow, RunSummary } from '../runtime/RunRecorder';
+import { ANCHOR_BUDGET_RATIO, estimateTokens } from '../context/GovernorDefaults';
 
 const TAG: string = 'AgentService';
 
@@ -70,11 +71,25 @@ export interface BrainOption {
   kind: string;
 }
 
-/** 端上工具项（技能编辑器的工具声明选择器；features 不直连 ToolBus——分层同 BrainOption） */
+/** 端上工具项（技能/智能体编辑器的工具选择器；features 不直连 ToolBus——分层同 BrainOption） */
 export interface ToolOption {
   /** 端上工具 id（datetime / kb.search / …） */
   toolId: string;
   description: string;
+  /** 权限模型（none 直接执行 / confirm 首次确认 / always_ask 每次必问）——编辑器据此显示徽标 */
+  permission: string;
+}
+
+/** anchor 预算估算（编辑器 >25% 告警，§27.4；估算用 estimateTokens 快算，标注"约"，不冒充精确计数） */
+export interface AnchorEstimate {
+  /** system + 挂载技能正文的估算 token（粗算，§5.1 anchor 区随之增大） */
+  anchorTokens: number;
+  /** 绑定 Provider 的 ctx 上限；0 = 模型未就绪/未知（无法判断占比，UI 如实说明） */
+  ctxTotal: number;
+  /** anchor 预算线 = ctxTotal × 25%（0 = ctx 未知） */
+  budgetTokens: number;
+  /** anchorTokens 是否越过 25% 线（ctx 未知时恒 false——不在缺数据时报假警） */
+  overBudget: boolean;
 }
 
 /** 列表页条目（含"最近使用"真值——来自 agent_runs，从未用过为 0） */
@@ -266,9 +281,77 @@ export class AgentService {
       return [];
     }
     return this.toolBus.listAll().map((t: Tool): ToolOption => {
-      const o: ToolOption = { toolId: t.name, description: t.description };
+      const o: ToolOption = { toolId: t.name, description: t.description, permission: t.permission };
       return o;
     });
+  }
+
+  /**
+   * anchor 预算估算（编辑器 >25% 告警，§27.4 / §5.1）。粗算 estimateTokens(system + 挂载技能正文)
+   * 对比绑定 Provider 的 ctx×25%。用**快算**而非 provider.countTokens：编辑期要随输入即时反馈，
+   * 慢速精确计数不合适；估算标注"约"，不冒充精确（与运行时 anchorOverBudget 口径相近但不完全一致）。
+   * providerId 空 = 跟随默认模型：解析默认 Provider 取 ctx。Provider 未就绪（无 ctx）→ ctxTotal=0、overBudget=false。
+   */
+  async estimateAnchor(providerId: string, systemPrompt: string, skillIds: string[]): Promise<AnchorEstimate> {
+    // 与 systemPromptFrom 装配同构：base + 各挂载技能「## 技能：<名>\n<正文>」，估算 anchor 文本
+    let anchorText: string = systemPrompt;
+    if (this.skillRepo !== null && skillIds.length > 0) {
+      try {
+        const skills: Skill[] = await this.skillRepo.listEnabledByIds(skillIds);
+        for (const s of skills) {
+          anchorText += `\n\n## 技能：${s.name}\n${s.content}`;
+        }
+      } catch (e) {
+        // 技能载入失败 → 只按 systemPrompt 估算（低估，如实不阻塞编辑）
+      }
+    }
+    const anchorTokens: number = estimateTokens(anchorText);
+    const registry: ProviderRegistry = ProviderRegistry.get();
+    let provider: InferenceProvider | null = null;
+    if (providerId.length > 0) {
+      provider = registry.get(providerId);
+    } else {
+      const defId: string | null = registry.defaultProviderId();
+      provider = defId !== null ? registry.get(defId) : null;
+    }
+    let ctxTotal: number = 0;
+    if (provider !== null) {
+      try {
+        ctxTotal = provider.capabilities().contextWindow;
+      } catch (e) {
+        ctxTotal = 0;
+      }
+    }
+    const budgetTokens: number = ctxTotal > 0 ? Math.floor(ctxTotal * ANCHOR_BUDGET_RATIO) : 0;
+    const estimate: AnchorEstimate = {
+      anchorTokens: anchorTokens,
+      ctxTotal: ctxTotal,
+      budgetTokens: budgetTokens,
+      overBudget: ctxTotal > 0 && anchorTokens > budgetTokens
+    };
+    return estimate;
+  }
+
+  // ==================== 运行历史 / 轨迹回放读端（§5.4，T1.0-10；经本服务出，features 不直连 core-data） ====================
+
+  /** 某 Agent 的运行历史（跨会话，最近在前）；未装配 recorder → 空。 */
+  async runsForAgent(agentId: string, limit: number = 50): Promise<RunSummary[]> {
+    return this.recorder === null ? [] : this.recorder.listRunsForAgent(agentId, limit);
+  }
+
+  /** 单个 Run 汇总（回放头部）。 */
+  async runSummary(runId: string): Promise<RunSummary | null> {
+    return this.recorder === null ? null : this.recorder.runSummary(runId);
+  }
+
+  /** 一个 Run 的全部步（结构化，按 seq 升序）。 */
+  async runSteps(runId: string): Promise<RunStepRow[]> {
+    return this.recorder === null ? [] : this.recorder.readRunSteps(runId);
+  }
+
+  /** 回读 prompt_ref / result_ref 指向的 inline 全文（完整 prompt / 工具原文）；无则 null。 */
+  async readTraceArtifact(artifactId: string): Promise<string | null> {
+    return this.recorder === null ? null : this.recorder.readArtifactContent(artifactId);
   }
 
   /** 声明名归一（别名表：WebFetch→http.fetch 等）——UI 判可用性与装配同一口径。 */

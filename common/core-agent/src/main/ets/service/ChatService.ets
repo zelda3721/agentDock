@@ -237,6 +237,27 @@ interface ResolvedTools {
 }
 
 /** 子智能体职责摘要（给父模型看，判定何时委派）：取 system prompt 首句/首段，截 80 字。 */
+/**
+ * 序列化本步发给 Provider 的装配消息为可回放的 prompt 快照（§5.4 轨迹回放"每步 prompt"，T1.0-10）。
+ * 逐条 `【role】\n<content>`；assistant 的 tool_calls 与 tool 的 toolCallId 也如实带上，回放能对齐工具往来。
+ */
+function serializePromptSnapshot(messages: ChatMessage[]): string {
+  const parts: string[] = [];
+  for (const m of messages) {
+    const content: string = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+    let line: string = `【${m.role}】\n${content}`;
+    if (m.toolCalls !== undefined && m.toolCalls.length > 0) {
+      const calls: string[] = m.toolCalls.map((c: ToolCall): string => `${c.function.name}(${c.function.arguments})`);
+      line += `\n[tool_calls] ${calls.join(' ; ')}`;
+    }
+    if (m.toolCallId !== undefined && m.toolCallId.length > 0) {
+      line += `\n[tool_call_id ${m.toolCallId}]`;
+    }
+    parts.push(line);
+  }
+  return parts.join('\n\n');
+}
+
 function subAgentDescOf(binding: AgentBindingRow): string {
   const sp: string = binding.systemPrompt.trim();
   if (sp.length === 0) {
@@ -812,12 +833,22 @@ class ChatTurn implements ChatTurnHandle {
       // 与 RAG 同一注入位置（易变尾部，红线 11）。语义：对话级"关记忆"只关**注入**，
       // 不关捕获（捕获在回合结束恒开）。围栏由 recall 数据层强制（remoteFence，红线 17）——
       // 记忆默认 local_only，远程 Provider 下召回为空（如实缺席）。召回故障不杀聊天。
+      // Agent 级记忆策略（§6.1；T1.0-10 编辑器可调）：read=false 关召回、write=false 关捕获；
+      // scopes 非空则作为召回范围白名单，空则用运行时默认（user_profile + agent:<自身>）。
+      // 对话级 useMemory 与 Agent 级 read 取**且**——两道都开才注入（任一关都不注入）。
+      const memRead: boolean = binding === null || binding.memoryPolicy.read;
       const fencedMemories: FencedMemoryItem[] = [];
-      if (this.memory !== null && conv.useMemory !== false) {
+      if (this.memory !== null && conv.useMemory !== false && memRead) {
         try {
-          const scopes: string[] = [SCOPE_USER_PROFILE];
-          if (conv.agentId !== null && conv.agentId.length > 0) {
-            scopes.push(`agent:${conv.agentId}`);
+          const policyScopes: string[] = binding !== null ? binding.memoryPolicy.scopes : [];
+          const scopes: string[] = [];
+          if (policyScopes.length > 0) {
+            scopes.push(...policyScopes);
+          } else {
+            scopes.push(SCOPE_USER_PROFILE);
+            if (conv.agentId !== null && conv.agentId.length > 0) {
+              scopes.push(`agent:${conv.agentId}`);
+            }
           }
           const recalled: MemoryItem[] = await this.memory.recall(scopes, text, undefined,
             { targetProviderIsRemote: provider.kind === 'remote' });
@@ -859,10 +890,10 @@ class ChatTurn implements ChatTurnHandle {
       // verify 相（环境真值验证）V0.9 显式缺席：宁缺毋假（假 verifier 会让 loop 自信地发散）。
       let stopReason: RunFinishReason = 'error';
       let stopError: string | null = null;
-      // V0.9 循环预算取出厂 Interactive 档（8 步/120s，§24.1）；按 Agent 配置放宽随 T1.0-10 编辑器
+      // 循环预算取 Agent 绑定的 loop（T1.0-10 编辑器可调；未绑定/无 binding → 出厂 8 步/120s，§24.1）
       const loopBudget: RunBudgetSpec = {
-        maxSteps: DEFAULT_LOOP_CONFIG.maxSteps,
-        timeoutMs: DEFAULT_LOOP_CONFIG.timeoutMs
+        maxSteps: binding !== null ? binding.loop.maxSteps : DEFAULT_LOOP_CONFIG.maxSteps,
+        timeoutMs: binding !== null ? binding.loop.timeoutMs : DEFAULT_LOOP_CONFIG.timeoutMs
       };
       // 工具循环的回合内延伸（T1.0-01）：assistant(tool_calls) + tool 结果，逐圈追加在装配之后。
       // 只存在于本回合内存（轨迹进 run_steps）；聊天历史只落最终回答——后续轮次不回放工具往来，
@@ -1067,7 +1098,9 @@ class ChatTurn implements ChatTurnHandle {
             state: step.finishReason === 'aborted' ? 'cancelled'
               : (step.finishReason === 'error' ? 'failed' : 'done'),
             error: step.errorMessage.length > 0 ? step.errorMessage : null,
-            resultRef: `message:${this.assistantMessageId}`
+            resultRef: `message:${this.assistantMessageId}`,
+            // §5.4 轨迹回放（T1.0-10）：本步完整装配 prompt 外置为 kind='prompt' artifact + prompt_ref
+            promptSnapshot: serializePromptSnapshot(assembly.messages)
           });
         } catch (e) {
           Logger.error(TAG, 'record llm step failed', [{ key: 'err', value: (e as Error).message }]);
@@ -1248,10 +1281,12 @@ class ChatTurn implements ChatTurnHandle {
 
       await settleRun(stopReason, stopError);
 
-      // ---- 回合结束：触发记忆捕获（恒开，与对话级 useMemory 无关——"关记忆"只关注入不关捕获）----
+      // ---- 回合结束：触发记忆捕获 ----
+      // 与对话级 useMemory 无关（"关记忆"只关注入不关捕获），但受 Agent 级 memoryPolicy.write 门控
+      // （T1.0-10 编辑器可关：write=false ⇒ 本 Agent 的对话不沉淀进记忆）。默认 write=true，行为不变。
       // 后台 fire-and-forget：抽取新消息 → inbox → 最小收编转正；不阻塞 UI，失败不影响本轮。
-      // 目标是"越来越懂用户"：无论本会话是否使用记忆，聊天内容都沉淀进用户画像 scope。
-      if (this.memory !== null && stopReason === 'completed') {
+      const memWrite: boolean = binding === null || binding.memoryPolicy.write;
+      if (this.memory !== null && stopReason === 'completed' && memWrite) {
         const mem: MemoryService = this.memory;
         const cid: string = this.convId;
         mem.proposeFromConversation(cid, SCOPE_USER_PROFILE, 'message_threshold').catch((e: Object): void => {

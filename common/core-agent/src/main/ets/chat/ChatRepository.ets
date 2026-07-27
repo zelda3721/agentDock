@@ -24,6 +24,9 @@ import { relationalStore } from '@kit.ArkData';
 import { util } from '@kit.ArkTS';
 import { AppRdbStore, SqlArg } from 'core-data';
 import {
+  AgentLoopConfig, AgentMemoryPolicy, DEFAULT_LOOP_CONFIG, DEFAULT_MEMORY_POLICY
+} from '../model/AgentDef';
+import {
   ChatCitation,
   ChatMessageRecord,
   ChatMessageStatus,
@@ -77,6 +80,10 @@ export interface AgentBindingRow {
    * 端上不存在的声明如实缺席。
    */
   skillTools: string[];
+  /** 循环预算（§5.2；T1.0-10 编辑器可调，run() 按此设步数/超时，缺省出厂 8 步/120s） */
+  loop: AgentLoopConfig;
+  /** 记忆读写策略（§6.1；T1.0-10 编辑器可调，run() 据此门控召回/捕获与 scope） */
+  memoryPolicy: AgentMemoryPolicy;
 }
 
 /** loadSkillBlocks 的返回：注入块 + 工具声明并集（原文名，归一在 resolveTools） */
@@ -95,6 +102,20 @@ interface AgentBindingKnowledge {
   libIds?: string[];
   topK?: number;
   requireCitation?: boolean;
+}
+
+/** agent_defs.loop 列 JSON 的读形 */
+interface AgentBindingLoop {
+  maxSteps?: number;
+  timeoutMs?: number;
+  reflection?: boolean;
+}
+
+/** agent_defs.memory_policy 列 JSON 的读形 */
+interface AgentBindingMemory {
+  read?: boolean;
+  write?: boolean;
+  scopes?: string[];
 }
 
 /**
@@ -573,7 +594,8 @@ export class ChatRepository {
   async agentBinding(agentId: string): Promise<AgentBindingRow | null> {
     let skillIds: string[] = [];
     const row: AgentBindingRow | null = await this.rdb.queryOne<AgentBindingRow>(
-      `SELECT name, system_prompt, model, knowledge, tools, skills FROM agent_defs WHERE id = ? AND enabled = 1;`,
+      `SELECT name, system_prompt, model, knowledge, tools, skills, loop, memory_policy
+         FROM agent_defs WHERE id = ? AND enabled = 1;`,
       [agentId] as Array<SqlArg>,
       (rs: relationalStore.ResultSet): AgentBindingRow => {
         let providerId: string = '';
@@ -628,6 +650,40 @@ export class ChatRepository {
         } catch (e) {
           // skills 列损坏按"未挂载"处理，不让脏数据挡住发送
         }
+        // loop 预算（§5.2；损坏/缺省 → 出厂 8 步/120s）
+        let loop: AgentLoopConfig = {
+          maxSteps: DEFAULT_LOOP_CONFIG.maxSteps, timeoutMs: DEFAULT_LOOP_CONFIG.timeoutMs,
+          reflection: DEFAULT_LOOP_CONFIG.reflection
+        };
+        try {
+          const raw: AgentBindingLoop = JSON.parse(rs.getString(rs.getColumnIndex('loop'))) as AgentBindingLoop;
+          loop = {
+            maxSteps: typeof raw.maxSteps === 'number' && raw.maxSteps > 0 ? raw.maxSteps : DEFAULT_LOOP_CONFIG.maxSteps,
+            timeoutMs: typeof raw.timeoutMs === 'number' && raw.timeoutMs > 0 ? raw.timeoutMs : DEFAULT_LOOP_CONFIG.timeoutMs,
+            reflection: raw.reflection === true
+          };
+        } catch (e) {
+          // loop 列损坏 → 出厂预算，不让脏数据挡住发送
+        }
+        // memory_policy（§6.1；损坏/缺省 → 读写皆开、scopes 空；read/write 缺省 true 不静默关记忆）
+        const scopes: string[] = [];
+        let memRead: boolean = DEFAULT_MEMORY_POLICY.read;
+        let memWrite: boolean = DEFAULT_MEMORY_POLICY.write;
+        try {
+          const raw: AgentBindingMemory = JSON.parse(rs.getString(rs.getColumnIndex('memory_policy'))) as AgentBindingMemory;
+          memRead = raw.read !== false;
+          memWrite = raw.write !== false;
+          if (Array.isArray(raw.scopes)) {
+            for (const s of raw.scopes as Object[]) {
+              if (typeof s === 'string' && s.length > 0) {
+                scopes.push(s);
+              }
+            }
+          }
+        } catch (e) {
+          // memory_policy 列损坏 → 出厂策略
+        }
+        const memoryPolicy: AgentMemoryPolicy = { read: memRead, write: memWrite, scopes: scopes };
         const bindingRow: AgentBindingRow = {
           name: rs.getString(rs.getColumnIndex('name')),
           systemPrompt: rs.getString(rs.getColumnIndex('system_prompt')),
@@ -637,7 +693,9 @@ export class ChatRepository {
           requireCitation: requireCitation,
           tools: tools,
           skillBlocks: [],
-          skillTools: []
+          skillTools: [],
+          loop: loop,
+          memoryPolicy: memoryPolicy
         };
         return bindingRow;
       }

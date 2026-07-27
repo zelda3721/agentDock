@@ -13,12 +13,18 @@ import { KbLibrary, KnowledgeService } from 'core-rag';
 import {
   AgentDef,
   AgentKnowledgeConfig,
+  AgentLoopConfig,
+  AgentMemoryPolicy,
   AgentModelConfig,
   AgentService,
   AgentSummary,
+  AnchorEstimate,
   BrainOption,
   DEFAULT_KNOWLEDGE_TOP_K,
   DEFAULT_LOOP_CONFIG,
+  DEFAULT_MEMORY_POLICY,
+  RunStepRow,
+  RunSummary,
   Skill,
   SkillMdCodec,
   SkillMdParseResult,
@@ -27,6 +33,7 @@ import {
 
 // 组件层不直连 core-agent（与 KbOption/BrainOption 同一分层纪律）——类型经此再导出
 export { SkillMdParseResult } from 'core-agent';
+export { AnchorEstimate, RunStepRow, RunSummary } from 'core-agent';
 
 /** 断点标识（设计文档 §8）。 */
 export type BreakpointKey = 'sm' | 'md' | 'lg';
@@ -49,25 +56,37 @@ export interface AgentListItem {
 }
 
 /**
- * V0.9 极简四字段表单模型（T0.9-16）。
- * 其余 §5.1 字段（tools / memoryPolicy / loop / triggers / uiHints）V0.9 不暴露，
- * 由 core-agent 落库时取出厂默认值。
+ * 智能体编辑器表单模型（T1.0-10 完整版）。
+ * 除基础字段外，暴露 tools / loop 预算 / memoryPolicy（read/write/scopes）；triggers/uiHints 仍不暴露
+ * （V2/V1.5），由 core-agent 落库时保持原值。所有字段随 draft 往返——load→save 不丢任何已存值。
  */
 export interface AgentDraftV09 {
   /** 空串表示新建。 */
   id: string;
   /** 头像（emoji）。编辑器不暴露，仅随 draft 往返以免保存把既有头像冲成出厂默认。 */
   avatar: string;
-  /** 字段一：名称。 */
+  /** 名称。 */
   name: string;
-  /** 字段二：系统提示词。 */
+  /** 系统提示词。 */
   systemPrompt: string;
-  /** 字段三：模型（Provider id）。 */
+  /** 模型（Provider id）。 */
   providerId: string;
-  /** 字段四：知识库绑定（§5.1 knowledge.libIds）。 */
+  /** 知识库绑定（§5.1 knowledge.libIds）。 */
   libIds: string[];
-  /** 字段五：挂载技能（skills 表 id，按挂载顺序注入稳定前缀，T1.0-10②）。 */
+  /** 挂载技能（skills 表 id，按挂载顺序注入稳定前缀，T1.0-10②）。 */
   skills: string[];
+  /** 工具白名单（§5.1 tools；T1.0-10 编辑器可选）。 */
+  tools: string[];
+  /** 循环预算：最大步数（§5.2；出厂 8）。 */
+  maxSteps: number;
+  /** 循环预算：墙钟超时毫秒（§5.2；出厂 120000）。 */
+  timeoutMs: number;
+  /** 记忆策略：是否召回记忆（§6.1；关则本 Agent 对话不注入记忆）。 */
+  memoryRead: boolean;
+  /** 记忆策略：是否捕获记忆（§6.1；关则本 Agent 对话不沉淀进记忆）。 */
+  memoryWrite: boolean;
+  /** 记忆策略：可读写 scope 白名单（空 = 运行时默认 user_profile + agent:<自身>）。 */
+  memoryScopes: string[];
 }
 
 /** 技能选择项（编辑器挂载选择器；清单出自 AgentService.listSkills，分层同 KbOption）。 */
@@ -95,10 +114,12 @@ export interface SkillFullVM {
   enabled: boolean;
 }
 
-/** 端上工具项（技能编辑器的声明选择器）。 */
+/** 端上工具项（技能/智能体编辑器的选择器）。 */
 export interface ToolPickOption {
   toolId: string;
   description: string;
+  /** 权限模型（none/confirm/always_ask）——智能体编辑器据此显示徽标 */
+  permission: string;
 }
 
 /** 一条声明名的可用性判定（如实三态：可用 id / 归一后可用 / 端上不提供）。 */
@@ -151,6 +172,7 @@ export class AgentFacade {
   public async loadDraft(agentId: string): Promise<AgentDraftV09> {
     await AgentService.get().whenReady();
     const def: AgentDef = await AgentService.get().getAgent(agentId);
+    const policy: AgentMemoryPolicy = def.memoryPolicy ?? DEFAULT_MEMORY_POLICY;
     const draft: AgentDraftV09 = {
       id: def.id,
       avatar: def.avatar ?? DEFAULT_AGENT_AVATAR,
@@ -158,14 +180,31 @@ export class AgentFacade {
       systemPrompt: def.systemPrompt,
       providerId: def.model.providerId,
       libIds: def.knowledge !== undefined ? def.knowledge.libIds : [],
-      skills: def.skills ?? []
+      skills: def.skills ?? [],
+      tools: def.tools,
+      maxSteps: def.loop.maxSteps,
+      timeoutMs: def.loop.timeoutMs,
+      memoryRead: policy.read,
+      memoryWrite: policy.write,
+      memoryScopes: policy.scopes
+    };
+    return draft;
+  }
+
+  /** 新建表单的空白草稿（出厂默认：无工具、8 步/120s、记忆读写皆开、默认 scope）。 */
+  public blankDraft(): AgentDraftV09 {
+    const draft: AgentDraftV09 = {
+      id: '', avatar: DEFAULT_AGENT_AVATAR, name: '', systemPrompt: '', providerId: '',
+      libIds: [], skills: [], tools: [],
+      maxSteps: DEFAULT_LOOP_CONFIG.maxSteps, timeoutMs: DEFAULT_LOOP_CONFIG.timeoutMs,
+      memoryRead: DEFAULT_MEMORY_POLICY.read, memoryWrite: DEFAULT_MEMORY_POLICY.write, memoryScopes: []
     };
     return draft;
   }
 
   /**
-   * 校验并落库（新建返回新 id）。V0.9 未暴露字段取出厂默认值（loop=8步/120s 等，
-   * 见 AgentDef 的 DEFAULT_*；已有 Agent 的高级字段由 AgentRepo 保证不被冲掉）。
+   * 校验并落库（新建返回新 id）。T1.0-10 起 tools/loop/memoryPolicy 由编辑器暴露并随 draft 持久化——
+   * 所有字段来自 draft（load→编辑→save 全程往返），不再硬编码默认；triggers/uiHints 仍由 AgentRepo 保持原值。
    */
   public async saveDraft(draft: AgentDraftV09): Promise<string> {
     const name: string = draft.name.trim();
@@ -173,7 +212,6 @@ export class AgentFacade {
       throw new Error('名称不能为空');
     }
     // providerId 空 = 未绑定（跟随全局默认模型）——内置模板的出厂形态，合法可保存。
-    // 发送/顶栏/水位都会解析到默认 Provider（resolveTurnProvider 的 fallback 分支）。
     await AgentService.get().whenReady();
     const now: number = Date.now();
     const id: string = draft.id.length > 0 ? draft.id : AgentService.get().newAgentId();
@@ -183,6 +221,15 @@ export class AgentFacade {
       topK: DEFAULT_KNOWLEDGE_TOP_K,
       requireCitation: false
     };
+    // loop：步数/超时收进合理区间（编辑器已限，这里再兜一层——脏值不进库）
+    const loop: AgentLoopConfig = {
+      maxSteps: draft.maxSteps > 0 ? Math.floor(draft.maxSteps) : DEFAULT_LOOP_CONFIG.maxSteps,
+      timeoutMs: draft.timeoutMs > 0 ? Math.floor(draft.timeoutMs) : DEFAULT_LOOP_CONFIG.timeoutMs,
+      reflection: false
+    };
+    const memoryPolicy: AgentMemoryPolicy = {
+      read: draft.memoryRead, write: draft.memoryWrite, scopes: draft.memoryScopes
+    };
     const def: AgentDef = {
       id: id,
       name: name,
@@ -190,9 +237,10 @@ export class AgentFacade {
       systemPrompt: draft.systemPrompt,
       model: model,
       knowledge: knowledge,
-      tools: [],   // 编辑器不暴露 tools（更新路径不触碰该列，既有白名单不被冲掉）
+      tools: draft.tools,
       skills: draft.skills,
-      loop: DEFAULT_LOOP_CONFIG,
+      memoryPolicy: memoryPolicy,
+      loop: loop,
       createdAt: now,
       updatedAt: now
     };
@@ -238,12 +286,42 @@ export class AgentFacade {
     });
   }
 
-  /** 端上真实注册的工具清单（技能编辑器的声明选择器）。 */
+  /** 端上真实注册的工具清单（技能/智能体编辑器的选择器；含权限徽标）。 */
   public listToolOptions(): ToolPickOption[] {
     return AgentService.get().listToolOptions().map((t: CoreToolOption): ToolPickOption => {
-      const o: ToolPickOption = { toolId: t.toolId, description: t.description };
+      const o: ToolPickOption = { toolId: t.toolId, description: t.description, permission: t.permission };
       return o;
     });
+  }
+
+  /** anchor 预算估算（编辑器 >25% 告警，§27.4）。粗算 system + 挂载技能正文对比 ctx×25%（标注"约"）。 */
+  public async estimateAnchor(providerId: string, systemPrompt: string, skillIds: string[]): Promise<AnchorEstimate> {
+    await AgentService.get().whenReady();
+    return AgentService.get().estimateAnchor(providerId, systemPrompt, skillIds);
+  }
+
+  /** 某 Agent 的运行历史（跨会话，最近在前；§5.4 轨迹回放入口）。 */
+  public async runsForAgent(agentId: string, limit: number = 50): Promise<RunSummary[]> {
+    await AgentService.get().whenReady();
+    return AgentService.get().runsForAgent(agentId, limit);
+  }
+
+  /** 单个 Run 的全部步（结构化，按 seq 升序；回放逐步渲染）。 */
+  public async runSteps(runId: string): Promise<RunStepRow[]> {
+    await AgentService.get().whenReady();
+    return AgentService.get().runSteps(runId);
+  }
+
+  /** 单个 Run 汇总（回放头部）。 */
+  public async runSummary(runId: string): Promise<RunSummary | null> {
+    await AgentService.get().whenReady();
+    return AgentService.get().runSummary(runId);
+  }
+
+  /** 回读某步 prompt_ref / result_ref 的 inline 全文（完整 prompt / 工具原文）；无则 null。 */
+  public async readTraceArtifact(artifactId: string): Promise<string | null> {
+    await AgentService.get().whenReady();
+    return AgentService.get().readTraceArtifact(artifactId);
   }
 
   /** 逐条判定声明名的可用性（UI 展示与装配同一口径：别名归一 → 注册表求交）。 */

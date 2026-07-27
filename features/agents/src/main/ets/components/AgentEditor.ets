@@ -8,26 +8,44 @@ import {
   AdCard,
   AdCardVariant,
   AdColor,
+  AdGlyph,
+  AdGlyphKind,
   AdListItem,
+  AdRadius,
   AdSpace,
   AdStroke,
+  AdSwitch,
   AdTag,
   AdTagKind,
   AdTextField,
   AdType
 } from 'design-system';
-import { AgentDraftV09, AgentFacade, BreakpointKey, KbOption, ProviderOption, SkillOption } from '../model/AgentViewModel';
+import {
+  AgentDraftV09, AgentFacade, AnchorEstimate, BreakpointKey, KbOption, ProviderOption, SkillOption, ToolPickOption
+} from '../model/AgentViewModel';
+
+/** loop 预算的可选档（表单式，不做数字键盘——§5.4 v1 克制）：步数与超时各给几档单选 */
+interface LoopPreset {
+  value: number;
+  label: string;
+}
+
+const MAX_STEPS_PRESETS: LoopPreset[] = [
+  { value: 4, label: '4 步' }, { value: 8, label: '8 步（默认）' },
+  { value: 16, label: '16 步' }, { value: 32, label: '32 步' }
+];
+const TIMEOUT_PRESETS: LoopPreset[] = [
+  { value: 60000, label: '1 分钟' }, { value: 120000, label: '2 分钟（默认）' },
+  { value: 300000, label: '5 分钟' }, { value: 600000, label: '10 分钟' }
+];
 
 /**
- * 智能体编辑器（T0.9-16 —— 开发计划 §5.1"编辑器极简化"：**只有四个字段**）。
- *   1) 名称  2) 系统提示词  3) 模型（Provider 单选）  4) 知识库绑定
- * 设计文档 §5.1 的其余字段（tools / memoryPolicy / loop / triggers / uiHints）本版不暴露，
- * 落库时取出厂默认值（core-agent 侧保证已有 Agent 的高级字段不被本表单冲掉）。
- *
- * 知识库（字段四）的 V0.9 事实：core-rag 随 T0.9-18 交付，此刻没有任何库可选——
- * 分区如实说明，不画假复选框（列表为空是事实，不是加载失败）。
- *
- * TODO(T1.0-10): 完整编辑器（工具/记忆策略/loop 预算/anchor>25% 告警）与 Run 轨迹回放。
+ * 智能体编辑器（T1.0-10 完整版，设计文档 §5.1/§5.4）。表单式（不做拖拽画布——v1 克制）：
+ *   名称 / 系统提示词 / 模型 / 知识库 / 技能 / **工具白名单** / **记忆策略（召回·沉淀）** / **循环预算（步数·超时）**
+ *   + **anchor >25% 告警**（system+技能占 ctx 过大即提示，§27.4）。
+ * triggers/uiHints 仍不暴露（V2/V1.5），由 core-agent 保持原值。所有字段随 draft 往返——load→save 不丢已存值。
+ * 空列表（无模型/无库/无技能/无工具）如实说明并给行动路径，不画假控件（列表空是事实，不是加载失败）。
+ * Run 轨迹回放见 AgentRunReplay（同模块）。
  */
 @Extend(Text)
 function editorTitle() {
@@ -58,18 +76,21 @@ export struct AgentEditor {
   /** 取消回调。 */
   public onCancel: () => void = () => {};
 
-  @State private draft: AgentDraftV09 = {
-    id: '', avatar: '', name: '', systemPrompt: '', providerId: '', libIds: [], skills: []
-  };
+  @State private draft: AgentDraftV09 = new AgentFacade().blankDraft();
   @State private providers: ProviderOption[] = [];
   @State private knowledgeBases: KbOption[] = [];
   @State private skillOptions: SkillOption[] = [];
+  @State private toolOptions: ToolPickOption[] = [];
+  /** anchor 预算估算（>25% 告警，§27.4）；null = 尚未算出 */
+  @State private anchorEstimate: AnchorEstimate | null = null;
   @State private saving: boolean = false;
   /** 表单级错误（校验/保存失败）：AdTextField 的 errorText 三重冗余在字段侧，这里是提交侧 */
   @State private formError: string = '';
   @State private loading: boolean = false;
 
   private facade: AgentFacade = new AgentFacade();
+  /** anchor 估算的单调令牌：异步返回乱序时只采纳最新一次（防旧结果覆盖新输入） */
+  private anchorToken: number = 0;
 
   aboutToAppear(): void {
     this.loadAll();
@@ -86,20 +107,36 @@ export struct AgentEditor {
       this.providers = await this.facade.listProviders();
       this.knowledgeBases = await this.facade.listKnowledgeBases();
       this.skillOptions = await this.facade.listSkills();
+      this.toolOptions = this.facade.listToolOptions();
       if (this.agentId.length > 0) {
         this.draft = await this.facade.loadDraft(this.agentId);
       } else {
-        const fresh: AgentDraftV09 = { id: '', avatar: '', name: '', systemPrompt: '', providerId: '', libIds: [], skills: [] };
+        const fresh: AgentDraftV09 = this.facade.blankDraft();
         // 单模型现实：只有一个可选模型时直接预选——少一次必然的点击，不算替用户做主
         if (this.providers.length === 1) {
           fresh.providerId = this.providers[0].providerId;
         }
         this.draft = fresh;
       }
+      await this.recomputeAnchor();
     } catch (e) {
       this.formError = `没能读出编辑器数据：${(e as Error).message}`;
     } finally {
       this.loading = false;
+    }
+  }
+
+  /** 重算 anchor 预算估算（load / 模型/技能/系统提示词变更时）；令牌保证只采纳最新一次。 */
+  private async recomputeAnchor(): Promise<void> {
+    const myToken: number = ++this.anchorToken;
+    try {
+      const est: AnchorEstimate = await this.facade.estimateAnchor(
+        this.draft.providerId, this.draft.systemPrompt, this.draft.skills);
+      if (myToken === this.anchorToken) {
+        this.anchorEstimate = est;
+      }
+    } catch (e) {
+      // 估算失败不阻塞编辑（告警只是提示，不是硬门）
     }
   }
 
@@ -178,8 +215,12 @@ export struct AgentEditor {
             areaHeight: 160,
             onTextChange: (value: string) => {
               this.draft.systemPrompt = value;
+              this.recomputeAnchor();
             }
           })
+
+          // —— anchor 预算告警（§27.4：system+技能占 ctx >25% 即提示"定义过肥"）——
+          this.anchorBanner()
 
           // —— 字段三：模型（单选；只列当前真实可用的 Provider） ——
           AdCard({
@@ -199,12 +240,39 @@ export struct AgentEditor {
             }
           })
 
-          // —— 字段五：技能挂载（T1.0-10②）——
+          // —— 技能挂载（T1.0-10②）——
           AdCard({
             variant: AdCardVariant.PLAIN,
             eyebrow: '技能',
             content: () => {
               this.skillPicker()
+            }
+          })
+
+          // —— 工具（T1.0-10：白名单，模型可在对话中调用）——
+          AdCard({
+            variant: AdCardVariant.PLAIN,
+            eyebrow: '工具',
+            content: () => {
+              this.toolPicker()
+            }
+          })
+
+          // —— 记忆策略（T1.0-10：召回/沉淀开关，§6.1）——
+          AdCard({
+            variant: AdCardVariant.PLAIN,
+            eyebrow: '记忆',
+            content: () => {
+              this.memoryCard()
+            }
+          })
+
+          // —— 循环预算（T1.0-10：步数/超时，§5.2）——
+          AdCard({
+            variant: AdCardVariant.PLAIN,
+            eyebrow: '循环预算',
+            content: () => {
+              this.loopPicker()
             }
           })
         }
@@ -278,6 +346,7 @@ export struct AgentEditor {
             (this.draft.providerId === p.providerId ? '已选中。' : '双击选用。'),
           onAction: () => {
             this.draft.providerId = p.providerId;
+            this.recomputeAnchor();   // 换模型 → ctx 上限变 → anchor 占比重算
           },
           trailing: () => {
             this.providerTag(p)
@@ -361,9 +430,147 @@ export struct AgentEditor {
               next.push(sk.skillId);
             }
             this.draft.skills = next;
+            this.recomputeAnchor();   // 技能正文并入稳定前缀 → anchor 占比重算
           }
         })
       }, (sk: SkillOption) => `${sk.skillId}|${this.draft.skills.includes(sk.skillId)}`)
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  anchorBanner() {
+    if (this.anchorEstimate !== null && this.anchorEstimate.overBudget) {
+      Row({ space: AdSpace.s2 }) {
+        AdGlyph({ kind: AdGlyphKind.TRIANGLE, glyphSize: 14, color: AdColor.warningFg })
+        Text(`定义偏大：系统提示词加技能约占上下文的 ${this.anchorPct()}%（建议不超过 25%）。` +
+          '占得越多，留给对话与工具的预算越少——可精简提示词或少挂几个技能。')
+          .editorNote(AdColor.warningFg)
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .padding(AdSpace.s2)
+      .backgroundColor(AdColor.warningBg)
+      .borderRadius(AdRadius.md)
+      .alignItems(VerticalAlign.Top)
+    }
+  }
+
+  /** anchor 估算占 ctx 的百分比（ctx 未知时返回 0；仅在 overBudget 时显示，见 anchorBanner） */
+  private anchorPct(): number {
+    const est: AnchorEstimate | null = this.anchorEstimate;
+    if (est === null || est.ctxTotal <= 0) {
+      return 0;
+    }
+    return Math.round(est.anchorTokens / est.ctxTotal * 100);
+  }
+
+  @Builder
+  toolPicker() {
+    Column({ space: AdSpace.s1 }) {
+      Text('允许这个智能体在对话中调用的工具。挂载的技能可能已附带工具，此处是额外授予。')
+        .editorNote(AdColor.inkTertiary)
+        .width('100%')
+      if (this.toolOptions.length === 0) {
+        Text('端上工具尚未装配完成，暂无可选项。').editorNote(AdColor.inkSecondary).width('100%')
+      }
+      ForEach(this.toolOptions, (opt: ToolPickOption) => {
+        AdListItem({
+          title: opt.toolId,
+          subtitle: this.permLabel(opt.permission).length > 0
+            ? `${opt.description} · ${this.permLabel(opt.permission)}`
+            : opt.description,
+          selected: this.draft.tools.includes(opt.toolId),
+          a11yText: `工具 ${opt.toolId}，${opt.description}，` +
+            (this.draft.tools.includes(opt.toolId) ? '已授予。双击撤销。' : '未授予。双击授予。'),
+          onAction: () => {
+            const idx: number = this.draft.tools.indexOf(opt.toolId);
+            const next: string[] = this.draft.tools.slice();
+            if (idx >= 0) {
+              next.splice(idx, 1);
+            } else {
+              next.push(opt.toolId);
+            }
+            this.draft.tools = next;
+          }
+        })
+      }, (opt: ToolPickOption) => `${opt.toolId}|${this.draft.tools.includes(opt.toolId)}`)
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  /** 工具权限的中文徽标（none 无标；confirm/always_ask 如实告知授权成本） */
+  private permLabel(permission: string): string {
+    if (permission === 'confirm') {
+      return '首次调用需确认';
+    }
+    if (permission === 'always_ask') {
+      return '每次调用都询问';
+    }
+    return '';
+  }
+
+  @Builder
+  memoryCard() {
+    Column({ space: AdSpace.s2 }) {
+      AdSwitch({
+        label: '召回记忆',
+        helper: '开启后，对话开始时把与当前问题相关的历史记忆注入上下文（本地私有，远程模型下自动不外发）。',
+        checked: this.draft.memoryRead,
+        onToggle: (checked: boolean) => {
+          this.draft.memoryRead = checked;
+        }
+      })
+      AdSwitch({
+        label: '沉淀记忆',
+        helper: '开启后，这个智能体的对话会在结束后被提炼、沉淀进你的长期记忆；关闭则本智能体的对话不留痕。',
+        checked: this.draft.memoryWrite,
+        onToggle: (checked: boolean) => {
+          this.draft.memoryWrite = checked;
+        }
+      })
+      Text('记忆范围：用户画像与本智能体（默认）。')
+        .editorNote(AdColor.inkTertiary)
+        .width('100%')
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  loopPicker() {
+    Column({ space: AdSpace.s2 }) {
+      Text('工具链任务的上限：达到步数或时间就要求模型直接给出当前最优答案，防止连环调用工具烧光预算。')
+        .editorNote(AdColor.inkTertiary)
+        .width('100%')
+      Text('最大步数').editorNote(AdColor.ink).width('100%')
+      this.presetRow(MAX_STEPS_PRESETS, this.draft.maxSteps, 'steps')
+      Text('单轮超时').editorNote(AdColor.ink).width('100%')
+      this.presetRow(TIMEOUT_PRESETS, this.draft.timeoutMs, 'timeout')
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  presetRow(presets: LoopPreset[], current: number, kind: string) {
+    Column({ space: AdSpace.s1 }) {
+      ForEach(presets, (p: LoopPreset) => {
+        AdListItem({
+          title: p.label,
+          selected: current === p.value,
+          a11yText: `${p.label}，${current === p.value ? '已选中。' : '双击选用。'}`,
+          onAction: () => {
+            if (kind === 'steps') {
+              this.draft.maxSteps = p.value;
+            } else {
+              this.draft.timeoutMs = p.value;
+            }
+          }
+        })
+      }, (p: LoopPreset) => `${kind}|${p.value}|${current === p.value}`)
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)

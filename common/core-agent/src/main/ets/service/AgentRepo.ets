@@ -26,9 +26,11 @@ import {
   AgentDef,
   AgentKnowledgeConfig,
   AgentLoopConfig,
+  AgentMemoryPolicy,
   AgentModelConfig,
   DEFAULT_KNOWLEDGE_TOP_K,
-  DEFAULT_LOOP_CONFIG
+  DEFAULT_LOOP_CONFIG,
+  DEFAULT_MEMORY_POLICY
 } from '../model/AgentDef';
 import { TOOL_CALC, TOOL_DATETIME, TOOL_KB_SEARCH } from '../tools/ToolBus';
 import { AgentRepositoryPort } from './AgentService';
@@ -113,6 +115,32 @@ function parseLoop(json: string): AgentLoopConfig {
   }
 }
 
+/** memory_policy 列的 JSON 编解码（损坏/缺失 → 出厂策略：读写皆开、scopes 空）。read/write 缺省 true（保守：不静默关记忆） */
+function parseMemoryPolicy(json: string): AgentMemoryPolicy {
+  try {
+    const raw: AgentMemoryPolicy = JSON.parse(json) as AgentMemoryPolicy;
+    const scopes: string[] = [];
+    if (Array.isArray(raw.scopes)) {
+      for (const s of raw.scopes as Object[]) {
+        if (typeof s === 'string' && s.length > 0) {
+          scopes.push(s);
+        }
+      }
+    }
+    const policy: AgentMemoryPolicy = {
+      read: raw.read !== false,
+      write: raw.write !== false,
+      scopes: scopes
+    };
+    return policy;
+  } catch (e) {
+    const fallback: AgentMemoryPolicy = {
+      read: DEFAULT_MEMORY_POLICY.read, write: DEFAULT_MEMORY_POLICY.write, scopes: []
+    };
+    return fallback;
+  }
+}
+
 function rowToDef(rs: relationalStore.ResultSet): AgentDef {
   const avatar: string = rs.getString(rs.getColumnIndex('avatar'));
   const def: AgentDef = {
@@ -123,6 +151,7 @@ function rowToDef(rs: relationalStore.ResultSet): AgentDef {
     knowledge: parseKnowledge(rs.getString(rs.getColumnIndex('knowledge'))),
     tools: parseTools(rs.getString(rs.getColumnIndex('tools'))),   // T1.0-01 工具循环按此白名单声明 tools
     skills: parseTools(rs.getString(rs.getColumnIndex('skills'))), // 同为 JSON 字符串数组编解码（T1.0-10②）
+    memoryPolicy: parseMemoryPolicy(rs.getString(rs.getColumnIndex('memory_policy'))), // T1.0-10 编辑器读写
     loop: parseLoop(rs.getString(rs.getColumnIndex('loop'))),
     createdAt: rs.getLong(rs.getColumnIndex('created_at')),
     updatedAt: rs.getLong(rs.getColumnIndex('updated_at'))
@@ -134,7 +163,7 @@ function rowToDef(rs: relationalStore.ResultSet): AgentDef {
 }
 
 const SELECT_COLUMNS: string =
-  `id, name, avatar, system_prompt, model, knowledge, tools, skills, loop, builtin, enabled, def_version, created_at, updated_at`;
+  `id, name, avatar, system_prompt, model, knowledge, memory_policy, tools, skills, loop, builtin, enabled, def_version, created_at, updated_at`;
 
 /** 内置模板未绑定具体模型：providerId 留空 = 跟随用户当前激活的默认模型（本地/远程皆可）。 */
 const UNBOUND_MODEL: AgentModelConfig = { providerId: '' };
@@ -234,8 +263,9 @@ export class AgentRepo implements AgentRepositoryPort {
 
   /**
    * 保存（upsert）：新建插入 def_version=1；已存在则更新并 def_version+1。
-   * 未在 V0.9 编辑器暴露的字段：新建时取出厂默认值；更新时**不触碰**（memory_policy/tools/
-   * triggers/ui_hints 等列保持原值——将来 T1.0 编辑的高级项不能被 V0.9 表单保存冲掉）。
+   * T1.0-10 完整编辑器起，tools/memory_policy/loop 由编辑器暴露并持久化（UPDATE 与 INSERT 都写）。
+   * 仍不触碰的高级列：triggers/ui_hints（V2/V1.5，编辑器未暴露，保持原值不被表单冲掉）。
+   * builtin 行的 tools/system_prompt 由 seedBuiltins 按 def_version 版本化迁移——用户编辑（def_version>1）后不再回灌。
    */
   async save(def: AgentDef): Promise<void> {
     const now: number = Date.now();
@@ -244,6 +274,8 @@ export class AgentRepo implements AgentRepositoryPort {
       libIds: [], topK: DEFAULT_KNOWLEDGE_TOP_K, requireCitation: false
     } as AgentKnowledgeConfig);
     const loopJson: string = JSON.stringify(def.loop);
+    const memoryJson: string = JSON.stringify(def.memoryPolicy ?? DEFAULT_MEMORY_POLICY);
+    const toolsJson: string = JSON.stringify(def.tools);
     const avatar: string = def.avatar ?? '';
 
     await this.rdb.withTransaction<void>(async (): Promise<void> => {
@@ -256,16 +288,20 @@ export class AgentRepo implements AgentRepositoryPort {
         await this.rdb.exec(
           `UPDATE agent_defs
               SET name = ?, avatar = ?, system_prompt = ?, model = ?, knowledge = ?, skills = ?,
+                  tools = ?, memory_policy = ?, loop = ?,
                   def_version = def_version + 1, updated_at = ?
             WHERE id = ?;`,
-          [def.name, avatar, def.systemPrompt, modelJson, knowledgeJson, skillsJson, now, def.id] as Array<SqlArg>
+          [def.name, avatar, def.systemPrompt, modelJson, knowledgeJson, skillsJson,
+            toolsJson, memoryJson, loopJson, now, def.id] as Array<SqlArg>
         );
         return;
       }
       await this.rdb.exec(
-        `INSERT INTO agent_defs (id, name, avatar, system_prompt, model, knowledge, skills, loop, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
-        [def.id, def.name, avatar, def.systemPrompt, modelJson, knowledgeJson, skillsJson, loopJson, now, now] as Array<SqlArg>
+        `INSERT INTO agent_defs (id, name, avatar, system_prompt, model, knowledge, skills,
+                                 tools, memory_policy, loop, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+        [def.id, def.name, avatar, def.systemPrompt, modelJson, knowledgeJson, skillsJson,
+          toolsJson, memoryJson, loopJson, now, now] as Array<SqlArg>
       );
     });
   }
@@ -274,12 +310,10 @@ export class AgentRepo implements AgentRepositoryPort {
    * 首启/版本升级播种内置模板（T1.0-10①）。逐条判存：已在册（含用户改过的）就跳过、绝不覆盖，
    * 只插缺失的模板（builtin=1 不可删）。幂等——重复调用安全。返回本次新插入的条数。
    *
-   * 既有 builtin 行的种子回灌分两档：
-   * - tools：无条件同步（编辑器不暴露 tools，用户不可能改过它，同步不冲改动）——一旦编辑器暴露 tools，
-   *   此档也必须改为下面的版本化迁移。
-   * - system_prompt：编辑器**暴露**它（save() 写 prompt 且 def_version+1），故只对 def_version=1
-   *   （用户从未编辑）的行回灌，改过的绝不覆盖——这是种子升级不冲用户改动的版本化迁移。
-   * 让先装后升的老用户也拿到工具白名单与种子文案更新（如写作助手新增的委派指令）。
+   * 既有 builtin 行的种子回灌统一走**版本化迁移**（T1.0-10 完整编辑器起，tools/system_prompt/loop 等
+   * 皆可被用户编辑并 def_version+1）：tools 与 system_prompt 都只对 def_version=1（用户从未编辑）的行回灌，
+   * 改过的（def_version>1）绝不覆盖。`!= ?` 让已同步过的成为幂等 no-op。
+   * 让先装后升的老用户也拿到工具白名单与种子文案更新（如写作助手新增的委派指令），又不冲用户改动。
    */
   async seedBuiltins(): Promise<number> {
     const now: number = Date.now();
@@ -292,9 +326,9 @@ export class AgentRepo implements AgentRepositoryPort {
           [seed.id] as Array<SqlArg>
         );
         if (exists !== null && exists > 0) {
-          // 已在册：同步 tools（见方法注释），其余字段不触碰
+          // 已在册：版本化同步 tools——只回灌 def_version=1（用户从未编辑）的行，改过的不冲（见方法注释）
           await this.rdb.exec(
-            `UPDATE agent_defs SET tools = ? WHERE id = ? AND builtin = 1 AND tools != ?;`,
+            `UPDATE agent_defs SET tools = ? WHERE id = ? AND builtin = 1 AND def_version = 1 AND tools != ?;`,
             [toolsJson, seed.id, toolsJson] as Array<SqlArg>
           );
           // system_prompt 版本化迁移：编辑器**暴露** prompt（save() 会写它并 def_version+1），

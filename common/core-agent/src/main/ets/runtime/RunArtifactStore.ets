@@ -19,8 +19,8 @@ import { ARTIFACT_HEAD_MAX_TOKENS, truncateToTokens } from '../context/GovernorD
 import { ArtifactStorePort } from '../context/ContextGovernor';
 import { renderTraceStep, TraceStepRow } from './TraceRender';
 
-/** 计 UTF-8 字节数（run_artifacts.size 语义为字节）——不分配中间数组，逐码点累加。 */
-function utf8ByteLength(s: string): number {
+/** 计 UTF-8 字节数（run_artifacts.size 语义为字节）——不分配中间数组，逐码点累加。两处写 size 的口径同源。 */
+export function utf8ByteLength(s: string): number {
   let bytes: number = 0;
   for (let i = 0; i < s.length; i++) {
     const code: number = s.charCodeAt(i);
