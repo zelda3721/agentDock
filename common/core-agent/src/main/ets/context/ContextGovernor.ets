@@ -7,8 +7,11 @@ import {
   COMPACTION_TARGET_RATIO,
   COMPACTION_TRIGGER_RATIO,
   EMERGENCY_RATIO,
+  FOLD_AFTER_STEPS,
+  FOLD_DIGEST_MAX_TOKENS,
   RECENT_TURNS_INTERACTIVE,
   RECENT_TURNS_LONG_JOB,
+  RECITATION_MAX_TOKENS,
   RESERVED_OUTPUT_MARGIN,
   estimateTokens,
   truncateToTokens
@@ -220,8 +223,7 @@ export class ContextGovernor {
     const stub: ArtifactStub = {
       artifactId: artifactId,
       head: head,
-      // 溯源指针随桩体入 prompt（红线 25/M1）：模型据此可用 artifact.read 回读原文（T1.0-04）
-      text: `[step${stepIndex} ${toolName} → 摘要头]\n${head}\n[全文 artifact:${artifactId}（可用 artifact.read 回读）]`
+      text: ContextGovernor.renderArtifactStub(stepIndex, toolName, head, artifactId)
     };
     return stub;
   }
@@ -229,6 +231,36 @@ export class ContextGovernor {
   /** 判定某工具输出是否需要外置（超过摘要头预算即外置） */
   shouldExternalize(content: string): boolean {
     return estimateTokens(content) > ARTIFACT_HEAD_MAX_TOKENS;
+  }
+
+  /**
+   * L1 外置桩文本（红线 25/M1）：摘要头(≤200 token) + artifact 溯源指针随桩体入 prompt，
+   * 模型据此可用 artifact.read 回读原文（T1.0-04）。ChatService 工具循环与本类共用此渲染，桩体格式同源。
+   */
+  static renderArtifactStub(stepIndex: number, toolName: string, head: string, artifactId: string): string {
+    return `[step${stepIndex} ${toolName} → 摘要头]\n${head}\n[全文 artifact:${artifactId}（可用 artifact.read 回读）]`;
+  }
+
+  /** 从桩体/观察正文里抽出 artifact:<id>（UUID）——L2 折叠时据此保留可回读指针；无则返回 null。 */
+  static extractArtifactId(content: string): string | null {
+    const marker: string = 'artifact:';
+    const at: number = content.indexOf(marker);
+    if (at < 0) {
+      return null;
+    }
+    let i: number = at + marker.length;
+    let id: string = '';
+    while (i < content.length) {
+      const ch: string = content.charAt(i);
+      // UUID 字符集：十六进制 + 连字符；遇到其它字符（如「（」、空白、右括号）即停
+      if ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F') || ch === '-') {
+        id += ch;
+        i++;
+      } else {
+        break;
+      }
+    }
+    return id.length > 0 ? id : null;
   }
 
   // -------------------- L3 滚动对话摘要（有损，Nano 执行）——V0.9 交付 --------------------
@@ -296,8 +328,9 @@ export class ContextGovernor {
    * 渲染溯源指针（红线 25：摘要段/折叠桩必带）。
    * 聊天路径的 step_range 即 messages.seq 区间——原文永远在 messages 表里全量保留，
    * 压缩是"可逆的缓存淘汰"而非信息销毁（§27.2-M1）。
-   * TODO(T1.0-04): trace.read 工具落地后，在此补回「可用 trace.read 回读原文」的提示——
-   *   V0.9 无工具循环，向模型承诺一个不存在的工具是伪实现。
+   * 注：此处**不**提示 trace.read——trace.read（T1.0-04）读的是 run_steps.seq（本轮工具轨迹），
+   *   与 L3 摘要覆盖的 messages.seq（跨轮对话原文）不同表不同号；对话历史的回读器是独立议题（原文在
+   *   messages 表全量保留），不在 T1.0-04 范围。工具原文的回读走 artifact.read（见 externalize 桩体）。
    */
   static renderProvenance(p: ProvenanceRef): string {
     const artifacts: string = p.artifactIds.length > 0 ? `, artifacts:${p.artifactIds.join(',')}` : '';
@@ -314,7 +347,33 @@ export class ContextGovernor {
    * TODO(T1.0-04): 按设计文档 §23.3-L2 实现观察折叠（折叠桩必带溯源指针，红线 25）。
    */
   foldObservations(turns: ConversationTurn[], currentStep: number): ConversationTurn[] {
-    throw new Error('Not implemented: T1.0-04');
+    const out: ConversationTurn[] = [];
+    for (const t of turns) {
+      // 只折叠工具观察，且距当前 ≥FOLD_AFTER_STEPS 步（近窗内的新观察不动——模型正用着）
+      if (t.role === 'tool' && (currentStep - t.stepIndex) >= FOLD_AFTER_STEPS) {
+        const folded: ConversationTurn = {
+          role: 'tool',
+          content: ContextGovernor.renderFoldStub(t.stepIndex, ContextGovernor.extractArtifactId(t.content), t.content),
+          stepIndex: t.stepIndex
+        };
+        out.push(folded);
+      } else {
+        out.push(t);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * L2 折叠桩文本（红线 25：必带溯源指针）。已外置的观察折成「仅剩 artifact 指针」（丢摘要头、留可回读全文）；
+   * 未外置的小观察折成「几十 token 机械摘要 + trace.read 回读提示」——两者都零 LLM、可逆（原文永在 run_steps/artifacts）。
+   */
+  static renderFoldStub(stepIndex: number, artifactId: string | null, rawContent: string): string {
+    if (artifactId !== null) {
+      return `[step${stepIndex} 观察已折叠 → 全文 artifact:${artifactId}（artifact.read 回读）]`;
+    }
+    const digest: string = truncateToTokens(rawContent.replace(/\s+/g, ' ').trim(), FOLD_DIGEST_MAX_TOKENS);
+    return `[step${stepIndex} 观察已折叠 → 摘要：${digest}（可用 trace.read(${stepIndex},${stepIndex}) 回读原文）]`;
   }
 
   /**
@@ -325,7 +384,29 @@ export class ContextGovernor {
    * TODO(T1.0-04): 按设计文档 §27.2-M3 实现 Interactive 版复诵节（≤200 token，§27.4）。
    */
   buildRecitation(goal: string, phase: string, nextAction: string, remainingSteps: number): string {
-    throw new Error('Not implemented: T1.0-04');
+    return ContextGovernor.renderRecitation(goal, phase, nextAction, remainingSteps);
+  }
+
+  /**
+   * M3 复诵节渲染（≤RECITATION_MAX_TOKENS）。原始目标**原文引用不改写**（占额度大头，先给它留预算）；
+   * 阶段/本步为空则不渲染该行。ChatService 工具循环把它贴在装配尾部（注意力黄金位）——见 §27.2-M3。
+   */
+  static renderRecitation(goal: string, phase: string, nextAction: string, remainingSteps: number): string {
+    const header: string = '（进行中的任务提醒——请勿偏离原始目标）';
+    // 先把非目标各行拼好，再**实测**其固定开销，把余额全给目标——固定行（尤其 nextAction）长短不一，
+    // 硬留 60 token 会被撑破、末尾 200 截断把「剩余预算」和动作指令截掉（复诵节最该保住的两行）。
+    const tail: string[] = [];
+    if (phase.trim().length > 0) {
+      tail.push(`【当前阶段】${phase.trim()}`);
+    }
+    if (nextAction.trim().length > 0) {
+      tail.push(`【现在该做】${nextAction.trim()}`);
+    }
+    tail.push(`【剩余预算】还剩 ${Math.max(0, remainingSteps)} 步`);
+    const fixed: string = `${header}\n【原始目标】\n${tail.join('\n')}`;
+    const goalBudget: number = Math.max(40, RECITATION_MAX_TOKENS - estimateTokens(fixed));
+    const lines: string[] = [header, `【原始目标】${truncateToTokens(goal.trim(), goalBudget)}`].concat(tail);
+    return truncateToTokens(lines.join('\n'), RECITATION_MAX_TOKENS);
   }
 
   /**

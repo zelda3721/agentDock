@@ -48,6 +48,12 @@ export const RESERVED_OUTPUT_MARGIN: number = 1.10;
 /** L2 观察折叠触发：距当前 ≥3 步且非 anchor 引用（§23.3-L2；随 T1.0-04 交付） */
 export const FOLD_AFTER_STEPS: number = 3;
 
+/** L2 折叠桩里保留的机械摘要上限（未外置的小观察折叠时留几十 token 便于模型判断是否需 trace.read 回读） */
+export const FOLD_DIGEST_MAX_TOKENS: number = 48;
+
+/** artifact.read 单次回读的字符上限（读出后仍按 TRACE_READ_MAX_TOKENS token 截断；模型用 offset 翻页） */
+export const ARTIFACT_READ_MAX_CHARS: number = 8000;
+
 /** 长 Run 阈值：步数 >15 启用 L4 阶段汇总（§23.3-L4；V2 随 Long Job 交付） */
 export const L4_STAGE_SUMMARY_MIN_STEPS: number = 15;
 

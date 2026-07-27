@@ -52,14 +52,20 @@ import { AsyncEventQueue } from '../chat/AsyncEventQueue';
 import { ChatCompactor, CompactResult, dropCoveredHistory } from '../chat/ChatCompactor';
 import { ChatPromptBuilder, PromptResult } from '../chat/ChatPromptBuilder';
 import { AgentBindingRow, ChatRepository, ConversationRow } from '../chat/ChatRepository';
-import { BudgetLedger, WaterlineStatus } from '../context/ContextGovernor';
-import { ChatBudgetSpec, computeChatBudget, SUBAGENT_REPORT_MAX_TOKENS } from '../context/GovernorDefaults';
+import { ArtifactStorePort, BudgetLedger, ContextGovernor, WaterlineStatus } from '../context/ContextGovernor';
+import {
+  ARTIFACT_HEAD_MAX_TOKENS, ChatBudgetSpec, computeChatBudget,
+  estimateTokens, FOLD_AFTER_STEPS, SUBAGENT_REPORT_MAX_TOKENS, truncateToTokens
+} from '../context/GovernorDefaults';
 import { AGENT_CALL_TOOL_PREFIX, DEFAULT_LOOP_CONFIG } from '../model/AgentDef';
 import { AgentCallTool, SubAgentResult, SubAgentTarget } from '../tools/AgentCallTool';
 import { RunFinishReason } from '../runtime/AgentRun';
 import { adjudicateAfterStep, decideNext, GateDecision, RunBudgetSpec, runStateOf } from '../runtime/RunGate';
 import { RunRecorder } from '../runtime/RunRecorder';
-import { Tool, ToolBus, ToolContext, ToolResult, toOpenAiParameters } from '../tools/ToolBus';
+import { RunArtifactStore } from '../runtime/RunArtifactStore';
+import {
+  Tool, ToolBus, ToolContext, ToolResult, toOpenAiParameters, TOOL_ARTIFACT_READ, TOOL_TRACE_READ
+} from '../tools/ToolBus';
 import { normalizeToolNames } from '../tools/ToolAliases';
 import {
   CHAT_DEFAULT_MAX_OUTPUT_TOKENS,
@@ -327,6 +333,20 @@ async function resolveTools(toolBus: ToolBus | null, binding: AgentBindingRow | 
       allowed.push(new AgentCallTool(targets, runner));
     }
   }
+  // M1 回读工具（§27.2-M1）自动下发：只要本轮有工具循环（allowed 非空），就补上 artifact.read/trace.read——
+  // 循环里 L1 外置/L2 折叠产生的 artifact:<id> 与折叠桩，模型得有工具才能回读，否则"可逆压缩"对模型不可逆
+  // （M1 半残）。已在白名单里声明过的不重复加。Agent 无任何工具（不进循环）则不加，不白占 token。
+  if (allowed.length > 0) {
+    const recoveryNames: string[] = [TOOL_ARTIFACT_READ, TOOL_TRACE_READ];
+    for (const rn of recoveryNames) {
+      if (allowed.find((t: Tool): boolean => t.name === rn) === undefined) {
+        const rt: Tool | undefined = toolBus.get(rn);
+        if (rt !== undefined) {
+          allowed.push(rt);
+        }
+      }
+    }
+  }
   const specs: ToolSpec[] = allowed.map((t: Tool): ToolSpec => {
     const spec: ToolSpec = {
       type: 'function',
@@ -460,6 +480,8 @@ class ChatTurn implements ChatTurnHandle {
   private readonly memory: MemoryService | null;
   /** 工具总线（T1.0-01/02）；null = 未装配 = 无工具循环（Agent 声明了工具也如实不带） */
   private readonly toolBus: ToolBus | null;
+  /** 工具原文外置库（§23.3-L1 / T1.0-04）；null = 未装配 = 大工具结果直接内联（退回外置前的行为） */
+  private readonly artifactStore: ArtifactStorePort | null;
   private readonly controller: AbortController = new AbortController();
   private readonly events: AsyncEventQueue<ChatTurnEvent> = new AsyncEventQueue<ChatTurnEvent>();
   /** 是否被用户中断/被抢占（区分 aborted 与 failed：落库状态与 UI 呈现都不同） */
@@ -485,7 +507,7 @@ class ChatTurn implements ChatTurnHandle {
 
   constructor(runId: string, assistantMessageId: string, convId: string,
               repo: ChatRepository, recorder: RunRecorder | null, memory: MemoryService | null,
-              toolBus: ToolBus | null, continueMode: boolean = false) {
+              toolBus: ToolBus | null, artifactStore: ArtifactStorePort | null, continueMode: boolean = false) {
     this.runId = runId;
     this.assistantMessageId = assistantMessageId;
     this.convId = convId;
@@ -493,7 +515,40 @@ class ChatTurn implements ChatTurnHandle {
     this.recorder = recorder;
     this.memory = memory;
     this.toolBus = toolBus;
+    this.artifactStore = artifactStore;
     this.continueMode = continueMode;
+  }
+
+  /**
+   * L2 观察折叠（§23.3-L2，红线 25）：把工具循环延伸区里距当前 ≥FOLD_AFTER_STEPS 步的**旧工具观察**
+   * 折成指针桩——已外置的留 artifact.read 指针、未外置的给 trace.read 提示；assistant(tool_calls) 与
+   * 近窗内的新观察原样保留。零 LLM、可逆（原文永在 run_artifacts/run_steps），且只改内容不动 toolCallId 配对。
+   */
+  private foldOldObservations(ext: ChatMessage[], stepUsedOf: Map<string, number>,
+                              seqOf: Map<string, number>, artifactOf: Map<string, string>,
+                              currentStep: number): ChatMessage[] {
+    const out: ChatMessage[] = [];
+    for (const m of ext) {
+      const callId: string | undefined = m.toolCallId;
+      if (m.role === 'tool' && callId !== undefined && stepUsedOf.has(callId)
+          && (currentStep - (stepUsedOf.get(callId) as number)) >= FOLD_AFTER_STEPS) {
+        // tool 观察的 content 恒为 string（多模态 ContentPart[] 只出现在 user/assistant）；防御性取字符串
+        const raw: string = typeof m.content === 'string' ? m.content : '';
+        const seq: number = seqOf.has(callId) ? (seqOf.get(callId) as number) : (stepUsedOf.get(callId) as number);
+        // 外置过的观察必有 obsArtifactOf；没有就是没外置——不对原文正文跑 extractArtifactId（工具输出里
+        // 若碰巧含 'artifact:xxx' 会被误当指针，折成打不开的死链、还把摘要丢了）。折 digest + trace.read 分支。
+        const artId: string | null = artifactOf.has(callId) ? (artifactOf.get(callId) as string) : null;
+        const foldedMsg: ChatMessage = {
+          role: 'tool',
+          content: ContextGovernor.renderFoldStub(seq, artId, raw),
+          toolCallId: callId
+        };
+        out.push(foldedMsg);
+      } else {
+        out.push(m);
+      }
+    }
+    return out;
   }
 
   /**
@@ -813,6 +868,13 @@ class ChatTurn implements ChatTurnHandle {
       // 只存在于本回合内存（轨迹进 run_steps）；聊天历史只落最终回答——后续轮次不回放工具往来，
       // 与 OpenAI 多轮实践一致，也避免历史被工具中间态撑大。
       const loopExtension: ChatMessage[] = [];
+      // L2 观察折叠/回读的每观察元数据（键 = toolCallId）：
+      //   obsStepUsedOf → 产生它的生成序号（折叠年龄按"距当前 ≥FOLD_AFTER_STEPS 步"判定，单位是生成步）
+      //   obsSeqOf      → run_steps.seq（折叠桩/回读指针的步号；trace.read 按 seq 命中）
+      //   obsArtifactOf → 外置后的 artifactId（有则折叠桩保留 artifact.read 指针，无则给 trace.read 提示）
+      const obsStepUsedOf: Map<string, number> = new Map<string, number>();
+      const obsSeqOf: Map<string, number> = new Map<string, number>();
+      const obsArtifactOf: Map<string, string> = new Map<string, string>();
       // assistant 行只插一次（多步循环共用同一气泡/同一行）；中途预算停/取消时改走 UPDATE 落定
       let assistantRowInserted: boolean = false;
 
@@ -845,9 +907,23 @@ class ChatTurn implements ChatTurnHandle {
       // ---- ② gather context：装配 + 真算预算（§23.2）+ 水位压缩（T0.9-17） ----
       let assembly: PromptResult = assembleWithSummary(systemPrompt, history, summaryState, effectiveText, provider.kind);
       if (loopExtension.length > 0) {
-        // 工具循环续圈：把 assistant(tool_calls) + tool 结果追加在装配之后（顺序即协议要求）
+        // 工具循环续圈：把 assistant(tool_calls) + tool 结果追加在装配之后（顺序即协议要求）。
+        // L2 观察折叠（§23.3-L2）：距当前 ≥FOLD_AFTER_STEPS 步的旧工具观察折成指针桩，
+        // 原文永在 run_artifacts/run_steps，模型可 artifact.read/trace.read 回读（可逆缓存淘汰，红线 25）。
+        const folded: ChatMessage[] = this.foldOldObservations(loopExtension, obsStepUsedOf, obsSeqOf, obsArtifactOf, stepsUsed);
+        // M3 复诵节（§27.2-M3）：把原始目标重申在装配尾部（注意力黄金位），抗目标漂移/中部迷失。
+        const recap: ChatMessage = {
+          role: 'user',
+          // 目标用**原始用户消息 text**，不用 effectiveText——后者在 RAG/记忆注入时是易变尾部
+          // （<memory>…<knowledge>…<用户问题在最后>），截到 goalBudget 会只剩检索片段、把真问题截没，
+          // 反而把 M3 复诵变成"复诵检索块"（§27.2-M3 要求原文引用的是用户目标）。完整 RAG 仍在装配体里。
+          content: ContextGovernor.renderRecitation(
+            text, '',
+            '综合上面的工具结果继续；还需要更多信息就调用工具，信息够了就直接给出最终答复，不要重复调用同一个工具。',
+            loopBudget.maxSteps - stepsUsed)
+        };
         const extended: PromptResult = {
-          messages: assembly.messages.concat(loopExtension),
+          messages: assembly.messages.concat(folded).concat([recap]),
           blockedByFence: assembly.blockedByFence
         };
         assembly = extended;
@@ -1125,10 +1201,29 @@ class ChatTurn implements ChatTurnHandle {
               Logger.error(TAG, 'record tool step failed', [{ key: 'err', value: (e as Error).message }]);
             }
           }
-          // 失败也回填（模型自我纠正/如实转告用户），不中断 Run（§5.2）
+          // 失败也回填（模型自我纠正/如实转告用户），不中断 Run（§5.2）。
+          // L1 工具结果外置（§23.3-L1）：成功且超摘要头预算的大结果落 run_artifacts，上下文只留
+          // 「摘要头 + artifact:<id>」，模型可 artifact.read 回读全文——多数"上下文爆炸"其实是工具原文爆炸。
+          // 需 runBegun（run_artifacts.run_id 外键指向 agent_runs）；外置失败则原文内联，诚实不丢信息。
+          let observationContent: string = result.content;
+          if (runBegun && this.artifactStore !== null && result.ok
+              && estimateTokens(result.content) > ARTIFACT_HEAD_MAX_TOKENS) {
+            try {
+              const artifactId: string =
+                await this.artifactStore.put(this.runId, stepSeq, 'text/plain', result.content);
+              const head: string = truncateToTokens(result.content, ARTIFACT_HEAD_MAX_TOKENS);
+              observationContent = ContextGovernor.renderArtifactStub(stepSeq, toolName, head, artifactId);
+              obsArtifactOf.set(call.id, artifactId);
+            } catch (e) {
+              Logger.warn(TAG, 'externalize tool result failed', [{ key: 'err', value: (e as Error).message }]);
+            }
+          }
+          // L2 折叠年龄按生成步（stepsUsed）判定；折叠桩/回读指针按 run_steps.seq（stepSeq）
+          obsStepUsedOf.set(call.id, stepsUsed);
+          obsSeqOf.set(call.id, stepSeq);
           const toolMsg: ChatMessage = {
             role: 'tool',
-            content: result.content,
+            content: observationContent,
             toolCallId: call.id
           };
           loopExtension.push(toolMsg);
@@ -1445,12 +1540,15 @@ export class ChatService {
   private memory: MemoryService | null = null;
   /** 工具总线（T1.0-01/02 工具循环）；null = 未装配——工具整体缺席，聊天照常 */
   private toolBus: ToolBus | null = null;
+  /** 工具原文外置库（§23.3-L1 / T1.0-04）；init 时随 RDB 建好，与 recorder 同源同库 */
+  private artifactStore: ArtifactStorePort | null = null;
 
   /** entry 启动时装配一次：注入**已打开**的 RDB（开库与迁移是 core-data 的事，本层不碰） */
   async init(rdb: AppRdbStore): Promise<void> {
     const repo: ChatRepository = new ChatRepository(rdb);
     this.repo = repo;
     this.recorder = new RunRecorder(rdb);
+    this.artifactStore = new RunArtifactStore(rdb);
     // 启动对账：把上个进程被杀时遗留的 streaming 消息 / running 运行收敛为终态
     // （交互式确认的无界挂起把这类残留从边角变成高概率，见 reconcileStale 注释）。
     // 对账失败不挡启动——最坏是残留一条转圈气泡，比整个聊天不可用轻。
@@ -1616,7 +1714,8 @@ export class ChatService {
     // Provider 裁决在 run() 内完成（显式 > Agent 绑定 > 默认，见 resolveTurnProvider）：
     // Agent 绑定要先读会话行，是异步的——send 只负责同步造句柄，解析失败也走完整的
     // "user 落库 + error 事件"流程。若在这里抛，UI 拿不到句柄，用户输入就没人负责落库了。
-    const turn: ChatTurn = new ChatTurn(runId, assistantMessageId, convId, repo, this.recorder, this.memory, this.toolBus);
+    const turn: ChatTurn = new ChatTurn(
+      runId, assistantMessageId, convId, repo, this.recorder, this.memory, this.toolBus, this.artifactStore);
     this.turns.set(runId, turn);
 
     // 不 await：send 必须同步返回句柄。run() 内部吞掉所有异常并转成 error 事件，故无未处理的 rejection。
@@ -1636,7 +1735,7 @@ export class ChatService {
     const repo: ChatRepository = this.requireRepo();
     const runId: string = util.generateRandomUUID(true);
     const turn: ChatTurn = new ChatTurn(
-      runId, assistantMessageId, convId, repo, this.recorder, this.memory, this.toolBus, true);
+      runId, assistantMessageId, convId, repo, this.recorder, this.memory, this.toolBus, this.artifactStore, true);
     this.turns.set(runId, turn);
     turn.run(CONTINUE_CUE, providerId, (finishedRunId: string): void => {
       this.turns.delete(finishedRunId);

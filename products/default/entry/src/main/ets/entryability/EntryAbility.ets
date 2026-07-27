@@ -27,7 +27,7 @@ import {
 import { KnowledgeService } from 'core-rag';
 import { ModelFacade } from 'models';
 import { InferenceProvider, LocalProvider, ProviderRegistry } from 'core-llm';
-import { AgentService, ChatService, CalcTool, DatetimeTool, HttpFetchTool, KbSearchTool, TOOL_HTTP_FETCH, ToolBus, toolGrantKey } from 'core-agent';
+import { AgentService, ChatService, CalcTool, DatetimeTool, HttpFetchTool, KbSearchTool, TOOL_HTTP_FETCH, ToolBus, toolGrantKey, ArtifactReadTool, TraceReadTool, RunArtifactStore, RunTraceReader } from 'core-agent';
 import { MemoryService, pickLocalMemoryProvider } from 'core-memory';
 import { BreakpointSystem } from '../common/BreakpointSystem';
 
@@ -119,6 +119,10 @@ export default class EntryAbility extends UIAbility {
         (agentId: string): Promise<string[]> => this.readHttpFetchGrants(kv, agentId),
         (agentId: string, domain: string): Promise<void> => this.addHttpFetchGrant(kv, agentId, domain)
       ));
+      // 可逆压缩的两个回读工具（§27.2-M1 / T1.0-04）：artifact.read 回读外置的工具原文（run_artifacts），
+      // trace.read 回读自身更早步骤轨迹（run_steps）——都读同一 RDB，作用域由工具按 ctx.runId 锁本轮。
+      toolBus.register(new ArtifactReadTool(new RunArtifactStore(rdb)));
+      toolBus.register(new TraceReadTool(new RunTraceReader(rdb)));
       ChatService.get().attachTools(toolBus);
       // 技能编辑器的工具声明选择器读同一实例（T1.0-10③）——两处清单必须同源
       AgentService.get().attachTools(toolBus);
