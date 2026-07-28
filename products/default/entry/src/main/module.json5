@@ -51,8 +51,20 @@
     ],
     // 权限最小化（设计文档 §9.3）：V0.9 仅申请 INTERNET（远程 Provider / 模型下载）。
     // 文件读取一律走 filePicker 授权制，不申请全盘读权限。
-    // 麦克风（ohos.permission.MICROPHONE）等语音相关权限属于 V1.5 语音子系统（§17/§18），届时再加，此处刻意不申请。
+    // 麦克风（ohos.permission.MICROPHONE）随 V1.5 语音子系统（§17/§18）申请：用于「按住说话」语音输入与电话模式。
     "requestPermissions": [
+      {
+        // 语音输入 / 电话模式的麦克风采集（AudioCapturer，SOURCE_TYPE_VOICE_RECOGNITION）。
+        // 用户态权限，首次使用时动态申请；拒绝则语音输入置灰、其余功能不受影响。
+        "name": "ohos.permission.MICROPHONE",
+        "reason": "$string:permission_microphone_reason",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
+      },
       {
         // 判断当前是 Wi-Fi 还是蜂窝网，用于「仅 Wi-Fi 使用远程大模型」策略（§3.3 / T0.9-27 设置项）。
         // 只读网络类型，不读 SSID、不读位置——权限最小化（红线 18）。

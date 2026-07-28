@@ -168,6 +168,18 @@
       ]
     },
     {
+      "name": "core_speech",
+      "srcPath": "./common/core-speech",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    },
+    {
       "name": "core_data",
       "srcPath": "./common/core-data",
       "targets": [

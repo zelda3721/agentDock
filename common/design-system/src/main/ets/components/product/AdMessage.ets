@@ -151,6 +151,13 @@ export struct AdMessage {
    */
   onToolConfirm: (callId: string, decision: string) => void = () => {
   };
+  /** 本机 TTS 是否可用（决定是否显示「朗读」，T1.5 语音）。 */
+  @Prop canReadAloud: boolean = false;
+  /** 本条是否正在朗读（切「朗读 ↔ 停止」）。 */
+  @Prop reading: boolean = false;
+  /** 「朗读/停止」触发（由上层经 SpeechService 驱动 TTS）。 */
+  onReadAloud: () => void = () => {
+  };
 
   /** 附加槽：AdToolCard / 多模态附件等 */
   @BuilderParam extra: () => void = this.emptySlot;
@@ -400,6 +407,27 @@ export struct AdMessage {
 
         // 附加槽（工具卡片 / 附件）
         this.extra()
+
+        // 朗读（T1.5 语音）：助手消息、非流式、有正文、且本机 TTS 可用时给一颗小按钮。
+        // 与溯源条同栏左基线；正在读则切「停止」。语音是屏幕的补充通道，不抢主视线。
+        if (this.role === AdMessageRole.ASSISTANT && this.canReadAloud
+          && this.status !== AdMessageStatus.STREAMING && this.text.length > 0) {
+          Row({ space: AdSpace.s1 }) {
+            AdGlyph({
+              kind: this.reading ? AdGlyphKind.STOP_SQUARE : AdGlyphKind.SOUND,
+              glyphSize: 14,
+              color: this.reading ? AdColor.brandFg : AdColor.inkTertiary
+            })
+            Text(this.reading ? '停止' : '朗读').msgNotice(this.reading ? AdColor.brandFg : AdColor.inkSecondary)
+          }
+          .alignItems(VerticalAlign.Center)
+          .padding({ top: AdSpace.s1, bottom: AdSpace.s1, right: AdSpace.s2 })
+          .accessibilityGroup(true)
+          .accessibilityText(this.reading ? '停止朗读' : '朗读这条回答')
+          .onClick(() => {
+            this.onReadAloud();
+          })
+        }
 
       // 溯源条：与正文列**左对齐同一基线**（[R-72]）——它是正文的仪表脚注。
       // 流式中**不渲染**：溯源在落定时才成立，提前画一条 0.00s/0.0 tok/s 的零值仪表是假数字

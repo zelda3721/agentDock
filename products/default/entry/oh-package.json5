@@ -29,6 +29,9 @@
     "core-llm": "file:../../../common/core-llm",
     "core-agent": "file:../../../common/core-agent",
     "core-rag": "file:../../../common/core-rag",
-    "core-memory": "file:../../../common/core-memory"
+    "core-memory": "file:../../../common/core-memory",
+    // 语音子系统（T1.5-01，V1.5）：entry 无需直连——SpeechService 由 features/chat 依赖调用；
+    // 此处仅为让 core-speech 参与工程装配（模块在册）与将来 entry 级初始化预留。
+    "core-speech": "file:../../../common/core-speech"
   }
 }

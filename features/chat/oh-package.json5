@@ -12,6 +12,7 @@
     "core-llm": "file:../../common/core-llm",
     "core-agent": "file:../../common/core-agent",
     "core-data": "file:../../common/core-data",
-    "core-infra": "file:../../common/core-infra"
+    "core-infra": "file:../../common/core-infra",
+    "core-speech": "file:../../common/core-speech"
   }
 }

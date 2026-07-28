@@ -58,6 +58,13 @@ export struct MessageStream {
   /** 工具确认决策（§9.4）：NEEDS_CONFIRM 卡片上选择后透传给控制器 */
   onToolConfirm: (callId: string, decision: string) => void = () => {
   };
+  /** 本机 TTS 是否可用（T1.5 语音）：决定是否给助手消息显示「朗读」。 */
+  @Prop ttsAvailable: boolean = false;
+  /** 正在朗读的消息 id（''=无）：本条命中则按钮切「停止」。 */
+  @Prop readingId: string = '';
+  /** 「朗读/停止」触发：把消息 id 与正文交给上层驱动 TTS。 */
+  onReadAloud: (messageId: string, text: string) => void = () => {
+  };
   /** 混合现代：AI 消息头像 + 智能体名（本会话绑定的智能体；全条同源） */
   @Prop agentName: string = '';
   @Prop agentAvatar: string = '';
@@ -148,6 +155,11 @@ export struct MessageStream {
                   },
                   onToolConfirm: (callId: string, decision: string) => {
                     this.onToolConfirm(callId, decision);
+                  },
+                  canReadAloud: this.ttsAvailable,
+                  reading: item.id === this.readingId && this.readingId.length > 0,
+                  onReadAloud: () => {
+                    this.onReadAloud(item.id, item.text);
                   }
                 })
               }
@@ -160,8 +172,9 @@ export struct MessageStream {
             // 工具签名进 key：卡片增删或落定（running→done）时 key 变，LazyForEach 只重建这一条
             // 末条标记进 key：追加新消息后，原截断气泡不再是末条 → key 变 → 重建 → 「继续」按钮据 canContinue 消失
             // 思考长度进 key：思考流式期间正文仍空、text.length 不变，靠 thinkingText.length 触发重建
+            // 朗读态进 key：readingId 变化时，涉及的那条 key 变 → LazyForEach 只重建它 → 「朗读↔停止」按钮更新
           }, (item: ChatMessageVM, index: number) =>
-            `${item.id}-${item.status}-${item.text.length}-${item.thinkingText.length}-${item.toolSig()}-${this.source.lastIndex() === index ? 'end' : 'mid'}`)
+            `${item.id}-${item.status}-${item.text.length}-${item.thinkingText.length}-${item.toolSig()}-${this.source.lastIndex() === index ? 'end' : 'mid'}-${item.id === this.readingId ? 'read' : ''}`)
         }
         .layoutWeight(1)
         .width('100%')

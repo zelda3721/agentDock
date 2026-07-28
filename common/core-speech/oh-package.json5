@@ -1,0 +1,13 @@
+// Copyright (c) 2026 AgentDock Contributors
+// SPDX-License-Identifier: Apache-2.0
+{
+  "name": "core-speech",
+  "version": "1.0.0",
+  "description": "语音子系统：ASR/TTS 引擎抽象 + 能力检测 + 分层降级（系统 Core Speech Kit → 远程 /audio → 离线 sherpa-onnx）",
+  "main": "Index.ets",
+  "author": "AgentDock",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "core-infra": "file:../core-infra"
+  }
+}

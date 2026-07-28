@@ -48,7 +48,13 @@ export enum AdGlyphKind {
   /** ⚙：工具调用 */
   GEAR,
   /** ↑：发送（圆形发送键的箭头，T1.0-UI 混合现代方向） */
-  ARROW_UP
+  ARROW_UP,
+  /** 麦克风：按住说话语音输入（T1.5 语音） */
+  MIC,
+  /** 扬声器 + 声波：朗读（T1.5 语音） */
+  SOUND,
+  /** 实心方块：停止朗读（T1.5 语音） */
+  STOP_SQUARE
 }
 
 @Component
@@ -214,6 +220,55 @@ export struct AdGlyph {
           .strokeLineCap(LineCapStyle.Round)
           .strokeLineJoin(LineJoinStyle.Round)
           .antiAlias(true)
+      } else if (this.kind === AdGlyphKind.MIC) {
+        // 麦克风：胶囊话筒 + U 形支架 + 底座，两条描边子路径
+        Path()
+          .width(this.glyphSize)
+          .height(this.glyphSize)
+          .commands(this.micCapsuleCommands())
+          .fill(Color.Transparent)
+          .stroke(this.color)
+          .strokeWidth(this.strokeWidth)
+          .strokeLineJoin(LineJoinStyle.Round)
+          .antiAlias(true)
+        Path()
+          .width(this.glyphSize)
+          .height(this.glyphSize)
+          .commands(this.micStandCommands())
+          .fill(Color.Transparent)
+          .stroke(this.color)
+          .strokeWidth(this.strokeWidth)
+          .strokeLineCap(LineCapStyle.Round)
+          .strokeLineJoin(LineJoinStyle.Round)
+          .antiAlias(true)
+      } else if (this.kind === AdGlyphKind.SOUND) {
+        // 扬声器 + 声波弧
+        Path()
+          .width(this.glyphSize)
+          .height(this.glyphSize)
+          .commands(this.soundSpeakerCommands())
+          .fill(this.color)
+          .stroke(this.color)
+          .strokeWidth(this.strokeWidth)
+          .strokeLineJoin(LineJoinStyle.Round)
+          .antiAlias(true)
+        Path()
+          .width(this.glyphSize)
+          .height(this.glyphSize)
+          .commands(this.soundWaveCommands())
+          .fill(Color.Transparent)
+          .stroke(this.color)
+          .strokeWidth(this.strokeWidth)
+          .strokeLineCap(LineCapStyle.Round)
+          .antiAlias(true)
+      } else if (this.kind === AdGlyphKind.STOP_SQUARE) {
+        Path()
+          .width(this.glyphSize)
+          .height(this.glyphSize)
+          .commands(this.stopSquareCommands())
+          .fill(this.color)
+          .stroke(Color.Transparent)
+          .antiAlias(true)
       } else {
         // GEAR：工具调用。八齿轮廓的简化实心环 + 中心镂空
         Path()
@@ -328,5 +383,41 @@ export struct AdGlyph {
     const k: number = r * 0.4142; // tan(22.5°) * r，构造正八边形
     return `M${o - k} ${o - r} L${o + k} ${o - r} L${o + r} ${o - k} L${o + r} ${o + k} ` +
       `L${o + k} ${o + r} L${o - k} ${o + r} L${o - r} ${o + k} L${o - r} ${o - k} Z`;
+  }
+
+  /** 麦克风话筒：竖向胶囊（四角用二次曲线收圆，避免弧线 sweep 歧义） */
+  private micCapsuleCommands(): string {
+    const s: number = this.glyphSize;
+    return `M${s * 0.35} ${s * 0.24} Q${s * 0.35} ${s * 0.14} ${s * 0.5} ${s * 0.14} ` +
+      `Q${s * 0.65} ${s * 0.14} ${s * 0.65} ${s * 0.24} L${s * 0.65} ${s * 0.42} ` +
+      `Q${s * 0.65} ${s * 0.52} ${s * 0.5} ${s * 0.52} Q${s * 0.35} ${s * 0.52} ${s * 0.35} ${s * 0.42} Z`;
+  }
+
+  /** 麦克风支架：U 形托 + 竖杆 + 底座横线 */
+  private micStandCommands(): string {
+    const s: number = this.glyphSize;
+    return `M${s * 0.24} ${s * 0.42} Q${s * 0.5} ${s * 0.74} ${s * 0.76} ${s * 0.42} ` +
+      `M${s * 0.5} ${s * 0.62} L${s * 0.5} ${s * 0.82} ` +
+      `M${s * 0.38} ${s * 0.82} L${s * 0.62} ${s * 0.82}`;
+  }
+
+  /** 扬声器：小方箱 + 外扩喇叭（实心） */
+  private soundSpeakerCommands(): string {
+    const s: number = this.glyphSize;
+    return `M${s * 0.12} ${s * 0.40} L${s * 0.26} ${s * 0.40} L${s * 0.42} ${s * 0.24} ` +
+      `L${s * 0.42} ${s * 0.76} L${s * 0.26} ${s * 0.60} L${s * 0.12} ${s * 0.60} Z`;
+  }
+
+  /** 声波：两段右向弧 */
+  private soundWaveCommands(): string {
+    const s: number = this.glyphSize;
+    return `M${s * 0.56} ${s * 0.36} Q${s * 0.70} ${s * 0.5} ${s * 0.56} ${s * 0.64} ` +
+      `M${s * 0.66} ${s * 0.26} Q${s * 0.88} ${s * 0.5} ${s * 0.66} ${s * 0.74}`;
+  }
+
+  /** 停止：居中实心圆角方块 */
+  private stopSquareCommands(): string {
+    const s: number = this.glyphSize;
+    return `M${s * 0.30} ${s * 0.30} L${s * 0.70} ${s * 0.30} L${s * 0.70} ${s * 0.70} L${s * 0.30} ${s * 0.70} Z`;
   }
 }

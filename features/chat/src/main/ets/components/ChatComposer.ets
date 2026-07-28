@@ -18,7 +18,9 @@ import {
   AdType,
   AD_BREAKPOINT_KEY
 } from 'design-system';
+import { common } from '@kit.AbilityKit';
 import { CtxUsageVM } from '../model/ChatViewModel';
+import { VoiceInputController } from '../model/VoiceInputController';
 
 /**
  * 输入区（UI 设计规范 §4.2）。
@@ -87,6 +89,46 @@ export struct ChatComposer {
   @StorageProp(AD_BREAKPOINT_KEY) bp: AdBreakpoint = AdBreakpoint.SM;
   @State private draft: string = '';
 
+  // ---- 语音输入（T1.5-01「按住说话」）---------------------------------------
+  /** 本机是否有可用语音识别档（能力检测后置真才显示麦克风）。 */
+  @State private voiceAvailable: boolean = false;
+  /** 是否录音中（聆听态）。 */
+  @State private recording: boolean = false;
+  private readonly voiceCtrl: VoiceInputController = new VoiceInputController();
+  /** 按下录音时的草稿基线：识别文本追加在其后（不覆盖已有输入）。 */
+  private voiceBase: string = '';
+
+  aboutToAppear(): void {
+    this.voiceCtrl.onText = (text: string): void => {
+      this.draft = this.voiceBase + text;
+    };
+    this.voiceCtrl.onRecordingChange = (recording: boolean): void => {
+      this.recording = recording;
+    };
+    this.voiceCtrl.onNotice = (message: string): void => {
+      this.getUIContext().getPromptAction().showToast({ message, duration: 2600 });
+    };
+    this.probeVoice();
+  }
+
+  private async probeVoice(): Promise<void> {
+    this.voiceAvailable = await this.voiceCtrl.available();
+  }
+
+  private startVoice(): void {
+    if (this.recording) {
+      return;
+    }
+    // 追加到现有草稿之后（有内容则先空一格）
+    this.voiceBase = this.draft.length > 0 ? `${this.draft} ` : '';
+    const context: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    this.voiceCtrl.pressStart(context);
+  }
+
+  private stopVoice(): void {
+    this.voiceCtrl.releaseStop();
+  }
+
   build() {
     Column({ space: AdSpace.s2 }) {
       if (this.hasModel) {
@@ -113,6 +155,20 @@ export struct ChatComposer {
         }
       } else {
         this.noModelInvitation()
+      }
+
+      if (this.recording) {
+        // 录音态必须显式可见（与「正在使用工具」同一纪律）：不静默录音
+        Row({ space: AdSpace.s1 }) {
+          AdGlyph({ kind: AdGlyphKind.DOT_FILLED, glyphSize: 8, color: AdColor.dangerFg })
+          Text('聆听中…松开发送')
+            .fontSize(AdType.bodyS.size)
+            .lineHeight(AdType.bodyS.lineHeight)
+            .fontFamily(AdType.bodyS.family)
+            .fontColor(AdColor.inkSecondary)
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Center)
       }
 
       Row({ space: AdSpace.s2 }) {
@@ -176,6 +232,12 @@ export struct ChatComposer {
         // 只挂 layoutWeight，**不要再挂 width('100%')**：在 Row 里两者是同一根主轴上的两条
         // 互相打架的指令（百分比宽以父容器整宽为基准，会把发送按钮挤出去）。
         .layoutWeight(1)
+
+        // 麦克风（按住说话）：仅在有可用识别档、可输入、且非流式时显示。
+        // 用 onTouch 做「按住/松手」——不是点击：按下起识别，松手出定稿并回填输入框。
+        if (this.voiceAvailable && this.composerEnabled && !this.streaming) {
+          this.micButton()
+        }
 
         if (this.streaming) {
           // 停止（§5.2 动词表：停止 → 已停止）
@@ -245,6 +307,34 @@ export struct ChatComposer {
     .alignItems(VerticalAlign.Center)
     .accessibilityGroup(true)
     .accessibilityText('还没有可用的模型，去模型页下载一个。当前无法发送消息。')
+  }
+
+  /**
+   * 按住说话按钮。onTouch（非 onClick）：Down 起识别，Up/Cancel 松手出定稿。
+   * 录音态：品牌底 + 话筒亮色；空闲态：抬升面 + 描边 + 次级墨色话筒。
+   */
+  @Builder
+  micButton() {
+    Stack() {
+      AdGlyph({
+        kind: AdGlyphKind.MIC,
+        glyphSize: 20,
+        color: this.recording ? AdColor.brandOn : AdColor.inkSecondary
+      })
+    }
+    .width(40)
+    .height(40)
+    .borderRadius(20)
+    .backgroundColor(this.recording ? AdColor.brandBg : AdColor.surfaceRaised)
+    .border({ width: this.recording ? 0 : 1, color: AdColor.border })
+    .accessibilityText(this.recording ? '正在录音，松开结束并填入输入框' : '按住说话，语音转文字')
+    .onTouch((event: TouchEvent) => {
+      if (event.type === TouchType.Down) {
+        this.startVoice();
+      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        this.stopVoice();
+      }
+    })
   }
 
   private submit(): void {

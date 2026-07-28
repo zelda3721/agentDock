@@ -19,6 +19,7 @@ import {
   AdType
 } from 'design-system';
 import { ChatController, ChatHost } from '../model/ChatController';
+import { ReadAloudController } from '../model/ReadAloudController';
 import { BrainMenuVM, BrainVM, BreakpointKey, ChatMessageVM, ConversationVM, CtxUsageVM, LoadState } from '../model/ChatViewModel';
 import { ChatComposer } from './ChatComposer';
 import { ConversationListPane } from './ConversationListPane';
@@ -115,6 +116,13 @@ export struct ChatPage {
   /** 检视 Sheet 是否打开（bindSheet 双向绑定；下拉/点关闭由系统回写 false） */
   @State private inspectorOpen: boolean = false;
 
+  // ---- 朗读（T1.5-01 语音 P0）------------------------------------------------
+  /** 本机 TTS 是否可用（决定助手消息是否显示「朗读」）。 */
+  @State private ttsAvailable: boolean = false;
+  /** 正在朗读的消息 id（''=无）。 */
+  @State private readingId: string = '';
+  private readonly readAloud: ReadAloudController = new ReadAloudController();
+
   /** sm 的两页栈（列表 ↔ 聊天） */
   private navStack: NavPathStack = new NavPathStack();
   private scroller: Scroller = new Scroller();
@@ -184,6 +192,19 @@ export struct ChatPage {
     this.controller = new ChatController(host);
     this.listState = 'loading';
     this.controller.loadConversations(50);
+
+    // 朗读（T1.5 语音）：能力检测 + 朗读态回写。
+    this.readAloud.onReadingChange = (messageId: string): void => {
+      this.readingId = messageId;
+    };
+    this.readAloud.onNotice = (message: string): void => {
+      this.getUIContext().getPromptAction().showToast({ message, duration: 2600 });
+    };
+    this.probeTts();
+  }
+
+  private async probeTts(): Promise<void> {
+    this.ttsAvailable = await this.readAloud.available();
   }
 
   aboutToDisappear(): void {
@@ -193,6 +214,8 @@ export struct ChatPage {
       // 同上：还原失败也不能影响 dispose（真正要紧的是把流式句柄与定时器停掉）
     }
     this.controller.dispose();
+    // 离开聊天页即停朗读（语音不该跟着页面走）
+    this.readAloud.dispose();
   }
 
   /**
@@ -406,6 +429,11 @@ export struct ChatPage {
         },
         onToolConfirm: (callId: string, decision: string): void => {
           this.controller.confirmTool(callId, decision);
+        },
+        ttsAvailable: this.ttsAvailable,
+        readingId: this.readingId,
+        onReadAloud: (messageId: string, text: string): void => {
+          this.readAloud.toggle(messageId, text);
         },
         onCreateConversation: (): void => {
           this.createConversation();
