@@ -490,29 +490,63 @@ export struct AgentEditor {
         Text('端上工具尚未装配完成，暂无可选项。').editorNote(AdColor.inkSecondary).width('100%')
       }
       ForEach(this.toolOptions, (opt: ToolPickOption) => {
-        AdListItem({
-          title: opt.toolId,
-          subtitle: this.permLabel(opt.permission).length > 0
-            ? `${opt.description} · ${this.permLabel(opt.permission)}`
-            : opt.description,
-          selected: this.draft.tools.includes(opt.toolId),
-          a11yText: `工具 ${opt.toolId}，${opt.description}，` +
-            (this.draft.tools.includes(opt.toolId) ? '已授予。双击撤销。' : '未授予。双击授予。'),
-          onAction: () => {
-            const idx: number = this.draft.tools.indexOf(opt.toolId);
-            const next: string[] = this.draft.tools.slice();
-            if (idx >= 0) {
-              next.splice(idx, 1);
-            } else {
-              next.push(opt.toolId);
+        Column({ space: AdSpace.s1 }) {
+          AdListItem({
+            title: opt.toolId,
+            subtitle: this.permLabel(opt.permission).length > 0
+              ? `${opt.description} · ${this.permLabel(opt.permission)}`
+              : opt.description,
+            selected: this.draft.tools.includes(opt.toolId),
+            a11yText: `工具 ${opt.toolId}，${opt.description}，` +
+              (this.draft.tools.includes(opt.toolId) ? '已授予。双击撤销。' : '未授予。双击授予。'),
+            onAction: () => {
+              const idx: number = this.draft.tools.indexOf(opt.toolId);
+              const next: string[] = this.draft.tools.slice();
+              if (idx >= 0) {
+                next.splice(idx, 1);
+                this.setToolPerm(opt.toolId, false);   // 撤销授予时一并清掉其权限覆盖
+              } else {
+                next.push(opt.toolId);
+              }
+              this.draft.tools = next;
             }
-            this.draft.tools = next;
+          })
+          // 已授予的工具可提级为「每次询问」（§9.4 always_ask：每次调用都确认、不记忆授权）
+          if (this.draft.tools.includes(opt.toolId)) {
+            Row() {
+              AdSwitch({
+                label: '每次调用都询问',
+                helper: '开启后，这个智能体每次要用该工具都会先弹卡让你确认（不记住授权）。',
+                checked: this.draft.toolPermissions[opt.toolId] === 'always_ask',
+                onToggle: (checked: boolean) => {
+                  this.setToolPerm(opt.toolId, checked);
+                }
+              })
+            }
+            .width('100%')
+            .padding({ left: AdSpace.s4 })
           }
-        })
-      }, (opt: ToolPickOption) => `${opt.toolId}|${this.draft.tools.includes(opt.toolId)}`)
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+      }, (opt: ToolPickOption) => `${opt.toolId}|${this.draft.tools.includes(opt.toolId)}|${this.draft.toolPermissions[opt.toolId] ?? ''}`)
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
+  }
+
+  /** 设/清某工具的「每次询问」覆盖（不可变重建 map，触发 @State draft 重渲染；ArkTS 无 delete，重建排除键） */
+  private setToolPerm(toolId: string, alwaysAsk: boolean): void {
+    const next: Record<string, string> = {};
+    for (const k of Object.keys(this.draft.toolPermissions)) {
+      if (k !== toolId) {
+        next[k] = this.draft.toolPermissions[k];
+      }
+    }
+    if (alwaysAsk) {
+      next[toolId] = 'always_ask';
+    }
+    this.draft.toolPermissions = next;
   }
 
   /** 工具权限的中文徽标（none 无标；confirm/always_ask 如实告知授权成本） */

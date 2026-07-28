@@ -191,8 +191,12 @@ export class AdToolCall {
   tokensOut: number = 0;
   /** 权限确认态：请求访问的域名（远程域名**必须**显示出端提醒） */
   requestedDomain: string = '';
+  /** 权限确认态（T1.0-02 always_ask）：请求执行的工具名（非域名类的「每次询问」提级） */
+  requestedTool: string = '';
   /** 该域名是否出端（决定是否显示琥珀 + 空心云弧的出端提醒） */
   requestLeavesDevice: boolean = false;
+  /** 是否提供「始终允许」：confirm 类记忆授权提供；always_ask「每次询问」不提供，只「允许一次」 */
+  allowRemember: boolean = true;
   /** 失败原因，如「请求超时。Agent 已收到错误并继续推理。」 */
   errorText: string = '';
 

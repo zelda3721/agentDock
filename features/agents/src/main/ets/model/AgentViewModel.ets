@@ -77,6 +77,8 @@ export interface AgentDraftV09 {
   skills: string[];
   /** 工具白名单（§5.1 tools；T1.0-10 编辑器可选）。 */
   tools: string[];
+  /** 按工具权限覆盖（§9.4 / T1.0-02）：toolId → 'always_ask'（提级为「每次询问」）。未列出 = 用工具声明权限。 */
+  toolPermissions: Record<string, string>;
   /** 循环预算：最大步数（§5.2；出厂 8）。 */
   maxSteps: number;
   /** 循环预算：墙钟超时毫秒（§5.2；出厂 120000）。 */
@@ -182,6 +184,7 @@ export class AgentFacade {
       libIds: def.knowledge !== undefined ? def.knowledge.libIds : [],
       skills: def.skills ?? [],
       tools: def.tools,
+      toolPermissions: def.toolPermissions ?? {} as Record<string, string>,
       maxSteps: def.loop.maxSteps,
       timeoutMs: def.loop.timeoutMs,
       memoryRead: policy.read,
@@ -195,7 +198,7 @@ export class AgentFacade {
   public blankDraft(): AgentDraftV09 {
     const draft: AgentDraftV09 = {
       id: '', avatar: DEFAULT_AGENT_AVATAR, name: '', systemPrompt: '', providerId: '',
-      libIds: [], skills: [], tools: [],
+      libIds: [], skills: [], tools: [], toolPermissions: {} as Record<string, string>,
       maxSteps: DEFAULT_LOOP_CONFIG.maxSteps, timeoutMs: DEFAULT_LOOP_CONFIG.timeoutMs,
       memoryRead: DEFAULT_MEMORY_POLICY.read, memoryWrite: DEFAULT_MEMORY_POLICY.write, memoryScopes: []
     };
@@ -238,6 +241,7 @@ export class AgentFacade {
       model: model,
       knowledge: knowledge,
       tools: draft.tools,
+      toolPermissions: draft.toolPermissions,
       skills: draft.skills,
       memoryPolicy: memoryPolicy,
       loop: loop,

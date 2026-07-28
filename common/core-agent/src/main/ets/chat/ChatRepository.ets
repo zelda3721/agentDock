@@ -84,6 +84,8 @@ export interface AgentBindingRow {
   loop: AgentLoopConfig;
   /** 记忆读写策略（§6.1；T1.0-10 编辑器可调，run() 据此门控召回/捕获与 scope） */
   memoryPolicy: AgentMemoryPolicy;
+  /** 按工具权限覆盖（§9.4 / T1.0-02）：toolId → 'confirm'|'always_ask'；未列出用工具声明权限 */
+  toolPermissions: Record<string, string>;
 }
 
 /** loadSkillBlocks 的返回：注入块 + 工具声明并集（原文名，归一在 resolveTools） */
@@ -594,7 +596,7 @@ export class ChatRepository {
   async agentBinding(agentId: string): Promise<AgentBindingRow | null> {
     let skillIds: string[] = [];
     const row: AgentBindingRow | null = await this.rdb.queryOne<AgentBindingRow>(
-      `SELECT name, system_prompt, model, knowledge, tools, skills, loop, memory_policy
+      `SELECT name, system_prompt, model, knowledge, tools, tool_perms, skills, loop, memory_policy
          FROM agent_defs WHERE id = ? AND enabled = 1;`,
       [agentId] as Array<SqlArg>,
       (rs: relationalStore.ResultSet): AgentBindingRow => {
@@ -684,6 +686,21 @@ export class ChatRepository {
           // memory_policy 列损坏 → 出厂策略
         }
         const memoryPolicy: AgentMemoryPolicy = { read: memRead, write: memWrite, scopes: scopes };
+        // tool_perms（§9.4 / T1.0-02；损坏 → 空覆盖，回落到工具声明权限）：只收 confirm/always_ask
+        const toolPermissions: Record<string, string> = {};
+        try {
+          const raw: Record<string, Object> = JSON.parse(rs.getString(rs.getColumnIndex('tool_perms'))) as Record<string, Object>;
+          if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+            for (const k of Object.keys(raw)) {
+              const v: Object = raw[k];
+              if (v === 'confirm' || v === 'always_ask') {
+                toolPermissions[k] = v as string;
+              }
+            }
+          }
+        } catch (e) {
+          // tool_perms 列损坏 → 无覆盖
+        }
         const bindingRow: AgentBindingRow = {
           name: rs.getString(rs.getColumnIndex('name')),
           systemPrompt: rs.getString(rs.getColumnIndex('system_prompt')),
@@ -695,7 +712,8 @@ export class ChatRepository {
           skillBlocks: [],
           skillTools: [],
           loop: loop,
-          memoryPolicy: memoryPolicy
+          memoryPolicy: memoryPolicy,
+          toolPermissions: toolPermissions
         };
         return bindingRow;
       }

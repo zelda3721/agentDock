@@ -1172,9 +1172,37 @@ class ChatTurn implements ChatTurnHandle {
               targetProviderIsRemote: provider.kind === 'remote',
               kbLibIds: binding !== null ? binding.libIds : []
             };
-            result = allowedByName.get(toolName) !== undefined
-              ? await this.toolBus.runResolved(allowedByName.get(toolName) as Tool, parsedArgs, toolCtx)
-              : await this.toolBus.execute(toolName, parsedArgs, toolCtx);
+            // T1.0-02「每次询问」（§9.4）：本 Agent 把该工具提级为 always_ask ⇒ **每次调用**都弹卡确认、
+            // 不记忆授权，仅「允许一次」放行。与 http.fetch 的域名级 confirm（自门控、可记忆）正交、可叠加。
+            const alwaysAsk: boolean = binding !== null && binding.toolPermissions[toolName] === 'always_ask';
+            if (alwaysAsk && !this.aborted && Date.now() - startedAt < loopBudget.timeoutMs) {
+              this.events.push({
+                type: 'tool', toolName: toolName, toolPhase: 'confirm', toolCallId: call.id,
+                requestedTool: toolName, requestLeavesDevice: false, allowRemember: false
+              });
+              const askWaitStart: number = Date.now();
+              const askDecision: string = await this.awaitConfirmation(call.id);
+              const askWaitMs: number = Date.now() - askWaitStart;   // 用户斟酌不计入预算/耗时读数（与 http.fetch confirm 同）
+              startedAt += askWaitMs;
+              toolStartedAt += askWaitMs;
+              if (askDecision !== 'allow_once') {
+                result = {
+                  ok: false, content: `已按你的选择跳过工具 ${toolName}，未执行。`,
+                  errorCode: 'permission_denied', errorMessage: 'user denied always_ask'
+                };
+              } else {
+                result = allowedByName.get(toolName) !== undefined
+                  ? await this.toolBus.runResolved(allowedByName.get(toolName) as Tool, parsedArgs, toolCtx)
+                  : await this.toolBus.execute(toolName, parsedArgs, toolCtx);
+              }
+            } else if (alwaysAsk) {
+              // 已超时/取消：不弹卡，如实拒（下一圈①收束）
+              result = { ok: false, content: '本轮已结束，工具未执行', errorCode: 'cancelled', errorMessage: 'aborted before always_ask' };
+            } else {
+              result = allowedByName.get(toolName) !== undefined
+                ? await this.toolBus.runResolved(allowedByName.get(toolName) as Tool, parsedArgs, toolCtx)
+                : await this.toolBus.execute(toolName, parsedArgs, toolCtx);
+            }
             // 交互式确认（§9.4）：工具对未授权域名返回 needs_confirmation 哨兵 →
             // 弹确认卡、挂起本轮等用户决策，获批后带 confirmed 复跑。
             if (result.errorCode === 'needs_confirmation') {

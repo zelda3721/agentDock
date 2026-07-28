@@ -86,6 +86,12 @@ export interface AgentDef {
   /** 工具白名单；V0.9 恒为空数组（无工具循环，开发计划 §5.1 Won't） */
   tools: ToolName[];
   /**
+   * 按工具的权限覆盖（§9.4 / T1.0-02）：toolId → 'confirm' | 'always_ask'。
+   * 未列出的工具用其**声明权限**（多为 none 直接执行）；此表让用户对某智能体把某工具提级为
+   * 「首次确认」（记住授权）或「每次询问」（不记忆）。缺席 = 不覆盖。
+   */
+  toolPermissions?: Record<string, string>;
+  /**
    * 挂载的技能（skills 表 id，按挂载顺序注入稳定前缀，T1.0-10②）。
    * skill=「怎么做事」的知识包，tool=「能做什么」的执行器（两者正交）。缺席视为空。
    */

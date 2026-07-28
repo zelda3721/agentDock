@@ -25,7 +25,7 @@
 // ---------------------------------------------------------------------------
 
 /** 当前 schema 版本号（每次新增迁移脚本时 +1，与 Migrations.ets 的最大编号一致）。 */
-export const SCHEMA_VERSION: number = 5;
+export const SCHEMA_VERSION: number = 6;
 
 /** RDB 库名。 */
 export const DB_NAME: string = 'agentdock.db';
@@ -619,6 +619,13 @@ export const SQL_ALTER_SKILLS_ADD_ALLOWED_TOOLS: string =
  */
 export const SQL_ALTER_RUN_STEPS_ADD_TOOL_RESULT: string =
   `ALTER TABLE run_steps ADD COLUMN tool_result TEXT;`;
+
+/**
+ * v6：按 Agent 的工具权限覆盖（T1.0-02 always_ask）。JSON: {toolId: 'confirm'|'always_ask'}。
+ * 缺省/未列出的工具用其声明权限（none）；此列让用户对某智能体把某工具提级为「首次确认」或「每次询问」。
+ */
+export const SQL_ALTER_AGENT_DEFS_ADD_TOOL_PERMS: string =
+  `ALTER TABLE agent_defs ADD COLUMN tool_perms TEXT NOT NULL DEFAULT '{}';`;
 
 // ---------------------------------------------------------------------------
 // 基础设施表（§4.2 / §7 / §10）

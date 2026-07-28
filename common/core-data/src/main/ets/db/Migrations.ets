@@ -21,6 +21,7 @@ import {
   FTS_ROUTE,
   SCHEMA_VERSION,
   SQL_ALTER_AGENT_DEFS_ADD_SKILLS,
+  SQL_ALTER_AGENT_DEFS_ADD_TOOL_PERMS,
   SQL_ALTER_MODELS_LOCAL_ADD_FAILURE_KIND,
   SQL_ALTER_SKILLS_ADD_ALLOWED_TOOLS,
   SQL_ALTER_RUN_STEPS_ADD_TOOL_RESULT,
@@ -89,6 +90,12 @@ export const MIGRATIONS: Migration[] = [
     version: 5,
     name: 'run_steps_tool_result',
     sqls: [SQL_ALTER_RUN_STEPS_ADD_TOOL_RESULT]
+  },
+  {
+    // #6 按 Agent 工具权限覆盖（T1.0-02 always_ask）：agent_defs.tool_perms JSON 映射。
+    version: 6,
+    name: 'agent_defs_tool_perms',
+    sqls: [SQL_ALTER_AGENT_DEFS_ADD_TOOL_PERMS]
   }
 ];
 

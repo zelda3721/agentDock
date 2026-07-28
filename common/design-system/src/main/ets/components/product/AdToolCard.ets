@@ -167,7 +167,10 @@ export struct AdToolCard {
   @Builder
   confirmBody() {
     Column({ space: AdSpace.s2 }) {
-      Text(`Agent 请求访问：${this.call.requestedDomain}`).toolProse(AdColor.ink)
+      // 域名类（http.fetch）显示「请求访问 <域名>」；工具类（always_ask 提级）显示「请求执行工具 <名>」
+      Text(this.call.requestedTool.length > 0
+        ? `Agent 请求执行工具：${this.call.requestedTool}（这个智能体设为每次都确认）`
+        : `Agent 请求访问：${this.call.requestedDomain}`).toolProse(AdColor.ink)
 
       if (this.call.requestLeavesDevice) {
         Row({ space: AdSpace.s1 }) {
@@ -197,21 +200,26 @@ export struct AdToolCard {
             this.onAllowOnce();
           }
         })
-        // 只能按 Agent 记忆域名，**禁止通配"记住全部 Agent"**
-        AdButton({
-          label: '始终允许该域名',
-          variant: AdButtonVariant.GHOST,
-          btnSize: AdButtonSize.SM,
-          onAction: () => {
-            this.onAllowDomain();
-          }
-        })
+        // 「始终允许」仅 confirm 类（可记忆授权）提供；always_ask「每次询问」不提供——只允许一次，不记忆。
+        // 只能按 Agent 记忆域名，**禁止通配"记住全部 Agent"**。
+        if (this.call.allowRemember) {
+          AdButton({
+            label: '始终允许该域名',
+            variant: AdButtonVariant.GHOST,
+            btnSize: AdButtonSize.SM,
+            onAction: () => {
+              this.onAllowDomain();
+            }
+          })
+        }
       }
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
     .accessibilityGroup(true)
-    .accessibilityText(`工具 ${this.call.name} 请求访问 ${this.call.requestedDomain}。` +
+    .accessibilityText((this.call.requestedTool.length > 0
+      ? `工具 ${this.call.name} 请求执行（每次都确认）。`
+      : `工具 ${this.call.name} 请求访问 ${this.call.requestedDomain}。`) +
       `${this.call.requestLeavesDevice ? '注意：请求内容将离开本设备。' : ''}默认选择拒绝。`)
   }
 

@@ -698,7 +698,9 @@ export class ChatController {
         card.status = AdToolStatus.NEEDS_CONFIRM;
       }
       card.requestedDomain = ev.requestedDomain ?? '';
+      card.requestedTool = ev.requestedTool ?? '';
       card.requestLeavesDevice = ev.requestLeavesDevice === true;
+      card.allowRemember = ev.allowRemember !== false;
     } else {
       const ok: boolean = ev.toolPhase === 'done';
       if (card === null) {

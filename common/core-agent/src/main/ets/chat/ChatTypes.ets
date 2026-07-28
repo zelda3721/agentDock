@@ -57,10 +57,14 @@ export interface ChatTurnEvent {
   toolPhase?: 'running' | 'done' | 'failed' | 'confirm';
   /** 工具调用 id（同一 assistant 消息内定位/更新对应卡片；本地合成 call_local_N） */
   toolCallId?: string;
-  /** confirm 相位（§9.4）：请求访问的域名（卡片展示 + 出端提醒判定） */
+  /** confirm 相位（§9.4）：请求访问的域名（http.fetch 卡片展示 + 出端提醒判定） */
   requestedDomain?: string;
+  /** confirm 相位（T1.0-02 always_ask）：请求执行的工具名（按 Agent 提级为「每次询问」的工具，非域名类） */
+  requestedTool?: string;
   /** confirm 相位：该请求是否出端（远程域名恒 true，触发琥珀 + 空心云弧出端提醒） */
   requestLeavesDevice?: boolean;
+  /** confirm 相位：是否提供「始终允许」（confirm 类记忆授权提供；always_ask「每次询问」不提供，只允许一次） */
+  allowRemember?: boolean;
   /** 入参 JSON 原文（done/failed 时带） */
   toolArgsJson?: string;
   /** 出参摘要（done/failed 时带；失败为错误说明） */

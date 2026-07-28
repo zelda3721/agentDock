@@ -141,6 +141,25 @@ function parseMemoryPolicy(json: string): AgentMemoryPolicy {
   }
 }
 
+/** tool_perms 列的 JSON 编解码（toolId → 权限；只收 'confirm'/'always_ask'，其余忽略——脏数据不进覆盖表） */
+function parseToolPerms(json: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  try {
+    const raw: Record<string, Object> = JSON.parse(json) as Record<string, Object>;
+    if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+      for (const key of Object.keys(raw)) {
+        const v: Object = raw[key];
+        if (v === 'confirm' || v === 'always_ask') {
+          out[key] = v as string;
+        }
+      }
+    }
+  } catch (e) {
+    // 损坏 → 空覆盖（回落到工具声明权限）
+  }
+  return out;
+}
+
 function rowToDef(rs: relationalStore.ResultSet): AgentDef {
   const avatar: string = rs.getString(rs.getColumnIndex('avatar'));
   const def: AgentDef = {
@@ -152,6 +171,7 @@ function rowToDef(rs: relationalStore.ResultSet): AgentDef {
     tools: parseTools(rs.getString(rs.getColumnIndex('tools'))),   // T1.0-01 工具循环按此白名单声明 tools
     skills: parseTools(rs.getString(rs.getColumnIndex('skills'))), // 同为 JSON 字符串数组编解码（T1.0-10②）
     memoryPolicy: parseMemoryPolicy(rs.getString(rs.getColumnIndex('memory_policy'))), // T1.0-10 编辑器读写
+    toolPermissions: parseToolPerms(rs.getString(rs.getColumnIndex('tool_perms'))),    // T1.0-02 按工具权限覆盖
     loop: parseLoop(rs.getString(rs.getColumnIndex('loop'))),
     createdAt: rs.getLong(rs.getColumnIndex('created_at')),
     updatedAt: rs.getLong(rs.getColumnIndex('updated_at'))
@@ -163,7 +183,7 @@ function rowToDef(rs: relationalStore.ResultSet): AgentDef {
 }
 
 const SELECT_COLUMNS: string =
-  `id, name, avatar, system_prompt, model, knowledge, memory_policy, tools, skills, loop, builtin, enabled, def_version, created_at, updated_at`;
+  `id, name, avatar, system_prompt, model, knowledge, memory_policy, tools, tool_perms, skills, loop, builtin, enabled, def_version, created_at, updated_at`;
 
 /** 内置模板未绑定具体模型：providerId 留空 = 跟随用户当前激活的默认模型（本地/远程皆可）。 */
 const UNBOUND_MODEL: AgentModelConfig = { providerId: '' };
@@ -276,6 +296,7 @@ export class AgentRepo implements AgentRepositoryPort {
     const loopJson: string = JSON.stringify(def.loop);
     const memoryJson: string = JSON.stringify(def.memoryPolicy ?? DEFAULT_MEMORY_POLICY);
     const toolsJson: string = JSON.stringify(def.tools);
+    const toolPermsJson: string = JSON.stringify(def.toolPermissions ?? {} as Record<string, string>);
     const avatar: string = def.avatar ?? '';
 
     await this.rdb.withTransaction<void>(async (): Promise<void> => {
@@ -288,20 +309,20 @@ export class AgentRepo implements AgentRepositoryPort {
         await this.rdb.exec(
           `UPDATE agent_defs
               SET name = ?, avatar = ?, system_prompt = ?, model = ?, knowledge = ?, skills = ?,
-                  tools = ?, memory_policy = ?, loop = ?,
+                  tools = ?, tool_perms = ?, memory_policy = ?, loop = ?,
                   def_version = def_version + 1, updated_at = ?
             WHERE id = ?;`,
           [def.name, avatar, def.systemPrompt, modelJson, knowledgeJson, skillsJson,
-            toolsJson, memoryJson, loopJson, now, def.id] as Array<SqlArg>
+            toolsJson, toolPermsJson, memoryJson, loopJson, now, def.id] as Array<SqlArg>
         );
         return;
       }
       await this.rdb.exec(
         `INSERT INTO agent_defs (id, name, avatar, system_prompt, model, knowledge, skills,
-                                 tools, memory_policy, loop, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+                                 tools, tool_perms, memory_policy, loop, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
         [def.id, def.name, avatar, def.systemPrompt, modelJson, knowledgeJson, skillsJson,
-          toolsJson, memoryJson, loopJson, now, now] as Array<SqlArg>
+          toolsJson, toolPermsJson, memoryJson, loopJson, now, now] as Array<SqlArg>
       );
     });
   }
