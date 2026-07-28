@@ -158,8 +158,11 @@ export struct MessageStream {
                   },
                   canReadAloud: this.ttsAvailable,
                   reading: item.id === this.readingId && this.readingId.length > 0,
-                  onReadAloud: () => {
-                    this.onReadAloud(item.id, item.text);
+                  msgId: item.id,
+                  // 转发 AdMessage 回传的 (id, text)——**不**在此闭包里捕获 item：
+                  // AdMessage 是 @Reusable，闭包捕获 item 会因复用不重绑而朗读错消息（真机实测）。
+                  onReadAloud: (id: string, text: string) => {
+                    this.onReadAloud(id, text);
                   }
                 })
               }

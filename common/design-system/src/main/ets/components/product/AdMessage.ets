@@ -155,8 +155,14 @@ export struct AdMessage {
   @Prop canReadAloud: boolean = false;
   /** 本条是否正在朗读（切「朗读 ↔ 停止」）。 */
   @Prop reading: boolean = false;
-  /** 「朗读/停止」触发（由上层经 SpeechService 驱动 TTS）。 */
-  onReadAloud: () => void = () => {
+  /**
+   * 本条消息 id（@Prop：@Reusable 复用时随 aboutToReuse 更新）。
+   * 朗读回调必须回传**本组件自身**的 msgId/text（下同），**不能**让上层在 LazyForEach 里用闭包捕获
+   * item——@Reusable 复用不重绑闭包，捕获的是首次渲染那条，会朗读错消息（真机实测：读到第一条）。
+   */
+  @Prop msgId: string = '';
+  /** 「朗读/停止」触发：回传本条的 (id, text)，由上层经 SpeechService 驱动 TTS。 */
+  onReadAloud: (id: string, text: string) => void = () => {
   };
 
   /** 附加槽：AdToolCard / 多模态附件等 */
@@ -425,7 +431,8 @@ export struct AdMessage {
           .accessibilityGroup(true)
           .accessibilityText(this.reading ? '停止朗读' : '朗读这条回答')
           .onClick(() => {
-            this.onReadAloud();
+            // 用本组件自身的 @Prop（复用时已更新），不是上层闭包捕获的 item——见 msgId 注释
+            this.onReadAloud(this.msgId, this.text);
           })
         }
 
