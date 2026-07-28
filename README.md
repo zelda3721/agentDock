@@ -7,18 +7,30 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 [![Platform](https://img.shields.io/badge/platform-HarmonyOS%206.0%2B%20(API%2020)-black.svg)](#开发环境要求)
-[![Status](https://img.shields.io/badge/status-V0.9%20WIP%20%C2%B7%20skeleton-orange.svg)](#当前状态)
+[![Status](https://img.shields.io/badge/status-V1.0%20Must%20done%20%C2%B7%20device--verified-brightgreen.svg)](#当前状态)
 
 ---
 
 ## 当前状态
 
-> **V0.9 开发中 —— 工程骨架阶段。**
-> **各模块目前只有接口定义与 TODO 骨架，尚不可运行、不可构建出可用应用。**
-> 未实现的方法一律显式抛 `Not implemented: T0.9-xx`，不存在伪实现。
-> 现在 clone 下来能得到的是一套完整的模块划分、类型契约与合规基线，不是一个能聊天的 App。
+> **V1.0「差异化版」Must 全部完成 —— 已在真机跑通、逐项验证。**
+> V0.9「占位版」已落地：本地 GGUF + 远程 OpenAI 兼容聊天（流式、随时中断）、知识库（向量 + FTS5 混合检索、
+> 答案带引用可溯源）、单 Agent、上下文治理、三端一多、备份导出、`local_only` 数据层隐私围栏。
 
-进度以《AgentDock 开发计划》的任务编号（T0.9-xx）为准，源码里的每个 TODO 都反向引用它。
+V1.0 差异化资产均已交付并真机验证：
+
+- **记忆全套** —— 在线抽取 + 五阶段自动整理（收编去重 / 精确合并 / 遗忘归档 / 画像蒸馏 / 报告）+ **整理报告与一键撤销** + workScheduler 后台调度（充电∧空闲择机、键集游标续跑）。
+- **Agent 工具总线 + Run 轨迹回放** —— JSON 工具协议、运行轨迹（agent_runs/run_steps），逐步回放每步 prompt / 工具入出参 / token。
+- **Agent-as-Tool** —— `agent.call` 委托即隔离（子智能体独立上下文、512/512 brief 合同、深度/并发门）。
+- **上下文治理 M1** —— L1 大结果外置 + `artifact.read` / `trace.read` 回读 + L2 折旧观察 + M3 ≤200 token 目标复诵。
+- **完整 Agent 编辑器** —— 工具白名单（权限徽标）/ 记忆策略 / 循环预算 / anchor>25% 告警，旋钮真生效。
+- **`always_ask` 权限模式** —— 按 Agent 把任一工具提级为「每次调用都询问」，仅本次放行、不记忆。
+- **压缩回归套件 v1** —— 已入 CI 合并门禁（约束召回 100% / 实体召回 ≥95% / trace.read 补救后 100%）。
+
+进度以《AgentDock 开发计划》的任务编号（T0.9-xx / T1.0-xx）为准，源码里的每个 TODO 都反向引用它。
+剩余：**PC 键鼠专项**（T1.0-15：Ctrl+Enter/N 快捷键、拖拽导入；属 Must，但按 §6.1 裁剪顺序为最先可砍项）与
+**发版验收**（T1.0-14 封版周：M4 强杀续跑 / 7 天 dogfood / 金标回归 / 留存埋点）；其余为 Should·机动
+（bge-reranker 重排、检索调试器完整版、诊断包导出、Agent 导入导出）与语音链路·电话模式（V1.5）。
 
 ---
 
@@ -43,7 +55,7 @@ AgentDock 就是填这个空位的：一个**鸿蒙原生**（ArkTS + C++/NAPI�
 
 ## 特性一览
 
-> 图例：`已规划` = 设计已定稿，代码为骨架；括号内为目标版本。
+> 图例：括号内为目标版本；V0.9 / V1.0 项均已实现并真机验证，V1.5 / V2 为规划中。
 
 | 能力 | 说明 | 版本 |
 |---|---|---|
@@ -127,13 +139,13 @@ ArkData relationalStore（加密 + WAL）· workScheduler / continuousTask · As
 | 原生工具链 | **OHOS NDK**（aarch64 交叉编译，`ohos.toolchain.cmake`），CMake ≥ 3.16 |
 | 语言 | ArkTS + C++17 |
 | 设备 | 真机（模拟器不覆盖 NAPI/.so 加载与真实性能） |
-| 包管理 | ohpm（当前骨架阶段**零第三方依赖**） |
+| 包管理 | ohpm（ArkTS 侧**零第三方依赖**；原生侧依赖见 [NOTICE](./NOTICE)） |
 
 目标设备：HarmonyOS 6.0+ 手机 / 平板 / 2in1。
 
 ## 构建
 
-> 骨架阶段：以下命令能走通工程装配与语法检查，但**产出的应用不具备可用功能**。
+> 用 DevEco Studio 6.x 打开工程根目录构建；真机安装见 `tools/device/deploy.sh`（模拟器不覆盖 NAPI/.so 加载）。
 
 ```bash
 # 1. 用 DevEco Studio 6.x 打开工程根目录 AgentDock/，等待 Sync 完成
@@ -204,7 +216,7 @@ hdc install ./products/default/entry/build/default/outputs/default/entry-default
 ## 许可
 
 **Apache-2.0** —— 见 [LICENSE](./LICENSE)。含显式专利授权，与全部依赖单向兼容。
-第三方依赖许可见 [THIRD_PARTY_LICENSES/](./THIRD_PARTY_LICENSES/README.md)（当前骨架阶段零第三方依赖）；
+第三方依赖许可见 [THIRD_PARTY_LICENSES/](./THIRD_PARTY_LICENSES/README.md)（ohpm/ArkTS 侧零第三方依赖）；
 上游 Apache 组件 NOTICE 汇总见 [NOTICE](./NOTICE)。
 
 依赖许可白名单：MIT / BSD / Apache-2.0 / ISC / Zlib / PD。
