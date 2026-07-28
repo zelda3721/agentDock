@@ -37,6 +37,18 @@
         ]
       }
     ],
+    // 记忆整理的 workScheduler 延迟任务承载（ADR-4/§6.3，T1.0-07）：系统在充电∧电量>40%∧空闲窗择机
+    // 拉起本扩展的独立进程跑增量整理（EntryAbility.registerConsolidationWork 注册的 workId=1001）。
+    // exported=false：只本应用的系统调度可拉起，外部不可调。
+    "extensionAbilities": [
+      {
+        "name": "MemoryConsolidationExtension",
+        "srcEntry": "./ets/workscheduler/MemoryConsolidationExtension.ets",
+        "description": "$string:EntryAbility_desc",
+        "type": "workScheduler",
+        "exported": false
+      }
+    ],
     // 权限最小化（设计文档 §9.3）：V0.9 仅申请 INTERNET（远程 Provider / 模型下载）。
     // 文件读取一律走 filePicker 授权制，不申请全盘读权限。
     // 麦克风（ohos.permission.MICROPHONE）等语音相关权限属于 V1.5 语音子系统（§17/§18），届时再加，此处刻意不申请。

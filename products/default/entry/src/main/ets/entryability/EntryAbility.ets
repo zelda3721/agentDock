@@ -15,6 +15,7 @@ import deviceInfo from '@ohos.deviceInfo';
 import hilog from '@ohos.hilog';
 import { BusinessError } from '@ohos.base';
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { workScheduler } from '@kit.BackgroundTasksKit';
 import { MotionPreference, AD_REDUCE_MOTION_KEY } from 'design-system';
 import {
   AppRdbStore, FileRepo, ModelRepo, LocalModelRow, RdbTaskStore, RdbConfigStore,
@@ -147,6 +148,10 @@ export default class EntryAbility extends UIAbility {
       MemoryService.get().init(rdb, fileRepo, memAccessor);
       ChatService.get().attachMemory(MemoryService.get());
 
+      // 6b) 记忆整理后台调度（ADR-4/§6.3，T1.0-07）：注册 workScheduler 延迟任务（充电∧电量>40%，24h 周期），
+      //     系统择机空闲时拉起 MemoryConsolidationExtension 跑增量整理。注册失败不影响 App（手动整理仍在）。
+      this.registerConsolidationWork();
+
       hilog.info(DOMAIN, TAG, 'core stack ready');
     } catch (e) {
       const err = e as BusinessError;
@@ -261,6 +266,36 @@ export default class EntryAbility extends UIAbility {
       return '';
     }
     return embed.filePath;
+  }
+
+  /**
+   * 注册记忆整理的 workScheduler 延迟任务（ADR-4/§6.3，T1.0-07）。
+   * 条件：充电中 ∧ 电量>40%（idleWaitTime 让系统在空闲窗择机，不做常驻后台，§0-6）；24h 周期、跨重启持久化。
+   * 幂等：先撤同 id 旧任务再注册（条件版本升级不残留旧任务）；stopWork 对不存在的任务是空操作。
+   * 注册失败绝不拖垮启动——手动「立即整理」始终可用，后台调度只是"晚跑不影响正确性"（增量+游标）。
+   */
+  private registerConsolidationWork(): void {
+    const workInfo: workScheduler.WorkInfo = {
+      workId: 1001,
+      bundleName: 'com.agentdock.app',
+      abilityName: 'MemoryConsolidationExtension',
+      isCharging: true,
+      batteryLevel: 40,
+      isRepeat: true,
+      repeatCycleTime: 24 * 60 * 60 * 1000,
+      isPersisted: true
+    };
+    try {
+      try {
+        workScheduler.stopWork(workInfo);
+      } catch (stopErr) {
+        // 无同 id 任务时 stopWork 抛错——忽略（首次注册的正常路径）
+      }
+      workScheduler.startWork(workInfo);
+      hilog.info(DOMAIN, TAG, 'consolidation work registered (charging + battery>40%, 24h repeat)');
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'register consolidation work failed: %{public}s', (e as BusinessError).message);
+    }
   }
 
   /** 模型切换：先注销旧的（释放 llama 会话与 KV cache），再注册新的。顺序不可颠倒——两份模型同时驻留会撞内存预算。 */
