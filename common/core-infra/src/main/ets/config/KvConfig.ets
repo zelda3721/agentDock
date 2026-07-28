@@ -67,6 +67,13 @@ export class ConfigKeys {
    * 出厂为空 = 默认拒绝一切外域；用户在设置里显式添加受信域名即授权。白名单本身即授权边界。
    */
   static readonly HTTP_FETCH_DOMAIN_WHITELIST: string = 'http_fetch.domain_whitelist';
+
+  /** 朗读音色（system 档 = person id；-1=引擎默认）。T1.5 语音。 */
+  static readonly VOICE_TTS_PERSON: string = 'voice.tts_person';
+  /** 朗读语速（约 0.5–2.0，1.0 常速）。 */
+  static readonly VOICE_TTS_SPEED: string = 'voice.tts_speed';
+  /** 朗读音调（约 0.5–2.0，1.0 原调；调整可减弱机械感）。 */
+  static readonly VOICE_TTS_PITCH: string = 'voice.tts_pitch';
 }
 
 /** 禁止写入 kv_config 的键片段（红线 16：密钥只进 Asset Store Kit）。 */

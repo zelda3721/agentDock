@@ -16,6 +16,7 @@ import { bundleManager } from '@kit.AbilityKit';
 import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { AppConfig, ConfigKeys, CrashWatcher, KvConfig, RuntimeFlags } from 'core-infra';
+import { SpeechService, TtsListener, TtsOptions, TtsVoice } from 'core-speech';
 import {
   BackupService,
   BackupProgressListener,
@@ -72,6 +73,13 @@ export interface AppSettings {
    * 白名单本身即授权边界——加进来 = 授权对该域名（及其子域）的抓取，移除 = 即时撤销。
    */
   httpFetchWhitelist: string[];
+}
+
+/** 朗读语音偏好（T1.5 语音）。person=-1 表示用引擎默认音色。 */
+export interface TtsPrefs {
+  person: number;
+  speed: number;
+  pitch: number;
 }
 
 /** 导入前预览（[R-41] 确认必须带宾语：让用户看清要导入什么再确认）。 */
@@ -201,6 +209,58 @@ export class SettingsFacade {
   /** 本项目自身的 Apache-2.0 许可全文（§22.1）。 */
   public async loadProjectLicense(context: common.Context): Promise<string> {
     return SettingsFacade.readRawText(context, 'licenses/PROJECT_LICENSE.txt');
+  }
+
+  // --- 朗读语音（T1.5 语音）-------------------------------------------------
+
+  /** 本机是否有可用 TTS 档（决定设置页是否显示朗读语音区）。 */
+  public async isReadAloudAvailable(): Promise<boolean> {
+    return SpeechService.get().isReadAloudAvailable();
+  }
+
+  /** 本机可选音色（系统档 3 款：中文女声/男声 + 英文）。 */
+  public async listTtsVoices(): Promise<TtsVoice[]> {
+    return SpeechService.get().listTtsVoices();
+  }
+
+  /** 读朗读偏好（音色/语速/音调）。缺省：引擎默认音色、常速、原调。 */
+  public async loadTtsPrefs(): Promise<TtsPrefs> {
+    const kv = AppConfig.get();
+    const prefs: TtsPrefs = {
+      person: await kv.getNumber(ConfigKeys.VOICE_TTS_PERSON, -1),
+      speed: await kv.getNumber(ConfigKeys.VOICE_TTS_SPEED, 1.0),
+      pitch: await kv.getNumber(ConfigKeys.VOICE_TTS_PITCH, 1.0)
+    };
+    return prefs;
+  }
+
+  /** 存朗读偏好并**即时生效**（写盘 + 同步进 SpeechService，本次会话与下次都用新值）。 */
+  public async saveTtsPrefs(prefs: TtsPrefs): Promise<void> {
+    const kv = AppConfig.get();
+    await kv.setNumber(ConfigKeys.VOICE_TTS_PERSON, prefs.person);
+    await kv.setNumber(ConfigKeys.VOICE_TTS_SPEED, prefs.speed);
+    await kv.setNumber(ConfigKeys.VOICE_TTS_PITCH, prefs.pitch);
+    SpeechService.get().setTtsPrefs(SettingsFacade.toTtsOptions(prefs));
+  }
+
+  /** 试听：用当前（未必已存）偏好朗读一句样例，让用户即时听到效果。 */
+  public previewTts(prefs: TtsPrefs): void {
+    const sample: string = '你好，这是朗读语音的试听效果。';
+    const noop: TtsListener = {
+      onStart: (): void => {},
+      onComplete: (): void => {},
+      onStop: (): void => {},
+      onError: (): void => {}
+    };
+    SpeechService.get().readAloud(sample, noop, SettingsFacade.toTtsOptions(prefs));
+  }
+
+  private static toTtsOptions(prefs: TtsPrefs): TtsOptions {
+    return {
+      voice: prefs.person >= 0 ? prefs.person : undefined,
+      speed: prefs.speed,
+      pitch: prefs.pitch
+    };
   }
 
   /** 应用版本号（关于区展示 + 备份 manifest.appVersion）。 */

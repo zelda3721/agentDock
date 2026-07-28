@@ -10,6 +10,7 @@
   "dependencies": {
     "design-system": "file:../../common/design-system",
     "core-data": "file:../../common/core-data",
-    "core-infra": "file:../../common/core-infra"
+    "core-infra": "file:../../common/core-infra",
+    "core-speech": "file:../../common/core-speech"
   }
 }

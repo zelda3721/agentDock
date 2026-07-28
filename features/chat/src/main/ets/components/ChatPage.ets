@@ -204,6 +204,8 @@ export struct ChatPage {
   }
 
   private async probeTts(): Promise<void> {
+    // 先把用户的朗读偏好（音色/语速/音调）装进 SpeechService，再探测可用性
+    await this.readAloud.loadPrefs();
     this.ttsAvailable = await this.readAloud.available();
   }
 

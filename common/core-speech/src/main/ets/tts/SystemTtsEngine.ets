@@ -12,7 +12,7 @@
 import { textToSpeech } from '@kit.CoreSpeechKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Logger } from 'core-infra';
-import { SpeechBackend, SpeechError, TtsEngine, TtsListener, TtsOptions } from '../model/SpeechTypes';
+import { SpeechBackend, SpeechError, TtsEngine, TtsListener, TtsOptions, TtsVoice } from '../model/SpeechTypes';
 
 const TAG: string = 'SystemTtsEngine';
 const DEFAULT_LANG: string = 'zh-CN';
@@ -32,6 +32,8 @@ export class SystemTtsEngine implements TtsEngine {
   private resolved: TtsConfig | null = null;
   private listener: TtsListener | null = null;
   private speaking: boolean = false;
+  /** 已建引擎的 person——换音色需重建引擎（createEngine 才吃 person）。 */
+  private currentPerson: number = -1;
 
   async isAvailable(): Promise<boolean> {
     const cfg: TtsConfig | null = await this.resolveConfig();
@@ -53,7 +55,9 @@ export class SystemTtsEngine implements TtsEngine {
       engine.setListener(this.buildSpeakListener());
       this.speaking = true;
       const requestId: string = `tts_${Date.now()}`;
-      engine.speak(text, { requestId });
+      // speed/pitch/volume 经 extraParams 下发（减弱机械感/调音色）。系统不支持某键则忽略，不报错。
+      const speakParams: textToSpeech.SpeakParams = { requestId, extraParams: this.buildExtraParams(opts) };
+      engine.speak(text, speakParams);
     } catch (e) {
       const err: BusinessError = e as BusinessError;
       Logger.error(TAG, 'speak failed', [{ key: 'code', value: err.code }]);
@@ -111,18 +115,57 @@ export class SystemTtsEngine implements TtsEngine {
     };
   }
 
-  private async ensureEngine(opts?: TtsOptions): Promise<textToSpeech.TextToSpeechEngine> {
-    if (this.engine !== null) {
-      return this.engine;
+  /** 枚举本机可选音色（textToSpeech.listVoices，API24+）。失败/无则空表——设置页据此决定是否给选择器。 */
+  async listVoices(): Promise<TtsVoice[]> {
+    const cfg: TtsConfig | null = await this.resolveConfig();
+    const online: number = cfg !== null ? cfg.online : 1;
+    try {
+      const infos: textToSpeech.VoiceInfo[] =
+        await textToSpeech.listVoices({ requestId: `voices_${Date.now()}`, online });
+      const out: TtsVoice[] = [];
+      for (const v of infos) {
+        out.push({ id: v.person, language: v.language, gender: v.gender, style: v.style, label: v.description });
+      }
+      Logger.info(TAG, 'listVoices ok', [{ key: 'count', value: out.length }, { key: 'online', value: online }]);
+      return out;
+    } catch (e) {
+      Logger.warn(TAG, 'listVoices failed', [{ key: 'code', value: (e as BusinessError).code }]);
+      return [];
     }
+  }
+
+  private async ensureEngine(opts?: TtsOptions): Promise<textToSpeech.TextToSpeechEngine> {
     const cfg: TtsConfig | null = await this.resolveConfig();
     if (cfg === null) {
       throw new SpeechError('unavailable', '本机系统语音合成不可用。', 'system');
     }
     const language: string = opts?.language !== undefined ? opts.language : DEFAULT_LANG;
     const person: number = opts?.voice !== undefined ? opts.voice : cfg.person;
-    this.engine = await textToSpeech.createEngine({ language, person, online: cfg.online });
+    // 换音色需重建引擎（person 只在 createEngine 生效）
+    if (this.engine !== null && person !== this.currentPerson) {
+      this.engine.shutdown();
+      this.engine = null;
+    }
+    if (this.engine === null) {
+      this.engine = await textToSpeech.createEngine({ language, person, online: cfg.online });
+      this.currentPerson = person;
+    }
     return this.engine;
+  }
+
+  /** speak 的 extraParams：把 speed/pitch/volume 尽力下发（系统不认某键则忽略，不报错）。 */
+  private buildExtraParams(opts?: TtsOptions): Record<string, Object> {
+    const extra: Record<string, Object> = {};
+    if (opts?.speed !== undefined) {
+      extra['speed'] = opts.speed;
+    }
+    if (opts?.pitch !== undefined) {
+      extra['pitch'] = opts.pitch;
+    }
+    if (opts?.volume !== undefined) {
+      extra['volume'] = opts.volume;
+    }
+    return extra;
   }
 
   /** 组合探测出第一组可建起的 (online, person)，缓存复用。 */

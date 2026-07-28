@@ -15,7 +15,7 @@
  */
 
 import { Logger } from 'core-infra';
-import { AsrEngine, AsrListener, AsrOptions, AsrResult, SpeechBackend, SpeechError, TtsEngine, TtsListener, TtsOptions } from './model/SpeechTypes';
+import { AsrEngine, AsrListener, AsrOptions, AsrResult, SpeechBackend, SpeechError, TtsEngine, TtsListener, TtsOptions, TtsVoice } from './model/SpeechTypes';
 import { SystemAsrEngine } from './asr/SystemAsrEngine';
 import { SystemTtsEngine } from './tts/SystemTtsEngine';
 import { TtsSanitizer } from './tts/TtsSanitizer';
@@ -38,6 +38,9 @@ export class SpeechService {
   /** 当前用于朗读的 TTS 引擎。 */
   private activeTts: TtsEngine | null = null;
 
+  /** 朗读偏好（音色/语速/音调/音量）——上层从设置读入，readAloud 未显式传 opts 时用它。 */
+  private ttsPrefs: TtsOptions = {};
+
   static get(): SpeechService {
     if (SpeechService.instance === null) {
       SpeechService.instance = new SpeechService();
@@ -59,6 +62,24 @@ export class SpeechService {
   async isReadAloudAvailable(): Promise<boolean> {
     const engine: TtsEngine | null = await this.pickTts();
     return engine !== null;
+  }
+
+  /** 枚举当前可用 TTS 档的音色（设置页选择器用）。无可用档或无法枚举则空表。 */
+  async listTtsVoices(): Promise<TtsVoice[]> {
+    const engine: TtsEngine | null = await this.pickTts();
+    if (engine === null) {
+      return [];
+    }
+    return engine.listVoices();
+  }
+
+  /** 设置朗读偏好（音色/语速/音调）——上层从持久化配置读入后调用。 */
+  setTtsPrefs(prefs: TtsOptions): void {
+    this.ttsPrefs = prefs;
+  }
+
+  getTtsPrefs(): TtsOptions {
+    return this.ttsPrefs;
   }
 
   // ==========================================================================
@@ -123,7 +144,9 @@ export class SpeechService {
       listener.onComplete();
       return engine.backend;
     }
-    await engine.speak(clean, listener, opts);
+    // 未显式传 opts 时用朗读偏好（音色/语速/音调）
+    const effective: TtsOptions = opts !== undefined ? opts : this.ttsPrefs;
+    await engine.speak(clean, listener, effective);
     return engine.backend;
   }
 

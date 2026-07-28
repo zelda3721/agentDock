@@ -103,13 +103,31 @@ export interface AsrEngine {
 // TTS（文字转语音）
 // ===========================================================================
 
-/** TTS 合成选项。 */
+/** TTS 合成选项。speed/pitch/volume 由各档尽力应用（system 档经 speak extraParams），不支持则忽略。 */
 export interface TtsOptions {
   readonly language?: string;
   /** 音色 id（system 档对应 person；不同档语义不同，由引擎解释）。 */
   readonly voice?: number;
-  /** 语速倍率（1.0 常速）。部分档不支持则忽略。 */
+  /** 语速（system 档 extraParams.speed，约 [0.5,2]，1.0 常速）。 */
   readonly speed?: number;
+  /** 音调（system 档 extraParams.pitch，约 [0.5,2]，1.0 原调）——调低/调高可减弱机械感。 */
+  readonly pitch?: number;
+  /** 音量（system 档 extraParams.volume，约 [0,2]，1.0 常量）。 */
+  readonly volume?: number;
+}
+
+/** 一个可选音色（system 档来自 textToSpeech.listVoices 的 VoiceInfo）。 */
+export interface TtsVoice {
+  /** 音色 id（system 档 = person，传入 TtsOptions.voice / createEngine）。 */
+  readonly id: number;
+  /** 语言（如 zh-CN）。 */
+  readonly language: string;
+  /** 性别（male/female，引擎给什么算什么）。 */
+  readonly gender: string;
+  /** 风格（如 interaction-broadcast）。 */
+  readonly style: string;
+  /** 人类可读描述（列表展示用）。 */
+  readonly label: string;
 }
 
 /** TTS 会话回调。函数属性声明（同 AsrListener 的 ArkTS 约束），成员必填，不需要的给空实现。 */
@@ -133,6 +151,8 @@ export interface TtsEngine {
   isAvailable(): Promise<boolean>;
   /** 合成并播放 text。文本净化由上层（TtsSanitizer）在调用前完成。 */
   speak(text: string, listener: TtsListener, opts?: TtsOptions): Promise<void>;
+  /** 枚举本档可选音色（供设置页人工选择）。无法枚举/仅一款则返回空或单元素。 */
+  listVoices(): Promise<TtsVoice[]>;
   /** 停止播放（可用于 barge-in）。 */
   stop(): void;
   /** 当前是否在播。 */

@@ -8,8 +8,8 @@
  * 跟踪「当前正在朗读哪条消息」以驱动按钮态（朗读/停止）。同一时刻只朗读一条：点另一条即切换。
  */
 
-import { Logger } from 'core-infra';
-import { SpeechBackend, SpeechError, SpeechService, TtsListener } from 'core-speech';
+import { AppConfig, ConfigKeys, Logger } from 'core-infra';
+import { SpeechBackend, SpeechError, SpeechService, TtsListener, TtsOptions } from 'core-speech';
 
 const TAG: string = 'ReadAloudController';
 
@@ -23,6 +23,24 @@ export class ReadAloudController {
 
   currentReadingId(): string {
     return this.readingId;
+  }
+
+  /** 从持久化配置读入朗读偏好（音色/语速/音调）并装进 SpeechService，供本会话朗读使用。 */
+  async loadPrefs(): Promise<void> {
+    try {
+      const kv = AppConfig.get();
+      const person: number = await kv.getNumber(ConfigKeys.VOICE_TTS_PERSON, -1);
+      const speed: number = await kv.getNumber(ConfigKeys.VOICE_TTS_SPEED, 1.0);
+      const pitch: number = await kv.getNumber(ConfigKeys.VOICE_TTS_PITCH, 1.0);
+      const prefs: TtsOptions = {
+        voice: person >= 0 ? person : undefined,
+        speed,
+        pitch
+      };
+      SpeechService.get().setTtsPrefs(prefs);
+    } catch (e) {
+      Logger.warn(TAG, 'loadPrefs failed');
+    }
   }
 
   /** 本机是否有可用 TTS 档（视图据此决定是否显示朗读按钮）。 */

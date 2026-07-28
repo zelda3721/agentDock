@@ -16,7 +16,8 @@ import {
   AD_REDUCE_MOTION_KEY
 } from 'design-system';
 import { ImportResult } from 'core-data';
-import { AppSettings, BreakpointKey, ImportPreview, SettingsFacade } from '../model/SettingsViewModel';
+import { TtsVoice } from 'core-speech';
+import { AppSettings, BreakpointKey, ImportPreview, SettingsFacade, TtsPrefs } from '../model/SettingsViewModel';
 
 /**
  * 设置页（T0.9-27 / T0.9-19）。
@@ -79,6 +80,18 @@ export struct SettingsPage {
   /** 减弱动效（§2.7.4）：App 内唯一来源，PersistentStorage 持久化（EntryAbility 已建立绑定） */
   @StorageLink(AD_REDUCE_MOTION_KEY) reduceMotion: boolean = false;
 
+  // ---- 朗读语音（T1.5 语音）------------------------------------------------
+  /** 本机是否有可用 TTS（无则整区隐藏，不给点了没用的控件）。 */
+  @State private ttsAvailable: boolean = false;
+  /** 可选音色（系统档来自 listVoices）。 */
+  @State private ttsVoices: TtsVoice[] = [];
+  /** 当前音色 person id（-1=引擎默认）。 */
+  @State private ttsPerson: number = -1;
+  /** 语速（0.5–2.0）。 */
+  @State private ttsSpeed: number = 1.0;
+  /** 音调（0.5–2.0）。 */
+  @State private ttsPitch: number = 1.0;
+
   private facade: SettingsFacade = new SettingsFacade();
   /** 2in1 无蜂窝概念：网络策略开关整行隐藏（§8 能力差异守卫） */
   private readonly hasCellular: boolean = deviceInfo.deviceType !== '2in1';
@@ -91,6 +104,103 @@ export struct SettingsPage {
       this.errorText = e.message;
       this.loadState = 'failed';
     });
+    this.loadTts();
+  }
+
+  /** 加载朗读语音区：可用性 + 音色清单 + 已存偏好。 */
+  private async loadTts(): Promise<void> {
+    this.ttsAvailable = await this.facade.isReadAloudAvailable();
+    if (!this.ttsAvailable) {
+      return;
+    }
+    this.ttsVoices = await this.facade.listTtsVoices();
+    const prefs: TtsPrefs = await this.facade.loadTtsPrefs();
+    this.ttsPerson = prefs.person;
+    this.ttsSpeed = prefs.speed;
+    this.ttsPitch = prefs.pitch;
+  }
+
+  /** 任一朗读偏好变更 → 存盘 + 即时生效（写穿失败如实吞日志，不谎报成功）。 */
+  private saveTtsPrefs(): void {
+    const prefs: TtsPrefs = { person: this.ttsPerson, speed: this.ttsSpeed, pitch: this.ttsPitch };
+    this.facade.saveTtsPrefs(prefs).catch((e: Error): void => {
+      this.lastBackupNote = `朗读设置保存失败：${e.message}`;
+    });
+  }
+
+  private previewTts(): void {
+    this.facade.previewTts({ person: this.ttsPerson, speed: this.ttsSpeed, pitch: this.ttsPitch });
+  }
+
+  /**
+   * 朗读语音区（T1.5 语音）：音色选择 + 语速/音调微调 + 试听。
+   * 仅在本机有可用 TTS 时渲染（loadTts 置 ttsAvailable）——不给点了没用的控件。
+   */
+  @Builder
+  ttsSection() {
+    Column({ space: AdSpace.s3 }) {
+      Text('朗读语音').settingsGroupTitle().width('100%')
+      Text('助手消息「朗读」用的语音。系统语音自然度有限——可换音色或微调语速/音调改善；' +
+        '若追求更自然，后续可接入远程/离线的高音质语音档。')
+        .settingsRowHelper().width('100%')
+
+      // 音色（系统档通常 2–3 款：中文女声/男声、英文）
+      if (this.ttsVoices.length > 0) {
+        Text('音色').settingsRowLabel().width('100%')
+        ForEach(this.ttsVoices, (v: TtsVoice): void => {
+          AdButton({
+            label: v.label,
+            variant: this.ttsPerson === v.id ? AdButtonVariant.PRIMARY : AdButtonVariant.GHOST,
+            btnSize: AdButtonSize.MD,
+            a11yText: `选择音色 ${v.label}`,
+            onAction: (): void => {
+              this.ttsPerson = v.id;
+              this.saveTtsPrefs();
+            }
+          })
+        }, (v: TtsVoice): string => `${v.id}`)
+      }
+
+      // 语速
+      Row() {
+        Text('语速').settingsRowLabel().layoutWeight(1)
+        Text(this.ttsSpeed.toFixed(1)).settingsRowHelper()
+      }.width('100%')
+      Slider({ value: this.ttsSpeed, min: 0.5, max: 2.0, step: 0.1 })
+        .width('100%')
+        .onChange((value: number, mode: SliderChangeMode): void => {
+          this.ttsSpeed = Math.round(value * 10) / 10;
+          if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
+            this.saveTtsPrefs();
+          }
+        })
+
+      // 音调（调低/调高可减弱机械感）
+      Row() {
+        Text('音调').settingsRowLabel().layoutWeight(1)
+        Text(this.ttsPitch.toFixed(1)).settingsRowHelper()
+      }.width('100%')
+      Slider({ value: this.ttsPitch, min: 0.5, max: 2.0, step: 0.1 })
+        .width('100%')
+        .onChange((value: number, mode: SliderChangeMode): void => {
+          this.ttsPitch = Math.round(value * 10) / 10;
+          if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
+            this.saveTtsPrefs();
+          }
+        })
+
+      AdButton({
+        label: '试听',
+        variant: AdButtonVariant.SECONDARY,
+        btnSize: AdButtonSize.MD,
+        a11yText: '试听当前朗读语音',
+        onAction: (): void => {
+          this.previewTts();
+        }
+      })
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
   }
 
   /** 保存并即时生效；失败回滚 UI 状态并如实提示（写穿失败=没保存成，UI 不许说谎）。 */
@@ -279,6 +389,12 @@ export struct SettingsPage {
             this.reduceMotion = checked;
           }
         })
+
+        // ---- 朗读语音（T1.5 语音；仅本机有可用 TTS 时显示）------------------
+        if (this.ttsAvailable) {
+          AdDivider()
+          this.ttsSection()
+        }
 
         AdDivider()
 
