@@ -129,8 +129,11 @@ export struct AdMessage {
   };
   onSwitchToLocal: () => void = () => {
   };
-  /** 「继续」续写（T1.0-04b）：回答撞长度上限时，接着写完（追加到同一气泡）。 */
-  onContinue: () => void = () => {
+  /**
+   * 「继续」续写（T1.0-04b）：回答撞长度上限时，接着写完（追加到同一气泡）。
+   * 回传 this.msgId（复用安全）——同 onReadAloud 的 @Reusable 闭包约束。
+   */
+  onContinue: (id: string) => void = () => {
   };
   /**
    * 「继续」是否可用：仅当本条是会话**末条**时为真。续写只对末条语义成立——
@@ -143,7 +146,8 @@ export struct AdMessage {
    * 思考不是回答：不并入正文、不落库（重读为空）。
    */
   @Prop thinkingText: string = '';
-  onRailSegment: (segment: number) => void = () => {
+  /** 溯源条分段点击 → 检视。回传 this.msgId（复用安全）——同 @Reusable 闭包约束。 */
+  onRailSegment: (id: string, segment: number) => void = () => {
   };
   /**
    * 工具确认决策回调（§9.4）：NEEDS_CONFIRM 卡片上「拒绝/仅本次/始终允许该域名」触发。
@@ -403,7 +407,7 @@ export struct AdMessage {
                 btnSize: AdButtonSize.SM,
                 a11yText: '继续这条回答',
                 onAction: () => {
-                  this.onContinue();
+                  this.onContinue(this.msgId);
                 }
               })
             }
@@ -446,7 +450,7 @@ export struct AdMessage {
           data: this.provenance,
           settled: true,
           onSegmentTap: (segment: number): void => {
-            this.onRailSegment(segment);
+            this.onRailSegment(this.msgId, segment);
           }
         })
       }

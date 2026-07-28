@@ -147,11 +147,12 @@ export struct MessageStream {
                   onSwitchToLocal: () => {
                     this.onSwitchToLocal();
                   },
-                  onContinue: () => {
-                    this.onContinue(item.id);
+                  // 回传 AdMessage 自身 @Prop 的 id（复用安全），不捕获 item（@Reusable 闭包不重绑）
+                  onContinue: (id: string) => {
+                    this.onContinue(id);
                   },
-                  onRailSegment: (segment: number) => {
-                    this.onRailSegment(item.id, segment);
+                  onRailSegment: (id: string, segment: number) => {
+                    this.onRailSegment(id, segment);
                   },
                   onToolConfirm: (callId: string, decision: string) => {
                     this.onToolConfirm(callId, decision);
