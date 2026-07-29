@@ -48,6 +48,12 @@ export interface AsrOptions {
   readonly language?: string;
   /** 采样率，默认 16000。系统档固定 16k/mono/PCM16。 */
   readonly sampleRate?: number;
+  /**
+   * 请求带回声消除的采集（电话模式）。开则用 SOURCE_TYPE_VOICE_COMMUNICATION——系统硬件 AEC，
+   * 即便识别与朗读短暂重叠也把 TTS 从麦输入里消掉，避免助手识别到自己的朗读（§18.4）。
+   * 仅本模块自管采集的引擎（sherpa）生效；系统档 ASR 用内建麦，无法指定。
+   */
+  readonly echoCancel?: boolean;
 }
 
 /** ASR 一次增量或最终结果。 */

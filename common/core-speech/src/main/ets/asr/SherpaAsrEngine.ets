@@ -11,9 +11,10 @@
  */
 
 import { OfflineRecognizer, OfflineRecognizerConfig, OfflineRecognizerResult, OfflineStream, Samples } from 'sherpa_onnx';
+import { audio } from '@kit.AudioKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Logger } from 'core-infra';
-import { AudioCapture } from '../audio/AudioCapture';
+import { AudioCapture, DEFAULT_FRAME_BYTES } from '../audio/AudioCapture';
 import { SherpaModelManager } from './SherpaModelManager';
 import { AsrEngine, AsrListener, AsrOptions, SpeechBackend, SpeechError } from '../model/SpeechTypes';
 
@@ -70,12 +71,16 @@ export class SherpaAsrEngine implements AsrEngine {
     this.endpointEmitted = false;
     try {
       this.capture = new AudioCapture();
+      // 电话模式请求 AEC：用 VOICE_COMMUNICATION，防识别到重叠的自身朗读（§18.4）。
+      const source: audio.SourceType = opts?.echoCancel === true
+        ? audio.SourceType.SOURCE_TYPE_VOICE_COMMUNICATION
+        : audio.SourceType.SOURCE_TYPE_VOICE_RECOGNITION;
       await this.capture.start((frame: Uint8Array): void => {
         if (this.active) {
           this.chunks.push(frame);
           this.vadStep(frame);
         }
-      });
+      }, DEFAULT_FRAME_BYTES, source);
       listener.onStart('sherpa');
     } catch (e) {
       await this.teardownCapture();

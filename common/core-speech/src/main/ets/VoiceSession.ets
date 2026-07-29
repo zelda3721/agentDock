@@ -50,6 +50,8 @@ export interface VoiceSessionCallbacks {
   onError: (message: string) => void;
   /** 识别落到的档（system/remote/sherpa）——UI 展示"到底是不是离线"。 */
   onBackend: (backend: SpeechBackend) => void;
+  /** 诊断（可选）：说话中插话检测的实时能量——rms=麦，floor=回声残留底噪。屏上读数校准用。 */
+  onVadDebug?: (rms: number, floor: number) => void;
 }
 
 export class VoiceSession {
@@ -147,7 +149,9 @@ export class VoiceSession {
       }
     };
 
-    const backend: SpeechBackend | null = await SpeechService.get().startDictation(listener);
+    // echoCancel：电话模式全程用 AEC 采集，即便与朗读尾音/误触发短暂重叠也不把 TTS 识别进来。
+    const backend: SpeechBackend | null =
+      await SpeechService.get().startDictation(listener, { echoCancel: true });
     if (backend === null) {
       this.failSession('本机暂无可用的语音识别。可在设置中配置远程/离线语音，或用键盘输入。');
       return;
@@ -249,7 +253,12 @@ export class VoiceSession {
     if (this.state === 'thinking') {
       this.setState('speaking');   // 首个 delta 到 → 进入说话态（首句合成即将开始）
       // 说话中并行声控插话：用户说话叠加在回声残留之上被自适应检测到 → 打断
-      this.barge.start((): void => { this.onBargeDetected(); });
+      this.barge.start((): void => { this.onBargeDetected(); },
+        (rms: number, floor: number): void => {
+          if (this.cb.onVadDebug !== undefined) {
+            this.cb.onVadDebug(rms, floor);
+          }
+        });
     }
     this.enqueueCompleteSentences();
   }

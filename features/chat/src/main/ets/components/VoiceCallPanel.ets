@@ -37,6 +37,9 @@ export struct VoiceCallPanel {
   @State private backend: string = '';
   /** 本次开面板后是否已完成过至少一轮（决定是否显示「再说一次」）。 */
   @State private hadTurn: boolean = false;
+  /** 诊断读数：说话中插话检测的麦能量 / 回声残留底噪（校准声控打断用）。 */
+  @State private vadRms: number = 0;
+  @State private vadFloor: number = 0;
 
   private session: VoiceSession | null = null;
 
@@ -52,7 +55,8 @@ export struct VoiceCallPanel {
       onTranscript: (t: string): void => { this.transcript = t; },
       onResponse: (r: string): void => { this.response = r; },
       onError: (m: string): void => { this.errorMsg = m; },
-      onBackend: (b: SpeechBackend): void => { this.backend = b; }
+      onBackend: (b: SpeechBackend): void => { this.backend = b; },
+      onVadDebug: (rms: number, floor: number): void => { this.vadRms = rms; this.vadFloor = floor; }
     });
     this.startTurn();
   }
@@ -114,6 +118,17 @@ export struct VoiceCallPanel {
       }
       .width('100%')
       .justifyContent(FlexAlign.Center)
+
+      // 诊断读数（说话中）：麦能量 vs 回声残留——两者拉开差距则声控打断成立
+      if (this.state === 'speaking' && this.vadFloor > 0) {
+        Text(`回声残留 floor=${this.vadFloor}　麦 rms=${this.vadRms}`)
+          .fontSize(AdType.bodyS.size)
+          .lineHeight(AdType.bodyS.lineHeight)
+          .fontFamily(AdType.bodyS.family)
+          .fontColor(this.vadRms > this.vadFloor * 2 ? AdColor.successFg : AdColor.inkTertiary)
+          .width('100%')
+          .textAlign(TextAlign.Center)
+      }
 
       // 识别档指示（确认到底是不是离线）
       if (this.backend.length > 0) {

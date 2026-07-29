@@ -38,18 +38,20 @@ const LOG_EVERY_MS: number = 600;
 export class BargeInDetector {
   private capture: AudioCapture | null = null;
   private onBargeIn: () => void = () => {};
+  private onDebug: ((rms: number, floor: number) => void) | null = null;
   private speechMs: number = 0;
   private elapsedMs: number = 0;
   private logAccMs: number = 0;
   private noiseFloor: number = MIN_ABS_RMS;
   private fired: boolean = false;
 
-  /** 开始监听插话。onBargeIn 在检出用户持续说话（叠加在回声残留之上）时触发一次。 */
-  async start(onBargeIn: () => void): Promise<void> {
+  /** 开始监听插话。onBargeIn 在检出用户持续说话（叠加在回声残留之上）时触发一次。onDebug 供屏上读数。 */
+  async start(onBargeIn: () => void, onDebug?: (rms: number, floor: number) => void): Promise<void> {
     if (this.capture !== null) {
       return;
     }
     this.onBargeIn = onBargeIn;
+    this.onDebug = onDebug !== undefined ? onDebug : null;
     this.speechMs = 0;
     this.elapsedMs = 0;
     this.logAccMs = 0;
@@ -105,6 +107,9 @@ export class BargeInDetector {
         { key: 'floor', value: Math.round(this.noiseFloor) },
         { key: 'spikeMs', value: this.speechMs }
       ]);
+      if (this.onDebug !== null) {
+        this.onDebug(Math.round(rms), Math.round(this.noiseFloor));
+      }
     }
 
     if (this.elapsedMs >= WARMUP_MS && this.speechMs >= BARGE_MIN_MS) {
