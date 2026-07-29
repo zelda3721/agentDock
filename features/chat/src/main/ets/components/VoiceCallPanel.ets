@@ -40,6 +40,8 @@ export struct VoiceCallPanel {
   /** 诊断读数：说话中插话检测的麦能量 / 回声残留底噪（校准声控打断用）。 */
   @State private vadRms: number = 0;
   @State private vadFloor: number = 0;
+  /** 声控插话开关。默认关（外放会把自己朗读收进来）；戴耳机时可开，真正免手打断。 */
+  @State private bargeOn: boolean = false;
 
   private session: VoiceSession | null = null;
 
@@ -58,6 +60,7 @@ export struct VoiceCallPanel {
       onBackend: (b: SpeechBackend): void => { this.backend = b; },
       onVadDebug: (rms: number, floor: number): void => { this.vadRms = rms; this.vadFloor = floor; }
     });
+    this.session.setBargeEnabled(this.bargeOn);
     this.startTurn();
   }
 
@@ -166,6 +169,24 @@ export struct VoiceCallPanel {
 
       Blank()
 
+      // 声控插话开关（默认关——外放会把朗读收进识别；戴耳机时开，真正免手打断）
+      Row({ space: AdSpace.s2 }) {
+        Toggle({ type: ToggleType.Switch, isOn: this.bargeOn })
+          .onChange((on: boolean): void => {
+            this.bargeOn = on;
+            if (this.session !== null) {
+              this.session.setBargeEnabled(on);
+            }
+          })
+        Text('声控插话（戴耳机时开）')
+          .fontSize(AdType.bodyS.size)
+          .lineHeight(AdType.bodyS.lineHeight)
+          .fontFamily(AdType.bodyS.family)
+          .fontColor(AdColor.inkSecondary)
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.Center)
+
       // 控制区
       Row({ space: AdSpace.s3 }) {
         // 说话中可手动打断（本机 AEC 不足，用按钮打断而非声控，避免朗读被收音误触发）
@@ -240,7 +261,7 @@ export struct VoiceCallPanel {
       case 'thinking':
         return '思考中…';
       case 'speaking':
-        return '读答案中…（直接说话即可打断）';
+        return this.bargeOn ? '读答案中…（可直接说话打断）' : '读答案中…（点『打断说话』）';
       case 'error':
         return '出错了';
       default:

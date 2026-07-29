@@ -80,6 +80,13 @@ export class VoiceSession {
   /** 说话中并行监听用户插话（声控 barge-in，自适应双讲检测）。 */
   private readonly barge: BargeInDetector = new BargeInDetector();
 
+  /**
+   * 声控插话开关。默认 **关**——外放时麦会收到自己的 TTS（本机系统 TTS 无法 AEC 消除），
+   * 开着会把朗读误当用户插话。**戴耳机**时麦听不到扬声器，才可开启，此时声控打断真正可用。
+   * 参考 HuggingFace speech-to-speech：本地麦场景 should_listen.clear() 走半双工，插话靠耳机。
+   */
+  private bargeEnabled: boolean = false;
+
   constructor(responder: VoiceResponder, callbacks: VoiceSessionCallbacks) {
     this.responder = responder;
     this.cb = callbacks;
@@ -87,6 +94,14 @@ export class VoiceSession {
 
   getState(): VoiceState {
     return this.state;
+  }
+
+  /** 设置声控插话开关（戴耳机时才建议开）。可在会话中随时切换。 */
+  setBargeEnabled(on: boolean): void {
+    this.bargeEnabled = on;
+    if (!on) {
+      this.barge.stop();
+    }
   }
 
   /** 开始一轮免手对话（进入聆听）。 */
@@ -252,13 +267,16 @@ export class VoiceSession {
     this.cb.onResponse(this.responseText);
     if (this.state === 'thinking') {
       this.setState('speaking');   // 首个 delta 到 → 进入说话态（首句合成即将开始）
-      // 说话中并行声控插话：用户说话叠加在回声残留之上被自适应检测到 → 打断
-      this.barge.start((): void => { this.onBargeDetected(); },
-        (rms: number, floor: number): void => {
-          if (this.cb.onVadDebug !== undefined) {
-            this.cb.onVadDebug(rms, floor);
-          }
-        });
+      // 半双工：默认**说话中不开麦**（外放时开麦必然把自己朗读收进来→自问自答）。
+      // 仅"声控插话"开启（戴耳机）时才并行监听插话——耳机下麦听不到扬声器，检测到=真用户插话。
+      if (this.bargeEnabled) {
+        this.barge.start((): void => { this.onBargeDetected(); },
+          (rms: number, floor: number): void => {
+            if (this.cb.onVadDebug !== undefined) {
+              this.cb.onVadDebug(rms, floor);
+            }
+          });
+      }
     }
     this.enqueueCompleteSentences();
   }
