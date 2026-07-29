@@ -209,7 +209,7 @@ export struct VoiceCallPanel {
       case 'thinking':
         return '思考中…';
       case 'speaking':
-        return '说话中…';
+        return '说话中…（可随时插话打断）';
       case 'error':
         return '出错了';
       default:

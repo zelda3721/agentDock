@@ -15,6 +15,7 @@
 import { Logger } from 'core-infra';
 import { AsrListener, AsrResult, SpeechBackend, SpeechError, TtsListener } from './model/SpeechTypes';
 import { SpeechService } from './SpeechService';
+import { BargeInDetector } from './BargeInDetector';
 
 const TAG: string = 'VoiceSession';
 /** 出过增量结果后、持续多久无新结果判端点（流式引擎如 FunASR 用；每条 onResult 续期）。 */
@@ -66,6 +67,8 @@ export class VoiceSession {
   private ttsPlaying: boolean = false;
   private responderDone: boolean = false;
   private cancelResponder: (() => void) | null = null;
+  /** 插话检测（说话中并行监听用户打断）。 */
+  private readonly barge: BargeInDetector = new BargeInDetector();
 
   constructor(responder: VoiceResponder, callbacks: VoiceSessionCallbacks) {
     this.responder = responder;
@@ -90,6 +93,7 @@ export class VoiceSession {
   stop(): void {
     this.running = false;
     this.clearTimers();
+    this.barge.stop();
     SpeechService.get().cancelDictation();
     if (this.cancelResponder !== null) {
       this.cancelResponder();
@@ -106,6 +110,7 @@ export class VoiceSession {
   // ==========================================================================
 
   private async beginListening(): Promise<void> {
+    this.barge.stop();   // 若上一态在监听插话，先停（避免与主 ASR 抢麦）
     this.asrFinal = '';
     this.asrPartial = '';
     this.endpointFired = false;
@@ -228,6 +233,8 @@ export class VoiceSession {
     this.cb.onResponse(this.responseText);
     if (this.state === 'thinking') {
       this.setState('speaking');   // 首个 delta 到 → 进入说话态（首句合成即将开始）
+      // 说话中并行监听插话（barge-in）：用户一开口就打断
+      this.barge.start((): void => { this.onBargeIn(); });
     }
     this.enqueueCompleteSentences();
   }
@@ -299,11 +306,32 @@ export class VoiceSession {
     });
   }
 
-  /** LLM 已完成且队列播空 → 单轮结束（回 idle）。 */
+  /** 插话（barge-in）：说话中用户开口 → 立即停播 + 取消生成 + 转聆听听用户新的话。 */
+  private onBargeIn(): void {
+    if (!this.running || this.state !== 'speaking') {
+      return;
+    }
+    Logger.info(TAG, 'barge-in: user interrupted');
+    this.barge.stop();
+    SpeechService.get().stopReading();
+    if (this.cancelResponder !== null) {
+      this.cancelResponder();
+      this.cancelResponder = null;
+    }
+    this.ttsQueue = [];
+    this.ttsPlaying = false;
+    this.responderDone = true;   // 本轮作废
+    this.beginListening();
+  }
+
+  /** LLM 已完成且队列播空 → 本轮讲完。连续模式下**自动回到聆听**（真·电话，直到用户挂断）。 */
   private maybeFinishTurn(): void {
     if (this.responderDone && !this.ttsPlaying && this.ttsQueue.length === 0) {
-      this.running = false;
-      this.setState('idle');
+      if (this.running) {
+        this.beginListening();
+      } else {
+        this.setState('idle');
+      }
     }
   }
 
@@ -311,6 +339,7 @@ export class VoiceSession {
 
   private failSession(message: string): void {
     this.clearTimers();
+    this.barge.stop();
     if (this.cancelResponder !== null) {
       this.cancelResponder();
       this.cancelResponder = null;

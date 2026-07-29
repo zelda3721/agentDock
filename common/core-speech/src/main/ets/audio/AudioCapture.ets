@@ -42,7 +42,8 @@ export class AudioCapture {
    * 开始采集。frame 通过 sink 定长回调。
    * @throws 权限被拒 / 设备占用时抛 BusinessError（由上层收敛为 SpeechError）。
    */
-  async start(sink: AudioFrameSink, frameBytes: number = DEFAULT_FRAME_BYTES): Promise<void> {
+  async start(sink: AudioFrameSink, frameBytes: number = DEFAULT_FRAME_BYTES,
+             source: audio.SourceType = audio.SourceType.SOURCE_TYPE_VOICE_RECOGNITION): Promise<void> {
     if (this.capturer !== null) {
       throw new Error('AudioCapture already running');
     }
@@ -56,8 +57,9 @@ export class AudioCapture {
       sampleFormat: audio.AudioSampleFormat.SAMPLE_FORMAT_S16LE,
       encodingType: audio.AudioEncodingType.ENCODING_TYPE_RAW
     };
+    // barge-in 用 VOICE_COMMUNICATION（系统 AEC 回声消除，扬声器外放时防 TTS 自激打断，§18.4）
     const capturerInfo: audio.AudioCapturerInfo = {
-      source: audio.SourceType.SOURCE_TYPE_VOICE_RECOGNITION,
+      source,
       capturerFlags: 0
     };
     const options: audio.AudioCapturerOptions = { streamInfo, capturerInfo };
