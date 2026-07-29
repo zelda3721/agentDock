@@ -24,10 +24,11 @@ const FRAME_MS: number = 40;
 /**
  * 能量端点（VAD）阈值：RMS 超 SPEECH 判说话；低于 SILENCE 判静音；两者之间是"灰区"——
  * 既不累积静音也不清零，防说话音量起伏（尾音、软辅音）被误当静音而**中途截断**。
- * 灰区拉宽（500..300）+ 端点延到 1000ms 以容纳自然句间停顿。0..32768 量纲，可按真机麦增益调。
+ * 阈值别调太低：环境噪声/扬声器回声尾音会越过 SPEECH 被误当说话（半双工靠回声护栏，这里守噪声底）。
+ * 端点从 700 放宽到 1000ms 是修"句间自然停顿被拦腰截断"的主要手段。0..32768 量纲，可按真机麦增益调。
  */
-const SPEECH_RMS: number = 500;
-const SILENCE_RMS: number = 300;
+const SPEECH_RMS: number = 600;
+const SILENCE_RMS: number = 400;
 /** 说话后持续静音多久判端点（§17：500–800ms；实测句间停顿易误切，放宽到 1000ms）。 */
 const ENDPOINT_SILENCE_MS: number = 1000;
 

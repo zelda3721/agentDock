@@ -79,6 +79,12 @@ export struct VoiceCallPanel {
     this.onClose();
   }
 
+  private interrupt(): void {
+    if (this.session !== null) {
+      this.session.interrupt();
+    }
+  }
+
   build() {
     Column({ space: AdSpace.s4 }) {
       // 标题
@@ -147,6 +153,16 @@ export struct VoiceCallPanel {
 
       // 控制区
       Row({ space: AdSpace.s3 }) {
+        // 说话中可手动打断（本机 AEC 不足，用按钮打断而非声控，避免朗读被收音误触发）
+        if (this.state === 'speaking') {
+          AdButton({
+            label: '打断说话',
+            variant: AdButtonVariant.SECONDARY,
+            btnSize: AdButtonSize.LG,
+            a11yText: '打断助手朗读，立即说话',
+            onAction: (): void => { this.interrupt(); }
+          })
+        }
         // 单轮结束/出错后可再说一次
         if (this.state === 'idle' || this.state === 'error') {
           if (this.hadTurn || this.state === 'error') {
@@ -209,7 +225,7 @@ export struct VoiceCallPanel {
       case 'thinking':
         return '思考中…';
       case 'speaking':
-        return '说话中…（可随时插话打断）';
+        return '读答案中…（直接说话即可打断）';
       case 'error':
         return '出错了';
       default:

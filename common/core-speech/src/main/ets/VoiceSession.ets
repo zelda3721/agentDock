@@ -22,6 +22,12 @@ const TAG: string = 'VoiceSession';
 const SILENCE_ENDPOINT_MS: number = 1500;
 /** 单轮最长聆听（安全兜底：VAD/端点都没来也不无限听）。 */
 const MAX_LISTEN_MS: number = 15000;
+/**
+ * 回声护栏：一轮朗读播完后，等扬声器尾音衰减再开麦。**半双工**的关键——
+ * 本机 AEC 不足以在放音时消掉自己的 TTS，若说完立刻开麦会把朗读尾音收进识别、
+ * 当成"用户新的一句"→ 助手自问自答、对话错乱（§18.4 回声问题）。打断改用手动按钮。
+ */
+const ECHO_GUARD_MS: number = 400;
 /** 句末标点（逐句切分）。 */
 const SENTENCE_ENDINGS: string = '。！？!?…\n';
 
@@ -67,7 +73,9 @@ export class VoiceSession {
   private ttsPlaying: boolean = false;
   private responderDone: boolean = false;
   private cancelResponder: (() => void) | null = null;
-  /** 插话检测（说话中并行监听用户打断）。 */
+  /** 回声护栏定时器（说完到开麦之间的静默等待）。 */
+  private echoGuardTimer: number = -1;
+  /** 说话中并行监听用户插话（声控 barge-in，自适应双讲检测）。 */
   private readonly barge: BargeInDetector = new BargeInDetector();
 
   constructor(responder: VoiceResponder, callbacks: VoiceSessionCallbacks) {
@@ -110,7 +118,6 @@ export class VoiceSession {
   // ==========================================================================
 
   private async beginListening(): Promise<void> {
-    this.barge.stop();   // 若上一态在监听插话，先停（避免与主 ASR 抢麦）
     this.asrFinal = '';
     this.asrPartial = '';
     this.endpointFired = false;
@@ -202,9 +209,17 @@ export class VoiceSession {
     }
   }
 
+  private clearEchoGuardTimer(): void {
+    if (this.echoGuardTimer >= 0) {
+      clearTimeout(this.echoGuardTimer);
+      this.echoGuardTimer = -1;
+    }
+  }
+
   private clearTimers(): void {
     this.clearSilenceTimer();
     this.clearMaxListenTimer();
+    this.clearEchoGuardTimer();
   }
 
   // ==========================================================================
@@ -233,8 +248,8 @@ export class VoiceSession {
     this.cb.onResponse(this.responseText);
     if (this.state === 'thinking') {
       this.setState('speaking');   // 首个 delta 到 → 进入说话态（首句合成即将开始）
-      // 说话中并行监听插话（barge-in）：用户一开口就打断
-      this.barge.start((): void => { this.onBargeIn(); });
+      // 说话中并行声控插话：用户说话叠加在回声残留之上被自适应检测到 → 打断
+      this.barge.start((): void => { this.onBargeDetected(); });
     }
     this.enqueueCompleteSentences();
   }
@@ -306,13 +321,26 @@ export class VoiceSession {
     });
   }
 
-  /** 插话（barge-in）：说话中用户开口 → 立即停播 + 取消生成 + 转聆听听用户新的话。 */
-  private onBargeIn(): void {
+  /** 声控插话（自适应双讲检测判定用户开口）。 */
+  private onBargeDetected(): void {
+    Logger.info(TAG, 'barge: voice-detected');
+    this.doInterrupt();
+  }
+
+  /** 手动打断（说话中用户点「打断说话」）——声控没抓到时的兜底，与声控走同一路。 */
+  interrupt(): void {
+    Logger.info(TAG, 'barge: manual');
+    this.doInterrupt();
+  }
+
+  /**
+   * 打断当前朗读：停播 + 取消生成 + **待插话采集释放后**转聆听听用户新的话。
+   * 先 await barge.stop() 再开 ASR——两路采集抢麦会让识别启动失败（早期 bug）。
+   */
+  private async doInterrupt(): Promise<void> {
     if (!this.running || this.state !== 'speaking') {
       return;
     }
-    Logger.info(TAG, 'barge-in: user interrupted');
-    this.barge.stop();
     SpeechService.get().stopReading();
     if (this.cancelResponder !== null) {
       this.cancelResponder();
@@ -321,23 +349,44 @@ export class VoiceSession {
     this.ttsQueue = [];
     this.ttsPlaying = false;
     this.responderDone = true;   // 本轮作废
-    this.beginListening();
+    this.setState('listening');  // 立刻切 UI + 挡住 maybeFinishTurn 重入（state 已非 speaking）
+    await this.barge.stop();      // 让插话采集（VOICE_COMMUNICATION）先释放，避免与 ASR 抢麦
+    if (this.running) {
+      this.beginListening();
+    }
   }
 
-  /** LLM 已完成且队列播空 → 本轮讲完。连续模式下**自动回到聆听**（真·电话，直到用户挂断）。 */
+  /** LLM 已完成且队列播空 → 本轮讲完。连续模式下**过回声护栏后自动回到聆听**（半双工，直到挂断）。 */
   private maybeFinishTurn(): void {
-    // 只在"说话态"收尾——barge-in 已把状态切到 listening 后，被取消的 responder 的 onDone 会再触发
-    // 本函数；不加此守卫就会**二次 beginListening**（引擎已 active → "语音识别正忙"）。
+    // 只在"说话态"收尾——已排程/已转聆听后被取消 responder 的 onDone 会再触发本函数；
+    // 不加此守卫会**二次开麦**（引擎已 active → "语音识别正忙"）。
     if (this.state !== 'speaking') {
       return;
     }
     if (this.responderDone && !this.ttsPlaying && this.ttsQueue.length === 0) {
       if (this.running) {
-        this.beginListening();
+        this.scheduleListenAfterEcho();
       } else {
+        this.barge.stop();
         this.setState('idle');
       }
     }
+  }
+
+  /**
+   * 半双工衔接：一轮朗读正常播完（非插话）→ 立刻切 UI 到"聆听中"（也把 maybeFinishTurn 重入挡住）
+   * → 停插话采集 + 等 ECHO_GUARD_MS 让扬声器尾音衰减 → 再真开麦。杜绝把自己朗读尾音收进识别。
+   */
+  private scheduleListenAfterEcho(): void {
+    this.setState('listening');
+    this.barge.stop();
+    this.clearEchoGuardTimer();
+    this.echoGuardTimer = setTimeout((): void => {
+      this.echoGuardTimer = -1;
+      if (this.running) {
+        this.beginListening();
+      }
+    }, ECHO_GUARD_MS);
   }
 
   // ==========================================================================
