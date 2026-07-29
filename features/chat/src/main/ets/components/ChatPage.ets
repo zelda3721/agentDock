@@ -21,6 +21,7 @@ import {
 } from 'design-system';
 import { ChatController, ChatHost } from '../model/ChatController';
 import { ReadAloudController } from '../model/ReadAloudController';
+import { VoiceCallPanel } from './VoiceCallPanel';
 import { BrainMenuVM, BrainVM, BreakpointKey, ChatMessageVM, ConversationVM, CtxUsageVM, LoadState } from '../model/ChatViewModel';
 import { ChatComposer } from './ChatComposer';
 import { ConversationListPane } from './ConversationListPane';
@@ -124,6 +125,9 @@ export struct ChatPage {
   @State private readingId: string = '';
   private readonly readAloud: ReadAloudController = new ReadAloudController();
 
+  /** 免手对话面板开合（T1.5 P1）。 */
+  @State private voicePanelOpen: boolean = false;
+
   /** sm 的两页栈（列表 ↔ 聊天） */
   private navStack: NavPathStack = new NavPathStack();
   private scroller: Scroller = new Scroller();
@@ -221,6 +225,20 @@ export struct ChatPage {
     this.controller.dispose();
     // 离开聊天页即停朗读（语音不该跟着页面走）
     this.readAloud.dispose();
+  }
+
+  /** 免手对话面板（bindSheet 内容）：VoiceSession 的 LLM 应答接 ChatController.sendVoiceTurn。 */
+  @Builder
+  voiceCallSheet() {
+    VoiceCallPanel({
+      responder: (query: string, onDelta: (delta: string) => void, onDone: () => void,
+        onError: (message: string) => void): (() => void) => {
+        return this.controller.sendVoiceTurn(query, onDelta, onDone, onError);
+      },
+      onClose: (): void => {
+        this.voicePanelOpen = false;
+      }
+    })
   }
 
   /**
@@ -466,9 +484,18 @@ export struct ChatPage {
         },
         onOpenModels: (): void => {
           this.onOpenModels();
+        },
+        onVoiceMode: (): void => {
+          this.voicePanelOpen = true;
         }
       })
     }
+    .bindSheet($$this.voicePanelOpen, this.voiceCallSheet(), {
+      detents: [SheetSize.LARGE],
+      preferType: SheetType.CENTER,
+      showClose: false,
+      title: { title: '免手对话' }
+    })
     .width('100%')
     .height('100%')
     // 聊天页重新可见（用户去模型页下完模型回来）→ 重读当前大脑。

@@ -107,6 +107,11 @@ export class ChatController {
   /** 最近一次用户输入，用于「重试」（中断/失败后原样重发） */
   private lastUserText: string = '';
 
+  // 语音会话钩子（免手对话 P1）：一轮进行时把助手文本增量/完成/出错透传给 VoiceSession 驱动 TTS。
+  private voiceDelta: ((delta: string) => void) | null = null;
+  private voiceDone: (() => void) | null = null;
+  private voiceError: ((message: string) => void) | null = null;
+
   /** 攒批缓冲：**普通字段，绝不是 @State** —— 见 FLUSH_INTERVAL_MS 的注释 */
   private pendingText: string = '';
   /** 思考增量攒批缓冲（与 pendingText 同一 flush 节拍，同样绝不是 @State） */
@@ -372,6 +377,25 @@ export class ChatController {
     this.consume(turn);
   }
 
+  /**
+   * 免手对话（P1）：把识别文本作为**正常聊天轮**发出（走绑定智能体/记忆/工具，且入会话流），
+   * 同时把助手正文增量/完成/出错透传给调用方（VoiceSession 据此逐句 TTS）。返回取消函数。
+   */
+  sendVoiceTurn(text: string, onDelta: (delta: string) => void, onDone: () => void,
+                onError: (message: string) => void): () => void {
+    if (this.convId.length === 0 || text.trim().length === 0 || this.handle !== null) {
+      onError('当前无法发起语音对话（无会话或正忙）。');
+      return (): void => {};
+    }
+    this.voiceDelta = onDelta;
+    this.voiceDone = onDone;
+    this.voiceError = onError;
+    this.send(text);
+    return (): void => {
+      this.stop();
+    };
+  }
+
   /** [R-37] 中断：已生成内容**保留**并标注「已中断」，绝不清空。 */
   stop(): void {
     if (this.handle === null) {
@@ -473,6 +497,10 @@ export class ChatController {
       const delta: string = ev.text !== undefined ? ev.text : '';
       // ← 攒批：只累加字符串，不碰 @State、不 notifyDataChange
       this.pendingText += delta;
+      // 免手对话：助手正文增量透传给 VoiceSession（驱动逐句 TTS）——只透传答案文本，不含思考/工具
+      if (this.voiceDelta !== null && delta.length > 0) {
+        this.voiceDelta(delta);
+      }
       return;
     }
     if (ev.type === 'thinking') {
@@ -539,6 +567,22 @@ export class ChatController {
     this.handle = null;
     this.streamingIndex = -1;
     this.host.onStreaming(false);
+
+    // 免手对话收尾：按落定状态回调 VoiceSession（DONE/预算截断=正常出声；ERROR=报错；ABORTED=当完成，已流出的照读）
+    if (this.voiceDone !== null || this.voiceError !== null) {
+      const done: (() => void) | null = this.voiceDone;
+      const fail: ((message: string) => void) | null = this.voiceError;
+      this.voiceDelta = null;
+      this.voiceDone = null;
+      this.voiceError = null;
+      if (status === AdMessageStatus.ERROR) {
+        if (fail !== null) {
+          fail(errorText.length > 0 ? errorText : '生成失败');
+        }
+      } else if (done !== null) {
+        done();
+      }
+    }
     // 大脑可能在这一轮里没了（用户在模型页删了模型 / 远程 Provider 被移除）：
     // 落定后重读一次，顶栏与输入区跟着变——绝不让它停在上一轮的旧事实上。
     this.refreshBrain();

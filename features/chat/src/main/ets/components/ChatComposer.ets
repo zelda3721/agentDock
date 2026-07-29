@@ -85,6 +85,9 @@ export struct ChatComposer {
   };
   onOpenModels: () => void = () => {
   };
+  /** 进入免手对话（电话模式起步版，T1.5 P1）。 */
+  onVoiceMode: () => void = () => {
+  };
 
   @StorageProp(AD_BREAKPOINT_KEY) bp: AdBreakpoint = AdBreakpoint.SM;
   @State private draft: string = '';
@@ -233,6 +236,11 @@ export struct ChatComposer {
         // 互相打架的指令（百分比宽以父容器整宽为基准，会把发送按钮挤出去）。
         .layoutWeight(1)
 
+        // 免手对话入口（电话模式起步版）：有识别档、可输入、非流式时显示。
+        if (this.voiceAvailable && this.composerEnabled && !this.streaming) {
+          this.voiceModeButton()
+        }
+
         // 麦克风（按住说话）：仅在有可用识别档、可输入、且非流式时显示。
         // 用 onTouch 做「按住/松手」——不是点击：按下起识别，松手出定稿并回填输入框。
         if (this.voiceAvailable && this.composerEnabled && !this.streaming) {
@@ -334,6 +342,23 @@ export struct ChatComposer {
       } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
         this.stopVoice();
       }
+    })
+  }
+
+  /** 免手对话入口按钮（听筒图标）。点击进入语音会话面板。 */
+  @Builder
+  voiceModeButton() {
+    Stack() {
+      AdGlyph({ kind: AdGlyphKind.PHONE, glyphSize: 20, color: AdColor.inkSecondary })
+    }
+    .width(40)
+    .height(40)
+    .borderRadius(20)
+    .backgroundColor(AdColor.surfaceRaised)
+    .border({ width: 1, color: AdColor.border })
+    .accessibilityText('免手对话')
+    .onClick(() => {
+      this.onVoiceMode();
     })
   }
 

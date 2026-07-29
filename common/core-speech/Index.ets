@@ -16,6 +16,9 @@ export * from './src/main/ets/model/RemoteAudioConfig';
 // 门面：能力检测 + 分层降级（上层唯一入口）
 export * from './src/main/ets/SpeechService';
 
+// 语音会话状态机（P1 免手对话 / 电话模式内核）
+export * from './src/main/ets/VoiceSession';
+
 // TTS 文本净化（可独立复用/单测）
 export * from './src/main/ets/tts/TtsSanitizer';
 

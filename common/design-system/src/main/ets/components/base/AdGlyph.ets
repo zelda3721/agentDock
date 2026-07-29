@@ -54,7 +54,9 @@ export enum AdGlyphKind {
   /** 扬声器 + 声波：朗读（T1.5 语音） */
   SOUND,
   /** 实心方块：停止朗读（T1.5 语音） */
-  STOP_SQUARE
+  STOP_SQUARE,
+  /** 听筒：免手对话 / 电话模式（T1.5 语音） */
+  PHONE
 }
 
 @Component
@@ -269,6 +271,14 @@ export struct AdGlyph {
           .fill(this.color)
           .stroke(Color.Transparent)
           .antiAlias(true)
+      } else if (this.kind === AdGlyphKind.PHONE) {
+        Path()
+          .width(this.glyphSize)
+          .height(this.glyphSize)
+          .commands(this.phoneCommands())
+          .fill(this.color)
+          .stroke(Color.Transparent)
+          .antiAlias(true)
       } else {
         // GEAR：工具调用。八齿轮廓的简化实心环 + 中心镂空
         Path()
@@ -419,5 +429,23 @@ export struct AdGlyph {
   private stopSquareCommands(): string {
     const s: number = this.glyphSize;
     return `M${s * 0.30} ${s * 0.30} L${s * 0.70} ${s * 0.30} L${s * 0.70} ${s * 0.70} L${s * 0.30} ${s * 0.70} Z`;
+  }
+
+  /** 听筒：左上到右下的实心弧形手柄 + 两端听/话头（经典电话符号）。 */
+  private phoneCommands(): string {
+    const s: number = this.glyphSize;
+    return `M${s * 0.30} ${s * 0.16} ` +
+      `C${s * 0.22} ${s * 0.16} ${s * 0.16} ${s * 0.23} ${s * 0.18} ${s * 0.31} ` +
+      `C${s * 0.24} ${s * 0.55} ${s * 0.45} ${s * 0.76} ${s * 0.69} ${s * 0.82} ` +
+      `C${s * 0.77} ${s * 0.84} ${s * 0.84} ${s * 0.78} ${s * 0.84} ${s * 0.70} ` +
+      `L${s * 0.84} ${s * 0.62} ` +
+      `C${s * 0.84} ${s * 0.58} ${s * 0.81} ${s * 0.55} ${s * 0.77} ${s * 0.56} ` +
+      `L${s * 0.66} ${s * 0.58} ` +
+      `C${s * 0.62} ${s * 0.59} ${s * 0.59} ${s * 0.62} ${s * 0.58} ${s * 0.66} ` +
+      `C${s * 0.48} ${s * 0.60} ${s * 0.40} ${s * 0.52} ${s * 0.34} ${s * 0.42} ` +
+      `C${s * 0.38} ${s * 0.41} ${s * 0.41} ${s * 0.38} ${s * 0.42} ${s * 0.34} ` +
+      `L${s * 0.44} ${s * 0.23} ` +
+      `C${s * 0.45} ${s * 0.19} ${s * 0.42} ${s * 0.16} ${s * 0.38} ${s * 0.16} ` +
+      `Z`;
   }
 }
