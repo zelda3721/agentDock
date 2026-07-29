@@ -19,6 +19,13 @@ import { AsrEngine, AsrListener, AsrOptions, SpeechBackend, SpeechError } from '
 
 const TAG: string = 'SherpaAsrEngine';
 const SAMPLE_RATE: number = 16000;
+/** 每帧时长（1280 字节 @16k/mono/16bit = 40ms，见 AudioCapture.DEFAULT_FRAME_BYTES）。 */
+const FRAME_MS: number = 40;
+/** 能量端点（VAD）阈值：RMS 超此判为说话；低于静音阈判为静音。0..32768 量纲。 */
+const SPEECH_RMS: number = 600;
+const SILENCE_RMS: number = 400;
+/** 说话后持续静音多久判端点（§17：500–800ms）。 */
+const ENDPOINT_SILENCE_MS: number = 700;
 
 export class SherpaAsrEngine implements AsrEngine {
   readonly backend: SpeechBackend = 'sherpa';
@@ -30,6 +37,10 @@ export class SherpaAsrEngine implements AsrEngine {
   private chunks: Uint8Array[] = [];
   private active: boolean = false;
   private ended: boolean = false;
+  // 能量 VAD 端点（免手用；按住说话靠松手不看这个）
+  private speechSeen: boolean = false;
+  private silenceMs: number = 0;
+  private endpointEmitted: boolean = false;
 
   constructor(manager: SherpaModelManager) {
     this.manager = manager;
@@ -49,11 +60,15 @@ export class SherpaAsrEngine implements AsrEngine {
     this.active = true;
     this.ended = false;
     this.chunks = [];
+    this.speechSeen = false;
+    this.silenceMs = 0;
+    this.endpointEmitted = false;
     try {
       this.capture = new AudioCapture();
       await this.capture.start((frame: Uint8Array): void => {
         if (this.active) {
           this.chunks.push(frame);
+          this.vadStep(frame);
         }
       });
       listener.onStart('sherpa');
@@ -126,6 +141,45 @@ export class SherpaAsrEngine implements AsrEngine {
       this.recognizer = new OfflineRecognizer(config);
     }
     return this.recognizer;
+  }
+
+  /**
+   * 能量端点（VAD）：说过话（speechSeen）后持续静音 ENDPOINT_SILENCE_MS → emit onSpeechEnd。
+   * 免手会话据此自动收尾（sherpa 非流式无内建端点）；按住说话不消费 onSpeechEnd（松手即停）。
+   */
+  private vadStep(frame: Uint8Array): void {
+    if (this.endpointEmitted) {
+      return;
+    }
+    const rms: number = SherpaAsrEngine.frameRms(frame);
+    if (rms > SPEECH_RMS) {
+      this.speechSeen = true;
+      this.silenceMs = 0;
+    } else if (rms < SILENCE_RMS) {
+      this.silenceMs += FRAME_MS;
+    }
+    if (this.speechSeen && this.silenceMs >= ENDPOINT_SILENCE_MS) {
+      this.endpointEmitted = true;
+      const l: AsrListener | null = this.listener;
+      if (l !== null) {
+        l.onSpeechEnd();
+      }
+    }
+  }
+
+  /** 一帧 PCM16 的 RMS 能量。 */
+  private static frameRms(frame: Uint8Array): number {
+    const n: number = Math.floor(frame.length / 2);
+    if (n === 0) {
+      return 0;
+    }
+    const view: DataView = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+    let sum: number = 0;
+    for (let i: number = 0; i < n; i++) {
+      const s: number = view.getInt16(i * 2, true);
+      sum += s * s;
+    }
+    return Math.sqrt(sum / n);
   }
 
   private concatChunks(): Uint8Array {

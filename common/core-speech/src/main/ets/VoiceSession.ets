@@ -17,8 +17,10 @@ import { AsrListener, AsrResult, SpeechBackend, SpeechError, TtsListener } from 
 import { SpeechService } from './SpeechService';
 
 const TAG: string = 'VoiceSession';
-/** 静音多久判定用户说完（ASR 未给 onSpeechEnd 时的兜底）。 */
-const SILENCE_ENDPOINT_MS: number = 1800;
+/** 出过增量结果后、持续多久无新结果判端点（流式引擎如 FunASR 用；每条 onResult 续期）。 */
+const SILENCE_ENDPOINT_MS: number = 1500;
+/** 单轮最长聆听（安全兜底：VAD/端点都没来也不无限听）。 */
+const MAX_LISTEN_MS: number = 15000;
 /** 句末标点（逐句切分）。 */
 const SENTENCE_ENDINGS: string = '。！？!?…\n';
 
@@ -54,6 +56,7 @@ export class VoiceSession {
   private asrFinal: string = '';
   private asrPartial: string = '';
   private silenceTimer: number = -1;
+  private maxListenTimer: number = -1;
   private endpointFired: boolean = false;
 
   // thinking/speaking
@@ -86,7 +89,7 @@ export class VoiceSession {
   /** 结束会话（用户挂断）：取消 ASR/LLM/TTS，回 idle。 */
   stop(): void {
     this.running = false;
-    this.clearSilenceTimer();
+    this.clearTimers();
     SpeechService.get().cancelDictation();
     if (this.cancelResponder !== null) {
       this.cancelResponder();
@@ -138,7 +141,9 @@ export class VoiceSession {
       return;
     }
     this.cb.onBackend(backend);
-    this.armSilenceTimer();
+    // 端点主要靠 onSpeechEnd（系统内建 / sherpa 能量 VAD）；此处只起**最长聆听**安全兜底，
+    // 不再开局就跑 1.8s 静音计时（那会在非流式档下把长句拦腰截断）。流式档的静音判定在 onResult 里续期。
+    this.armMaxListenTimer();
   }
 
   /** 端点判定（onSpeechEnd 或静音）：停止听写，交由 onEnd 收尾。仅触发一次。 */
@@ -147,7 +152,7 @@ export class VoiceSession {
       return;
     }
     this.endpointFired = true;
-    this.clearSilenceTimer();
+    this.clearTimers();
     SpeechService.get().stopDictation();
   }
 
@@ -171,11 +176,30 @@ export class VoiceSession {
     }, SILENCE_ENDPOINT_MS);
   }
 
+  private armMaxListenTimer(): void {
+    this.clearMaxListenTimer();
+    this.maxListenTimer = setTimeout((): void => {
+      this.fireEndpoint();
+    }, MAX_LISTEN_MS);
+  }
+
   private clearSilenceTimer(): void {
     if (this.silenceTimer >= 0) {
       clearTimeout(this.silenceTimer);
       this.silenceTimer = -1;
     }
+  }
+
+  private clearMaxListenTimer(): void {
+    if (this.maxListenTimer >= 0) {
+      clearTimeout(this.maxListenTimer);
+      this.maxListenTimer = -1;
+    }
+  }
+
+  private clearTimers(): void {
+    this.clearSilenceTimer();
+    this.clearMaxListenTimer();
   }
 
   // ==========================================================================
@@ -286,7 +310,7 @@ export class VoiceSession {
   // ==========================================================================
 
   private failSession(message: string): void {
-    this.clearSilenceTimer();
+    this.clearTimers();
     if (this.cancelResponder !== null) {
       this.cancelResponder();
       this.cancelResponder = null;
