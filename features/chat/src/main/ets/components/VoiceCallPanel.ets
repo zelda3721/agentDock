@@ -19,7 +19,7 @@ import {
   AdSpace,
   AdType
 } from 'design-system';
-import { VoiceResponder, VoiceSession, VoiceState } from 'core-speech';
+import { SpeechBackend, VoiceResponder, VoiceSession, VoiceState } from 'core-speech';
 
 @Component
 export struct VoiceCallPanel {
@@ -33,6 +33,8 @@ export struct VoiceCallPanel {
   @State private transcript: string = '';
   @State private response: string = '';
   @State private errorMsg: string = '';
+  /** 识别落到的档（''=未知）。 */
+  @State private backend: string = '';
   /** 本次开面板后是否已完成过至少一轮（决定是否显示「再说一次」）。 */
   @State private hadTurn: boolean = false;
 
@@ -49,7 +51,8 @@ export struct VoiceCallPanel {
       },
       onTranscript: (t: string): void => { this.transcript = t; },
       onResponse: (r: string): void => { this.response = r; },
-      onError: (m: string): void => { this.errorMsg = m; }
+      onError: (m: string): void => { this.errorMsg = m; },
+      onBackend: (b: SpeechBackend): void => { this.backend = b; }
     });
     this.startTurn();
   }
@@ -78,6 +81,17 @@ export struct VoiceCallPanel {
 
   build() {
     Column({ space: AdSpace.s4 }) {
+      // 标题
+      Text('免手对话')
+        .fontSize(AdType.titleM.size)
+        .lineHeight(AdType.titleM.lineHeight)
+        .fontWeight(AdType.titleM.weight)
+        .fontFamily(AdType.titleM.family)
+        .fontColor(AdColor.ink)
+        .width('100%')
+        .textAlign(TextAlign.Center)
+        .padding({ top: AdSpace.s6 })
+
       // 状态指示
       Row({ space: AdSpace.s2 }) {
         AdGlyph({
@@ -94,7 +108,17 @@ export struct VoiceCallPanel {
       }
       .width('100%')
       .justifyContent(FlexAlign.Center)
-      .padding({ top: AdSpace.s4 })
+
+      // 识别档指示（确认到底是不是离线）
+      if (this.backend.length > 0) {
+        Text(`识别：${this.backendLabel()}`)
+          .fontSize(AdType.bodyS.size)
+          .lineHeight(AdType.bodyS.lineHeight)
+          .fontFamily(AdType.bodyS.family)
+          .fontColor(this.backend === 'sherpa' ? AdColor.successFg : AdColor.inkTertiary)
+          .width('100%')
+          .textAlign(TextAlign.Center)
+      }
 
       // 识别文本（你说的）
       if (this.transcript.length > 0) {
@@ -190,6 +214,19 @@ export struct VoiceCallPanel {
         return '出错了';
       default:
         return this.hadTurn ? '本轮结束' : '准备中…';
+    }
+  }
+
+  private backendLabel(): string {
+    switch (this.backend) {
+      case 'sherpa':
+        return '离线（本机）';
+      case 'remote':
+        return '远程';
+      case 'system':
+        return '系统';
+      default:
+        return this.backend;
     }
   }
 

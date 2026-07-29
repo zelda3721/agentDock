@@ -31,27 +31,31 @@ export class ReadAloudController {
    * @param modelDir 离线模型目录（<filesDir>/sherpa-asr）；由页面传入（需 context）。
    */
   async loadPrefs(modelDir: string): Promise<void> {
+    const kv = AppConfig.get();
+    const svc: SpeechService = SpeechService.get();
+    // 三块**各自独立**兜异常——一块失败不连累其余（此前同一 try 里 TTS/远程任一抛错就会
+    // 跳过离线配置，真机现象：优先离线开着却仍走系统。见 diag prefer=0 sherpaCfg=0）。
     try {
-      const kv = AppConfig.get();
       const person: number = await kv.getNumber(ConfigKeys.VOICE_TTS_PERSON, -1);
       const speed: number = await kv.getNumber(ConfigKeys.VOICE_TTS_SPEED, 1.0);
       const pitch: number = await kv.getNumber(ConfigKeys.VOICE_TTS_PITCH, 1.0);
-      const prefs: TtsOptions = {
-        voice: person >= 0 ? person : undefined,
-        speed,
-        pitch
-      };
-      SpeechService.get().setTtsPrefs(prefs);
-
-      const remoteJson: string = await kv.getString(ConfigKeys.VOICE_REMOTE_AUDIO, '');
-      SpeechService.get().configureRemoteAudio(RemoteAudioConfigCodec.parse(remoteJson));
-
-      if (modelDir.length > 0) {
-        SpeechService.get().configureOfflineAsr(modelDir);
-      }
-      SpeechService.get().setPreferOffline(await kv.getBoolean(ConfigKeys.VOICE_PREFER_OFFLINE_ASR, false));
+      svc.setTtsPrefs({ voice: person >= 0 ? person : undefined, speed, pitch });
     } catch (e) {
-      Logger.warn(TAG, 'loadPrefs failed');
+      Logger.warn(TAG, 'load tts prefs failed');
+    }
+    try {
+      const remoteJson: string = await kv.getString(ConfigKeys.VOICE_REMOTE_AUDIO, '');
+      svc.configureRemoteAudio(RemoteAudioConfigCodec.parse(remoteJson));
+    } catch (e) {
+      Logger.warn(TAG, 'load remote audio cfg failed');
+    }
+    try {
+      if (modelDir.length > 0) {
+        svc.configureOfflineAsr(modelDir);
+      }
+      svc.setPreferOffline(await kv.getBoolean(ConfigKeys.VOICE_PREFER_OFFLINE_ASR, false));
+    } catch (e) {
+      Logger.warn(TAG, 'load offline asr cfg failed');
     }
   }
 

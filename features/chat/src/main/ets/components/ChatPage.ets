@@ -3,6 +3,7 @@
 
 import { KeyboardAvoidMode, UIContext } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
+import { SpeechService } from 'core-speech';
 import {
   AdBrainIndicator,
   AdBrainKind,
@@ -212,6 +213,13 @@ export struct ChatPage {
     // 先把用户的朗读偏好（音色/语速/音调）+ 远程/离线语音配置装进 SpeechService，再探测可用性
     const ctx: common.Context = this.getUIContext().getHostContext() as common.Context;
     const modelDir: string = `${ctx.filesDir}/sherpa-asr`;
+    // 离线档 + 优先离线**直接在此配置**。优先离线的值走 **AppStorage/PersistentStorage（进程级、跨 HSP 共享）**
+    // 而非 kv_config——kv 是每 HSP 独立的全量缓存，设置页写的值 chat 实例读不到（真机实证：开着却读 false）。
+    // 与「减弱动效」同一套跨页共享机制。
+    SpeechService.get().configureOfflineAsr(modelDir);
+    PersistentStorage.persistProp('ad_voice_prefer_offline', false);
+    const prefer: boolean = AppStorage.get<boolean>('ad_voice_prefer_offline') ?? false;
+    SpeechService.get().setPreferOffline(prefer);
     await this.readAloud.loadPrefs(modelDir);
     this.ttsAvailable = await this.readAloud.available();
   }
@@ -376,7 +384,8 @@ export struct ChatPage {
   /** 聊天栏：顶栏（当前大脑）+ 消息流 + 输入区。 */
   @Builder
   chatPane(compactTop: boolean) {
-    Column() {
+    Stack() {
+      Column() {
       // 顶栏：**当前大脑常驻**，不藏进设置（§1.4 / §4.2）
       Row({ space: AdSpace.s3 }) {
         if (!compactTop) {
@@ -486,16 +495,12 @@ export struct ChatPage {
           this.onOpenModels();
         },
         onVoiceMode: (): void => {
+          // 现读优先离线（本页是 Tab 常驻，probeTts 不会重跑；用户可能刚在设置里改过）
+          SpeechService.get().setPreferOffline(AppStorage.get<boolean>('ad_voice_prefer_offline') ?? false);
           this.voicePanelOpen = true;
         }
       })
     }
-    .bindSheet($$this.voicePanelOpen, this.voiceCallSheet(), {
-      detents: [SheetSize.LARGE],
-      preferType: SheetType.CENTER,
-      showClose: false,
-      title: { title: '免手对话' }
-    })
     .width('100%')
     .height('100%')
     // 聊天页重新可见（用户去模型页下完模型回来）→ 重读当前大脑。
@@ -513,6 +518,15 @@ export struct ChatPage {
       showClose: true,
       backgroundColor: AdColor.surface
     })
+
+      // 免手对话：**Stack 全屏浮层**而非 modal API——本页已有 bindSheet（检视），再挂 bindSheet/
+      // bindContentCover 会冲突（真机：面板挂载但不显示、mic 却已开）。条件渲染浮层最稳。
+      if (this.voicePanelOpen) {
+        this.voiceCallSheet()
+      }
+    }
+    .width('100%')
+    .height('100%')
   }
 
   /** 检视 Sheet 内容：InspectorPane 原样进 Sheet（[R-70] 单内容原则） */

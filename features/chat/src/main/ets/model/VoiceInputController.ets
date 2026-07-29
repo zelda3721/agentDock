@@ -26,6 +26,8 @@ export class VoiceInputController {
   onRecordingChange: (recording: boolean) => void = () => {};
   /** 不可用/被拒/出错——视图给可操作提示（toast/内联）。 */
   onNotice: (message: string) => void = () => {};
+  /** 识别真正开始时落到的档（system/remote/sherpa）——视图可提示"离线/系统/远程识别"。 */
+  onBackend: (backend: SpeechBackend) => void = () => {};
 
   private recording: boolean = false;
   private finalText: string = '';
@@ -61,7 +63,7 @@ export class VoiceInputController {
     this.onRecordingChange(true);
 
     const listener: AsrListener = {
-      onStart: (_b: SpeechBackend): void => {},
+      onStart: (b: SpeechBackend): void => { this.onBackend(b); },
       onResult: (r: AsrResult): void => {
         if (r.isFinal) {
           this.finalText += r.text;
@@ -82,6 +84,8 @@ export class VoiceInputController {
       }
     };
 
+    // 现读优先离线（进程级 AppStorage；用户可能刚在设置里改过）——按住说话与免手一致
+    SpeechService.get().setPreferOffline(AppStorage.get<boolean>('ad_voice_prefer_offline') ?? false);
     const backend: SpeechBackend | null = await SpeechService.get().startDictation(listener);
     if (backend === null) {
       this.recording = false;

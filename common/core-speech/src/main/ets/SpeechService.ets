@@ -134,11 +134,16 @@ export class SpeechService {
    * 设置页下载完模型后再调一次以刷新可用性缓存。
    */
   configureOfflineAsr(modelDir: string): void {
-    if (this.sherpaAsr !== null) {
-      this.sherpaAsr.shutdown();
+    try {
+      if (this.sherpaAsr !== null) {
+        this.sherpaAsr.shutdown();
+      }
+      this.sherpaAsr = new SherpaAsrEngine(new SherpaModelManager(modelDir));
+      this.asrAvail.delete('sherpa');
+    } catch (e) {
+      this.sherpaAsr = null;
+      Logger.warn(TAG, 'configureOfflineAsr failed', [{ key: 'msg', value: (e as Error).message }]);
     }
-    this.sherpaAsr = new SherpaAsrEngine(new SherpaModelManager(modelDir));
-    this.asrAvail.delete('sherpa');
   }
 
   /** 设置是否优先离线识别（设置页开关；仅在离线模型已下载时生效）。 */

@@ -39,6 +39,8 @@ export interface VoiceSessionCallbacks {
   /** 助手应答的累积文本（流式）。 */
   onResponse: (text: string) => void;
   onError: (message: string) => void;
+  /** 识别落到的档（system/remote/sherpa）——UI 展示"到底是不是离线"。 */
+  onBackend: (backend: SpeechBackend) => void;
 }
 
 export class VoiceSession {
@@ -135,6 +137,7 @@ export class VoiceSession {
       this.failSession('本机暂无可用的语音识别。可在设置中配置远程/离线语音，或用键盘输入。');
       return;
     }
+    this.cb.onBackend(backend);
     this.armSilenceTimer();
   }
 

@@ -140,7 +140,9 @@ export struct SettingsPage {
     this.oaPresent = s.present;
     this.oaModelUrl = s.modelUrl;
     this.oaTokensUrl = s.tokensUrl;
-    this.oaPreferOffline = await this.facade.loadPreferOffline();
+    // 优先离线走 AppStorage/PersistentStorage（进程级、跨 HSP）——kv 每 HSP 独立，chat 读不到设置页写的值
+    PersistentStorage.persistProp('ad_voice_prefer_offline', false);
+    this.oaPreferOffline = AppStorage.get<boolean>('ad_voice_prefer_offline') ?? false;
   }
 
   private downloadOfflineModel(): void {
@@ -236,7 +238,8 @@ export struct SettingsPage {
           checked: this.oaPreferOffline,
           onToggle: (checked: boolean): void => {
             this.oaPreferOffline = checked;
-            this.facade.setPreferOffline(checked);
+            // 进程级持久化——chat 侧读同一 AppStorage 键即时生效（跨 HSP）
+            AppStorage.setOrCreate('ad_voice_prefer_offline', checked);
           }
         })
       }

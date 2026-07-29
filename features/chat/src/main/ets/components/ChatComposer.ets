@@ -111,6 +111,10 @@ export struct ChatComposer {
     this.voiceCtrl.onNotice = (message: string): void => {
       this.getUIContext().getPromptAction().showToast({ message, duration: 2600 });
     };
+    this.voiceCtrl.onBackend = (backend: string): void => {
+      const label: string = backend === 'sherpa' ? '离线识别（本机）' : (backend === 'remote' ? '远程识别' : '系统识别');
+      this.getUIContext().getPromptAction().showToast({ message: label, duration: 1500 });
+    };
     this.probeVoice();
   }
 
