@@ -17,10 +17,13 @@ import { AudioCapture, DEFAULT_FRAME_BYTES } from './audio/AudioCapture';
 
 const TAG: string = 'BargeInDetector';
 const FRAME_MS: number = 40;
-/** 插话能量阈值（高于普通说话 SPEECH_RMS，防 AEC 残留误触发）。真机可调。 */
-const BARGE_RMS: number = 900;
-/** 持续说话多久判插话。 */
-const BARGE_MIN_MS: number = 320;
+/**
+ * 插话能量阈值。900 实测偏高——经 AEC 后用户人声达不到，从不触发（"没有打断"）。降到 650：
+ * 略高于普通说话 SPEECH_RMS(500)、留一点余量避 AEC 残留，但让真插话能过。外放误触发就调高。
+ */
+const BARGE_RMS: number = 650;
+/** 持续说话多久判插话（放宽到 400ms，进一步压误触发；真插话通常连说远超此）。 */
+const BARGE_MIN_MS: number = 400;
 
 export class BargeInDetector {
   private capture: AudioCapture | null = null;

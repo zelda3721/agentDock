@@ -326,6 +326,11 @@ export class VoiceSession {
 
   /** LLM 已完成且队列播空 → 本轮讲完。连续模式下**自动回到聆听**（真·电话，直到用户挂断）。 */
   private maybeFinishTurn(): void {
+    // 只在"说话态"收尾——barge-in 已把状态切到 listening 后，被取消的 responder 的 onDone 会再触发
+    // 本函数；不加此守卫就会**二次 beginListening**（引擎已 active → "语音识别正忙"）。
+    if (this.state !== 'speaking') {
+      return;
+    }
     if (this.responderDone && !this.ttsPlaying && this.ttsQueue.length === 0) {
       if (this.running) {
         this.beginListening();
