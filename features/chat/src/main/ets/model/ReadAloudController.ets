@@ -49,6 +49,7 @@ export class ReadAloudController {
       if (modelDir.length > 0) {
         SpeechService.get().configureOfflineAsr(modelDir);
       }
+      SpeechService.get().setPreferOffline(await kv.getBoolean(ConfigKeys.VOICE_PREFER_OFFLINE_ASR, false));
     } catch (e) {
       Logger.warn(TAG, 'loadPrefs failed');
     }

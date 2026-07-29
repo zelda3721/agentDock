@@ -114,6 +114,8 @@ export struct SettingsPage {
   @State private oaTokensUrl: string = '';
   @State private oaDownloading: boolean = false;
   @State private oaProgress: string = '';
+  /** 优先使用离线识别（模型已下载时才有意义）。 */
+  @State private oaPreferOffline: boolean = false;
 
   private facade: SettingsFacade = new SettingsFacade();
   /** 2in1 无蜂窝概念：网络策略开关整行隐藏（§8 能力差异守卫） */
@@ -138,6 +140,7 @@ export struct SettingsPage {
     this.oaPresent = s.present;
     this.oaModelUrl = s.modelUrl;
     this.oaTokensUrl = s.tokensUrl;
+    this.oaPreferOffline = await this.facade.loadPreferOffline();
   }
 
   private downloadOfflineModel(): void {
@@ -224,6 +227,19 @@ export struct SettingsPage {
           })
         }
       }.width('100%')
+
+      // 优先离线开关：仅在模型已下载时给——否则是个点了没用的开关
+      if (this.oaPresent) {
+        AdSwitch({
+          label: '优先使用离线识别',
+          helper: '开启后语音输入优先走离线模型（不联网、更隐私），而非系统/远程。关闭则离线仅作断网兜底。',
+          checked: this.oaPreferOffline,
+          onToggle: (checked: boolean): void => {
+            this.oaPreferOffline = checked;
+            this.facade.setPreferOffline(checked);
+          }
+        })
+      }
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)

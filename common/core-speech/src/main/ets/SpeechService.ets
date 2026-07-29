@@ -44,6 +44,8 @@ export class SpeechService {
 
   /** 离线档（sherpa-onnx，第三档，模型已下载才可用）。在系统档之后兜底。 */
   private sherpaAsr: AsrEngine | null = null;
+  /** 优先使用离线识别：为真且离线档可用时，离线档抢在远程/系统之前（用户主动选用离线）。 */
+  private preferOffline: boolean = false;
 
   /** 能力检测缓存（探测有成本：system 档要 createEngine 一把）。 */
   private readonly asrAvail: Map<SpeechBackend, boolean> = new Map<SpeechBackend, boolean>();
@@ -137,6 +139,11 @@ export class SpeechService {
     }
     this.sherpaAsr = new SherpaAsrEngine(new SherpaModelManager(modelDir));
     this.asrAvail.delete('sherpa');
+  }
+
+  /** 设置是否优先离线识别（设置页开关；仅在离线模型已下载时生效）。 */
+  setPreferOffline(on: boolean): void {
+    this.preferOffline = on;
   }
 
   // ==========================================================================
@@ -243,6 +250,10 @@ export class SpeechService {
   // ==========================================================================
 
   private async pickAsr(): Promise<AsrEngine | null> {
+    // 优先离线：用户主动选用离线识别（模型已下载）→ 抢在远程/系统之前
+    if (this.preferOffline && this.sherpaAsr !== null && await this.asrOk(this.sherpaAsr)) {
+      return this.sherpaAsr;
+    }
     // 远程档优先（用户显式配了就想用）
     if (this.remoteAsr !== null && await this.asrOk(this.remoteAsr)) {
       return this.remoteAsr;

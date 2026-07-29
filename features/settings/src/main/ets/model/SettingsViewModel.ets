@@ -358,6 +358,17 @@ export class SettingsFacade {
     SpeechService.get().configureOfflineAsr(dir);   // 下完即激活离线档
   }
 
+  /** 读「优先离线识别」开关。 */
+  public async loadPreferOffline(): Promise<boolean> {
+    return AppConfig.get().getBoolean(ConfigKeys.VOICE_PREFER_OFFLINE_ASR, false);
+  }
+
+  /** 存「优先离线识别」并即时生效。 */
+  public async setPreferOffline(on: boolean): Promise<void> {
+    await AppConfig.get().setBoolean(ConfigKeys.VOICE_PREFER_OFFLINE_ASR, on);
+    SpeechService.get().setPreferOffline(on);
+  }
+
   /** 删除离线模型（腾空间）。 */
   public removeOfflineModel(context: common.Context): void {
     new SherpaModelManager(this.offlineModelDir(context)).remove();

@@ -83,6 +83,8 @@ export class ConfigKeys {
    */
   static readonly VOICE_SHERPA_MODEL_URL: string = 'voice.sherpa_model_url';
   static readonly VOICE_SHERPA_TOKENS_URL: string = 'voice.sherpa_vocab_url';
+  /** 优先使用离线识别（模型已下载时，离线档抢在系统/远程之前）。默认关。 */
+  static readonly VOICE_PREFER_OFFLINE_ASR: string = 'voice.prefer_offline_asr';
 }
 
 /** 禁止写入 kv_config 的键片段（红线 16：密钥只进 Asset Store Kit）。 */
