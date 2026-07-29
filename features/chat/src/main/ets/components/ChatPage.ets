@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { KeyboardAvoidMode, UIContext } from '@kit.ArkUI';
+import { common } from '@kit.AbilityKit';
 import {
   AdBrainIndicator,
   AdBrainKind,
@@ -204,8 +205,10 @@ export struct ChatPage {
   }
 
   private async probeTts(): Promise<void> {
-    // 先把用户的朗读偏好（音色/语速/音调）装进 SpeechService，再探测可用性
-    await this.readAloud.loadPrefs();
+    // 先把用户的朗读偏好（音色/语速/音调）+ 远程/离线语音配置装进 SpeechService，再探测可用性
+    const ctx: common.Context = this.getUIContext().getHostContext() as common.Context;
+    const modelDir: string = `${ctx.filesDir}/sherpa-asr`;
+    await this.readAloud.loadPrefs(modelDir);
     this.ttsAvailable = await this.readAloud.available();
   }
 

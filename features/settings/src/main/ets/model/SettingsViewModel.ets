@@ -20,6 +20,7 @@ import {
   REMOTE_AUDIO_SECRET_ALIAS,
   RemoteAudioConfigCodec,
   RemoteAudioConfigRaw,
+  SherpaModelManager,
   SpeechService,
   TtsListener,
   TtsOptions,
@@ -38,6 +39,17 @@ import {
 
 /** 断点标识（设计文档 §8）。 */
 export type BreakpointKey = 'sm' | 'md' | 'lg';
+
+/** 离线 ASR 模型默认下载源（sherpa SenseVoice int8；用 hf-mirror 便于境内直连，可在设置改）。 */
+const DEFAULT_SHERPA_BASE: string =
+  'https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main';
+
+/** 离线模型状态（设置页展示）。 */
+export interface OfflineModelStatus {
+  present: boolean;
+  modelUrl: string;
+  tokensUrl: string;
+}
 
 /**
  * 第三方依赖许可条目。数据来源为仓库根 THIRD_PARTY_LICENSES/（§22.4，
@@ -316,6 +328,40 @@ export class SettingsFacade {
       onError: (): void => {}
     };
     SpeechService.get().readAloud(sample, noop);
+  }
+
+  // --- 离线语音识别模型（T1.5 退路第三档，sherpa-onnx）--------------------
+
+  private offlineModelDir(context: common.Context): string {
+    return `${context.filesDir}/sherpa-asr`;
+  }
+
+  /** 读离线模型状态（是否已下载 + 下载源 URL，缺省用默认镜像）。 */
+  public async loadOfflineModelStatus(context: common.Context): Promise<OfflineModelStatus> {
+    const kv = AppConfig.get();
+    const modelUrl: string = await kv.getString(ConfigKeys.VOICE_SHERPA_MODEL_URL, `${DEFAULT_SHERPA_BASE}/model.int8.onnx`);
+    const tokensUrl: string = await kv.getString(ConfigKeys.VOICE_SHERPA_TOKENS_URL, `${DEFAULT_SHERPA_BASE}/tokens.txt`);
+    const present: boolean = new SherpaModelManager(this.offlineModelDir(context)).isPresent();
+    return { present, modelUrl, tokensUrl };
+  }
+
+  /**
+   * 下载离线模型（~230MB，onProgress 汇报字节）。存下载源到 kv_config；完成后激活离线档。
+   */
+  public async downloadOfflineModel(context: common.Context, modelUrl: string, tokensUrl: string,
+                                    onProgress: (received: number, total: number, file: string) => void): Promise<void> {
+    const kv = AppConfig.get();
+    await kv.setString(ConfigKeys.VOICE_SHERPA_MODEL_URL, modelUrl.trim());
+    await kv.setString(ConfigKeys.VOICE_SHERPA_TOKENS_URL, tokensUrl.trim());
+    const dir: string = this.offlineModelDir(context);
+    await new SherpaModelManager(dir).download(context, modelUrl.trim(), tokensUrl.trim(), onProgress);
+    SpeechService.get().configureOfflineAsr(dir);   // 下完即激活离线档
+  }
+
+  /** 删除离线模型（腾空间）。 */
+  public removeOfflineModel(context: common.Context): void {
+    new SherpaModelManager(this.offlineModelDir(context)).remove();
+    SpeechService.get().configureOfflineAsr(this.offlineModelDir(context));   // 刷新可用性（转不可用）
   }
 
   /** 应用版本号（关于区展示 + 备份 manifest.appVersion）。 */

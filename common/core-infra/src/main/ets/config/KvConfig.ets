@@ -76,6 +76,9 @@ export class ConfigKeys {
   static readonly VOICE_TTS_PITCH: string = 'voice.tts_pitch';
   /** 远程语音端点配置（JSON：enabled 与 asr/tts 各字段；**不含 Key**，Key 走 SecretStore）。T1.5 退路第二档。 */
   static readonly VOICE_REMOTE_AUDIO: string = 'voice.remote_audio';
+  /** 离线 ASR 模型下载源（sherpa SenseVoice，可改镜像）。T1.5 退路第三档。 */
+  static readonly VOICE_SHERPA_MODEL_URL: string = 'voice.sherpa_model_url';
+  static readonly VOICE_SHERPA_TOKENS_URL: string = 'voice.sherpa_tokens_url';
 }
 
 /** 禁止写入 kv_config 的键片段（红线 16：密钥只进 Asset Store Kit）。 */

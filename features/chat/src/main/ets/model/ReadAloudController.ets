@@ -26,10 +26,11 @@ export class ReadAloudController {
   }
 
   /**
-   * 从持久化配置读入：①朗读偏好（音色/语速/音调）②远程语音端点配置——都装进 SpeechService，
-   * 供本会话朗读/识别使用（远程档配了即优先于系统档）。
+   * 从持久化配置读入：①朗读偏好（音色/语速/音调）②远程语音端点配置 ③离线 ASR 模型目录——
+   * 都装进 SpeechService，供本会话朗读/识别使用（降级链：远程→系统→离线）。
+   * @param modelDir 离线模型目录（<filesDir>/sherpa-asr）；由页面传入（需 context）。
    */
-  async loadPrefs(): Promise<void> {
+  async loadPrefs(modelDir: string): Promise<void> {
     try {
       const kv = AppConfig.get();
       const person: number = await kv.getNumber(ConfigKeys.VOICE_TTS_PERSON, -1);
@@ -44,6 +45,10 @@ export class ReadAloudController {
 
       const remoteJson: string = await kv.getString(ConfigKeys.VOICE_REMOTE_AUDIO, '');
       SpeechService.get().configureRemoteAudio(RemoteAudioConfigCodec.parse(remoteJson));
+
+      if (modelDir.length > 0) {
+        SpeechService.get().configureOfflineAsr(modelDir);
+      }
     } catch (e) {
       Logger.warn(TAG, 'loadPrefs failed');
     }

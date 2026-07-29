@@ -20,6 +20,8 @@ import { RemoteAudioConfig } from './model/RemoteAudioConfig';
 import { SystemAsrEngine } from './asr/SystemAsrEngine';
 import { RemoteAsrEngine } from './asr/RemoteAsrEngine';
 import { FunAsrWsEngine } from './asr/FunAsrWsEngine';
+import { SherpaAsrEngine } from './asr/SherpaAsrEngine';
+import { SherpaModelManager } from './asr/SherpaModelManager';
 import { SystemTtsEngine } from './tts/SystemTtsEngine';
 import { RemoteTtsEngine } from './tts/RemoteTtsEngine';
 import { TtsSanitizer } from './tts/TtsSanitizer';
@@ -39,6 +41,9 @@ export class SpeechService {
    */
   private remoteAsr: AsrEngine | null = null;
   private remoteTts: TtsEngine | null = null;
+
+  /** 离线档（sherpa-onnx，第三档，模型已下载才可用）。在系统档之后兜底。 */
+  private sherpaAsr: AsrEngine | null = null;
 
   /** 能力检测缓存（探测有成本：system 档要 createEngine 一把）。 */
   private readonly asrAvail: Map<SpeechBackend, boolean> = new Map<SpeechBackend, boolean>();
@@ -120,6 +125,18 @@ export class SpeechService {
     if (config.tts !== undefined) {
       this.remoteTts = new RemoteTtsEngine(config.tts);
     }
+  }
+
+  /**
+   * 配置离线 ASR 档（sherpa-onnx）。传模型目录即构建引擎；isAvailable 由模型是否下载决定。
+   * 设置页下载完模型后再调一次以刷新可用性缓存。
+   */
+  configureOfflineAsr(modelDir: string): void {
+    if (this.sherpaAsr !== null) {
+      this.sherpaAsr.shutdown();
+    }
+    this.sherpaAsr = new SherpaAsrEngine(new SherpaModelManager(modelDir));
+    this.asrAvail.delete('sherpa');
   }
 
   // ==========================================================================
@@ -214,6 +231,9 @@ export class SpeechService {
     if (this.remoteTts !== null) {
       this.remoteTts.shutdown();
     }
+    if (this.sherpaAsr !== null) {
+      this.sherpaAsr.shutdown();
+    }
     this.activeAsr = null;
     this.activeTts = null;
   }
@@ -231,6 +251,10 @@ export class SpeechService {
       if (await this.asrOk(engine)) {
         return engine;
       }
+    }
+    // 离线档兜底（模型已下载才可用）
+    if (this.sherpaAsr !== null && await this.asrOk(this.sherpaAsr)) {
+      return this.sherpaAsr;
     }
     return null;
   }

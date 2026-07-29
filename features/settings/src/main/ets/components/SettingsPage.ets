@@ -9,6 +9,8 @@ import {
   AdButtonVariant,
   AdColor,
   AdDivider,
+  AdGlyph,
+  AdGlyphKind,
   AdSpace,
   AdSwitch,
   AdTextField,
@@ -17,7 +19,7 @@ import {
 } from 'design-system';
 import { ImportResult } from 'core-data';
 import { RemoteAudioConfigRaw, TtsVoice } from 'core-speech';
-import { AppSettings, BreakpointKey, ImportPreview, SettingsFacade, TtsPrefs } from '../model/SettingsViewModel';
+import { AppSettings, BreakpointKey, ImportPreview, OfflineModelStatus, SettingsFacade, TtsPrefs } from '../model/SettingsViewModel';
 
 /**
  * 设置页（T0.9-27 / T0.9-19）。
@@ -106,6 +108,13 @@ export struct SettingsPage {
   @State private raHasKey: boolean = false;
   @State private raNote: string = '';
 
+  // ---- 离线语音识别模型（T1.5 退路第三档，sherpa-onnx）--------------------
+  @State private oaPresent: boolean = false;
+  @State private oaModelUrl: string = '';
+  @State private oaTokensUrl: string = '';
+  @State private oaDownloading: boolean = false;
+  @State private oaProgress: string = '';
+
   private facade: SettingsFacade = new SettingsFacade();
   /** 2in1 无蜂窝概念：网络策略开关整行隐藏（§8 能力差异守卫） */
   private readonly hasCellular: boolean = deviceInfo.deviceType !== '2in1';
@@ -120,6 +129,104 @@ export struct SettingsPage {
     });
     this.loadTts();
     this.loadRemoteAudio();
+    this.loadOfflineModel();
+  }
+
+  private async loadOfflineModel(): Promise<void> {
+    const ctx: common.Context = this.getUIContext().getHostContext() as common.Context;
+    const s: OfflineModelStatus = await this.facade.loadOfflineModelStatus(ctx);
+    this.oaPresent = s.present;
+    this.oaModelUrl = s.modelUrl;
+    this.oaTokensUrl = s.tokensUrl;
+  }
+
+  private downloadOfflineModel(): void {
+    if (this.oaDownloading) {
+      return;
+    }
+    this.oaDownloading = true;
+    this.oaProgress = '准备下载…';
+    const ctx: common.Context = this.getUIContext().getHostContext() as common.Context;
+    this.facade.downloadOfflineModel(ctx, this.oaModelUrl, this.oaTokensUrl,
+      (received: number, total: number, file: string): void => {
+        const pct: number = total > 0 ? Math.floor(received * 100 / total) : 0;
+        const mb: number = Math.floor(received / 1048576);
+        const totalMb: number = Math.floor(total / 1048576);
+        this.oaProgress = `下载 ${file} ${pct}%（${mb}/${totalMb} MB）`;
+      }).then((): void => {
+      this.oaDownloading = false;
+      this.oaPresent = true;
+      this.oaProgress = '模型已就绪，离线识别可用。';
+    }).catch((e: Error): void => {
+      this.oaDownloading = false;
+      this.oaProgress = e.message;
+    });
+  }
+
+  private removeOfflineModel(): void {
+    const ctx: common.Context = this.getUIContext().getHostContext() as common.Context;
+    this.facade.removeOfflineModel(ctx);
+    this.oaPresent = false;
+    this.oaProgress = '已删除离线模型。';
+  }
+
+  @Builder
+  offlineAsrSection() {
+    Column({ space: AdSpace.s3 }) {
+      Text('离线语音识别（可选）').settingsGroupTitle().width('100%')
+      Text('断网也能语音输入。下载 sherpa-onnx SenseVoice 离线模型（约 230MB，支持中英日韩粤）。' +
+        '权重不随应用打包——从下方源站下载到本机。仅在系统/远程识别都不可用时兜底。')
+        .settingsRowHelper().width('100%')
+      Row({ space: AdSpace.s1 }) {
+        if (this.oaPresent) {
+          AdGlyph({ kind: AdGlyphKind.CHECK, glyphSize: 12, color: AdColor.successFg })
+        }
+        Text(this.oaPresent ? '状态：模型已就绪' : '状态：未下载')
+          .settingsRowLabel()
+          .fontColor(this.oaPresent ? AdColor.successFg : AdColor.inkSecondary)
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+
+      if (!this.oaPresent) {
+        AdTextField({
+          label: '模型地址（.onnx）',
+          text: this.oaModelUrl,
+          placeholder: 'https://…/model.int8.onnx',
+          onTextChange: (v: string): void => { this.oaModelUrl = v; }
+        })
+        AdTextField({
+          label: 'tokens 地址',
+          text: this.oaTokensUrl,
+          placeholder: 'https://…/tokens.txt',
+          onTextChange: (v: string): void => { this.oaTokensUrl = v; }
+        })
+      }
+
+      if (this.oaProgress.length > 0) {
+        Text(this.oaProgress).settingsRowHelper().width('100%')
+      }
+
+      Row({ space: AdSpace.s2 }) {
+        AdButton({
+          label: this.oaDownloading ? '下载中…' : (this.oaPresent ? '重新下载' : '下载模型（约 230MB）'),
+          variant: AdButtonVariant.SECONDARY,
+          btnSize: AdButtonSize.MD,
+          btnEnabled: !this.oaDownloading && this.oaModelUrl.trim().length > 0,
+          onAction: (): void => { this.downloadOfflineModel(); }
+        })
+        if (this.oaPresent && !this.oaDownloading) {
+          AdButton({
+            label: '删除模型',
+            variant: AdButtonVariant.GHOST,
+            btnSize: AdButtonSize.MD,
+            onAction: (): void => { this.removeOfflineModel(); }
+          })
+        }
+      }.width('100%')
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
   }
 
   /** 加载朗读语音区：可用性 + 音色清单 + 已存偏好。 */
@@ -554,6 +661,10 @@ export struct SettingsPage {
         // ---- 远程语音服务（T1.5 退路第二档）--------------------------------
         AdDivider()
         this.remoteAudioSection()
+
+        // ---- 离线语音识别（T1.5 退路第三档，sherpa-onnx）-------------------
+        AdDivider()
+        this.offlineAsrSection()
 
         AdDivider()
 
