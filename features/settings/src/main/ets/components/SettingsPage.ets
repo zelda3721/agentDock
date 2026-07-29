@@ -189,7 +189,7 @@ export struct SettingsPage {
       Text('远程语音服务（可选）').settingsGroupTitle().width('100%')
       Text('接你自建/开源部署的语音服务作为退路，配置后**优先于系统语音**。两种端点形式：' +
         'OpenAI 兼容 HTTP（识别 /audio/transcriptions、合成 /audio/speech）；' +
-        '或 FunASR 等 WebSocket 流式（识别，开发中）。TTS 端点请把返回格式设为 wav。')
+        '或 FunASR WebSocket 流式识别（边说边出字）。TTS 端点请把返回格式设为 wav。')
         .settingsRowHelper().width('100%')
 
       AdSwitch({
@@ -212,7 +212,7 @@ export struct SettingsPage {
             onAction: (): void => { this.raAsrKind = 'openai'; }
           })
           AdButton({
-            label: 'FunASR WS（开发中）',
+            label: 'FunASR WS',
             variant: this.raAsrKind === 'funasr-ws' ? AdButtonVariant.PRIMARY : AdButtonVariant.GHOST,
             btnSize: AdButtonSize.SM,
             onAction: (): void => { this.raAsrKind = 'funasr-ws'; }

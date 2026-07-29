@@ -21,6 +21,9 @@ export * from './src/main/ets/tts/TtsSanitizer';
 
 // 引擎实现（entry 装配 / 单测用；features 层不直接依赖）
 export * from './src/main/ets/asr/SystemAsrEngine';
+export * from './src/main/ets/asr/RemoteAsrEngine';
+export * from './src/main/ets/asr/FunAsrWsEngine';
+export * from './src/main/ets/tts/RemoteTtsEngine';
 export * from './src/main/ets/tts/SystemTtsEngine';
 export * from './src/main/ets/audio/AudioCapture';
 export * from './src/main/ets/audio/WavCodec';

@@ -19,6 +19,7 @@ import { AsrEngine, AsrListener, AsrOptions, AsrResult, SpeechBackend, SpeechErr
 import { RemoteAudioConfig } from './model/RemoteAudioConfig';
 import { SystemAsrEngine } from './asr/SystemAsrEngine';
 import { RemoteAsrEngine } from './asr/RemoteAsrEngine';
+import { FunAsrWsEngine } from './asr/FunAsrWsEngine';
 import { SystemTtsEngine } from './tts/SystemTtsEngine';
 import { RemoteTtsEngine } from './tts/RemoteTtsEngine';
 import { TtsSanitizer } from './tts/TtsSanitizer';
@@ -111,7 +112,10 @@ export class SpeechService {
       return;
     }
     if (config.asr !== undefined) {
-      this.remoteAsr = new RemoteAsrEngine(config.asr);
+      // 端点形式二选一：WebSocket 流式（FunASR）| OpenAI 兼容 HTTP（multipart）
+      this.remoteAsr = config.asr.kind === 'funasr-ws'
+        ? new FunAsrWsEngine(config.asr)
+        : new RemoteAsrEngine(config.asr);
     }
     if (config.tts !== undefined) {
       this.remoteTts = new RemoteTtsEngine(config.tts);
