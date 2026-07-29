@@ -16,7 +16,7 @@ import {
   AD_REDUCE_MOTION_KEY
 } from 'design-system';
 import { ImportResult } from 'core-data';
-import { TtsVoice } from 'core-speech';
+import { RemoteAudioConfigRaw, TtsVoice } from 'core-speech';
 import { AppSettings, BreakpointKey, ImportPreview, SettingsFacade, TtsPrefs } from '../model/SettingsViewModel';
 
 /**
@@ -92,6 +92,20 @@ export struct SettingsPage {
   /** 音调（0.5–2.0）。 */
   @State private ttsPitch: number = 1.0;
 
+  // ---- 远程语音端点（T1.5 退路第二档）--------------------------------------
+  @State private raEnabled: boolean = false;
+  /** ASR 端点形式：'openai'（兼容 HTTP）| 'funasr-ws'（WebSocket 流式，开发中）。 */
+  @State private raAsrKind: string = 'openai';
+  @State private raAsrUrl: string = '';
+  @State private raAsrModel: string = '';
+  @State private raTtsUrl: string = '';
+  @State private raTtsModel: string = '';
+  @State private raTtsVoice: string = '';
+  /** API Key 输入（留空=不改）；已存过则占位显示"已设置"。 */
+  @State private raApiKey: string = '';
+  @State private raHasKey: boolean = false;
+  @State private raNote: string = '';
+
   private facade: SettingsFacade = new SettingsFacade();
   /** 2in1 无蜂窝概念：网络策略开关整行隐藏（§8 能力差异守卫） */
   private readonly hasCellular: boolean = deviceInfo.deviceType !== '2in1';
@@ -105,6 +119,7 @@ export struct SettingsPage {
       this.loadState = 'failed';
     });
     this.loadTts();
+    this.loadRemoteAudio();
   }
 
   /** 加载朗读语音区：可用性 + 音色清单 + 已存偏好。 */
@@ -130,6 +145,146 @@ export struct SettingsPage {
 
   private previewTts(): void {
     this.facade.previewTts({ person: this.ttsPerson, speed: this.ttsSpeed, pitch: this.ttsPitch });
+  }
+
+  /** 加载远程语音配置回填表单。 */
+  private async loadRemoteAudio(): Promise<void> {
+    const raw: RemoteAudioConfigRaw = await this.facade.loadRemoteAudio();
+    this.raEnabled = raw.enabled === true;
+    this.raAsrKind = raw.asrKind === 'funasr-ws' ? 'funasr-ws' : 'openai';
+    this.raAsrUrl = raw.asrUrl !== undefined ? raw.asrUrl : '';
+    this.raAsrModel = raw.asrModel !== undefined ? raw.asrModel : '';
+    this.raTtsUrl = raw.ttsUrl !== undefined ? raw.ttsUrl : '';
+    this.raTtsModel = raw.ttsModel !== undefined ? raw.ttsModel : '';
+    this.raTtsVoice = raw.ttsVoice !== undefined ? raw.ttsVoice : '';
+    this.raHasKey = await this.facade.hasRemoteAudioKey();
+  }
+
+  /** 存远程语音配置并即时生效；成功后清 Key 输入、刷新朗读可用性。 */
+  private saveRemoteAudio(): void {
+    const raw: RemoteAudioConfigRaw = {
+      enabled: this.raEnabled,
+      asrKind: this.raAsrKind,
+      asrUrl: this.raAsrUrl.trim(),
+      asrModel: this.raAsrModel.trim(),
+      ttsUrl: this.raTtsUrl.trim(),
+      ttsModel: this.raTtsModel.trim(),
+      ttsVoice: this.raTtsVoice.trim()
+    };
+    this.facade.saveRemoteAudio(raw, this.raApiKey).then((): void => {
+      this.raNote = '已保存并生效。';
+      if (this.raApiKey.trim().length > 0) {
+        this.raHasKey = true;
+        this.raApiKey = '';
+      }
+      this.loadTts();
+    }).catch((e: Error): void => {
+      this.raNote = `保存失败：${e.message}`;
+    });
+  }
+
+  @Builder
+  remoteAudioSection() {
+    Column({ space: AdSpace.s3 }) {
+      Text('远程语音服务（可选）').settingsGroupTitle().width('100%')
+      Text('接你自建/开源部署的语音服务作为退路，配置后**优先于系统语音**。两种端点形式：' +
+        'OpenAI 兼容 HTTP（识别 /audio/transcriptions、合成 /audio/speech）；' +
+        '或 FunASR 等 WebSocket 流式（识别，开发中）。TTS 端点请把返回格式设为 wav。')
+        .settingsRowHelper().width('100%')
+
+      AdSwitch({
+        label: '启用远程语音',
+        helper: '关闭则只用系统/离线语音。',
+        checked: this.raEnabled,
+        onToggle: (checked: boolean): void => {
+          this.raEnabled = checked;
+        }
+      })
+
+      if (this.raEnabled) {
+        // —— 识别（ASR）——
+        Text('语音识别（ASR）').settingsRowLabel().width('100%')
+        Row({ space: AdSpace.s2 }) {
+          AdButton({
+            label: 'OpenAI 兼容',
+            variant: this.raAsrKind === 'openai' ? AdButtonVariant.PRIMARY : AdButtonVariant.GHOST,
+            btnSize: AdButtonSize.SM,
+            onAction: (): void => { this.raAsrKind = 'openai'; }
+          })
+          AdButton({
+            label: 'FunASR WS（开发中）',
+            variant: this.raAsrKind === 'funasr-ws' ? AdButtonVariant.PRIMARY : AdButtonVariant.GHOST,
+            btnSize: AdButtonSize.SM,
+            onAction: (): void => { this.raAsrKind = 'funasr-ws'; }
+          })
+        }.width('100%')
+        AdTextField({
+          label: '识别地址',
+          text: this.raAsrUrl,
+          placeholder: this.raAsrKind === 'openai' ? 'http://host:port/v1' : 'wss://host:port',
+          onTextChange: (v: string): void => { this.raAsrUrl = v; }
+        })
+        if (this.raAsrKind === 'openai') {
+          AdTextField({
+            label: '识别模型',
+            text: this.raAsrModel,
+            placeholder: '如 whisper-1 / SenseVoice（按你的服务填）',
+            onTextChange: (v: string): void => { this.raAsrModel = v; }
+          })
+        }
+
+        // —— 合成（TTS）——
+        Text('语音合成（TTS · OpenAI 兼容）').settingsRowLabel().width('100%')
+        AdTextField({
+          label: '合成地址',
+          text: this.raTtsUrl,
+          placeholder: 'http://host:port/v1',
+          onTextChange: (v: string): void => { this.raTtsUrl = v; }
+        })
+        AdTextField({
+          label: '合成模型',
+          text: this.raTtsModel,
+          placeholder: '按你的服务填',
+          onTextChange: (v: string): void => { this.raTtsModel = v; }
+        })
+        AdTextField({
+          label: '音色名',
+          text: this.raTtsVoice,
+          placeholder: '按你的服务填',
+          onTextChange: (v: string): void => { this.raTtsVoice = v; }
+        })
+
+        // —— 鉴权（自建无鉴权可留空）——
+        AdTextField({
+          label: 'API Key',
+          text: this.raApiKey,
+          placeholder: this.raHasKey ? '已设置（留空则不修改）' : 'sk-…（自建无鉴权可留空）',
+          onTextChange: (v: string): void => { this.raApiKey = v; }
+        })
+
+        Row({ space: AdSpace.s2 }) {
+          AdButton({
+            label: '保存',
+            variant: AdButtonVariant.SECONDARY,
+            btnSize: AdButtonSize.MD,
+            onAction: (): void => { this.saveRemoteAudio(); }
+          })
+          AdButton({
+            label: '试听合成',
+            variant: AdButtonVariant.GHOST,
+            btnSize: AdButtonSize.MD,
+            btnEnabled: this.raTtsUrl.trim().length > 0,
+            onAction: (): void => { this.facade.previewRemoteTts(); }
+          })
+        }.width('100%')
+
+        if (this.raNote.length > 0) {
+          Text(this.raNote).settingsRowHelper().width('100%')
+        }
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
   }
 
   /**
@@ -395,6 +550,10 @@ export struct SettingsPage {
           AdDivider()
           this.ttsSection()
         }
+
+        // ---- 远程语音服务（T1.5 退路第二档）--------------------------------
+        AdDivider()
+        this.remoteAudioSection()
 
         AdDivider()
 

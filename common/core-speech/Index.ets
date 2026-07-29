@@ -10,6 +10,9 @@
 // 契约（ASR/TTS 引擎抽象、结果/回调/错误、后端档位）
 export * from './src/main/ets/model/SpeechTypes';
 
+// 远程语音配置（设置页读写 + chat 装配）
+export * from './src/main/ets/model/RemoteAudioConfig';
+
 // 门面：能力检测 + 分层降级（上层唯一入口）
 export * from './src/main/ets/SpeechService';
 
@@ -20,3 +23,4 @@ export * from './src/main/ets/tts/TtsSanitizer';
 export * from './src/main/ets/asr/SystemAsrEngine';
 export * from './src/main/ets/tts/SystemTtsEngine';
 export * from './src/main/ets/audio/AudioCapture';
+export * from './src/main/ets/audio/WavCodec';

@@ -15,8 +15,16 @@ import { common } from '@kit.AbilityKit';
 import { bundleManager } from '@kit.AbilityKit';
 import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
-import { AppConfig, ConfigKeys, CrashWatcher, KvConfig, RuntimeFlags } from 'core-infra';
-import { SpeechService, TtsListener, TtsOptions, TtsVoice } from 'core-speech';
+import { AppConfig, ConfigKeys, CrashWatcher, KvConfig, RuntimeFlags, SecretStore } from 'core-infra';
+import {
+  REMOTE_AUDIO_SECRET_ALIAS,
+  RemoteAudioConfigCodec,
+  RemoteAudioConfigRaw,
+  SpeechService,
+  TtsListener,
+  TtsOptions,
+  TtsVoice
+} from 'core-speech';
 import {
   BackupService,
   BackupProgressListener,
@@ -261,6 +269,53 @@ export class SettingsFacade {
       speed: prefs.speed,
       pitch: prefs.pitch
     };
+  }
+
+  // --- 远程语音端点（T1.5 退路第二档）--------------------------------------
+
+  /** 读远程语音配置（扁平原始形，供设置表单回填）。缺省未启用。 */
+  public async loadRemoteAudio(): Promise<RemoteAudioConfigRaw> {
+    const kv = AppConfig.get();
+    const json: string = await kv.getString(ConfigKeys.VOICE_REMOTE_AUDIO, '');
+    if (json.length === 0) {
+      return { enabled: false };
+    }
+    try {
+      return JSON.parse(json) as RemoteAudioConfigRaw;
+    } catch (e) {
+      return { enabled: false };
+    }
+  }
+
+  /** 是否已存过远程语音 Key（决定 Key 输入框显示"已设置"占位而非空）。 */
+  public async hasRemoteAudioKey(): Promise<boolean> {
+    return SecretStore.get().has(REMOTE_AUDIO_SECRET_ALIAS);
+  }
+
+  /**
+   * 存远程语音配置并**即时生效**：JSON 落 kv_config（不含 Key）；apiKey 非空则写 SecretStore（红线 16）；
+   * 随即 configureRemoteAudio 让 SpeechService 重建远程档。apiKey 空 = 保留原 Key 不动。
+   */
+  public async saveRemoteAudio(raw: RemoteAudioConfigRaw, apiKey: string): Promise<void> {
+    const kv = AppConfig.get();
+    const json: string = RemoteAudioConfigCodec.serialize(raw);
+    await kv.setString(ConfigKeys.VOICE_REMOTE_AUDIO, json);
+    if (apiKey.trim().length > 0) {
+      await SecretStore.get().put(REMOTE_AUDIO_SECRET_ALIAS, apiKey.trim(), '远程语音服务');
+    }
+    SpeechService.get().configureRemoteAudio(RemoteAudioConfigCodec.parse(json));
+  }
+
+  /** 试听远程 TTS（即时听）：用当前配置合成一句样例。需先保存配置。 */
+  public previewRemoteTts(): void {
+    const sample: string = '你好，这是远程语音合成的试听效果。';
+    const noop: TtsListener = {
+      onStart: (): void => {},
+      onComplete: (): void => {},
+      onStop: (): void => {},
+      onError: (): void => {}
+    };
+    SpeechService.get().readAloud(sample, noop);
   }
 
   /** 应用版本号（关于区展示 + 备份 manifest.appVersion）。 */

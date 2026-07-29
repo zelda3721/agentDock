@@ -16,8 +16,11 @@
 
 import { Logger } from 'core-infra';
 import { AsrEngine, AsrListener, AsrOptions, AsrResult, SpeechBackend, SpeechError, TtsEngine, TtsListener, TtsOptions, TtsVoice } from './model/SpeechTypes';
+import { RemoteAudioConfig } from './model/RemoteAudioConfig';
 import { SystemAsrEngine } from './asr/SystemAsrEngine';
+import { RemoteAsrEngine } from './asr/RemoteAsrEngine';
 import { SystemTtsEngine } from './tts/SystemTtsEngine';
+import { RemoteTtsEngine } from './tts/RemoteTtsEngine';
 import { TtsSanitizer } from './tts/TtsSanitizer';
 
 const TAG: string = 'SpeechService';
@@ -25,9 +28,16 @@ const TAG: string = 'SpeechService';
 export class SpeechService {
   private static instance: SpeechService | null = null;
 
-  /** 降级链：顺序即优先级。后续迭代把 Remote/Sherpa 引擎 push 进来即可。 */
+  /** 固定档：系统（起步/兜底）。sherpa 离线档后续 push 进来。 */
   private readonly asrTiers: AsrEngine[] = [new SystemAsrEngine()];
   private readonly ttsTiers: TtsEngine[] = [new SystemTtsEngine()];
+
+  /**
+   * 远程档（用户在设置里配了才有）。**优先于系统档**：用户显式配了远程语音服务，
+   * 就是想用它（更自然/可控）——configureRemoteAudio 时构建，pickAsr/pickTts 先试它。
+   */
+  private remoteAsr: AsrEngine | null = null;
+  private remoteTts: TtsEngine | null = null;
 
   /** 能力检测缓存（探测有成本：system 档要 createEngine 一把）。 */
   private readonly asrAvail: Map<SpeechBackend, boolean> = new Map<SpeechBackend, boolean>();
@@ -80,6 +90,32 @@ export class SpeechService {
 
   getTtsPrefs(): TtsOptions {
     return this.ttsPrefs;
+  }
+
+  /**
+   * 配置远程语音档（设置读入 / 变更时调用）。重建远程引擎、清能力缓存以重新探测。
+   * config=null 或 enabled=false ⇒ 移除远程档（降级链退回系统档）。
+   */
+  configureRemoteAudio(config: RemoteAudioConfig | null): void {
+    if (this.remoteAsr !== null) {
+      this.remoteAsr.shutdown();
+      this.remoteAsr = null;
+    }
+    if (this.remoteTts !== null) {
+      this.remoteTts.shutdown();
+      this.remoteTts = null;
+    }
+    this.asrAvail.delete('remote');
+    this.ttsAvail.delete('remote');
+    if (config === null || !config.enabled) {
+      return;
+    }
+    if (config.asr !== undefined) {
+      this.remoteAsr = new RemoteAsrEngine(config.asr);
+    }
+    if (config.tts !== undefined) {
+      this.remoteTts = new RemoteTtsEngine(config.tts);
+    }
   }
 
   // ==========================================================================
@@ -168,6 +204,12 @@ export class SpeechService {
     for (const e of this.ttsTiers) {
       e.shutdown();
     }
+    if (this.remoteAsr !== null) {
+      this.remoteAsr.shutdown();
+    }
+    if (this.remoteTts !== null) {
+      this.remoteTts.shutdown();
+    }
     this.activeAsr = null;
     this.activeTts = null;
   }
@@ -177,6 +219,10 @@ export class SpeechService {
   // ==========================================================================
 
   private async pickAsr(): Promise<AsrEngine | null> {
+    // 远程档优先（用户显式配了就想用）
+    if (this.remoteAsr !== null && await this.asrOk(this.remoteAsr)) {
+      return this.remoteAsr;
+    }
     for (const engine of this.asrTiers) {
       if (await this.asrOk(engine)) {
         return engine;
@@ -186,6 +232,9 @@ export class SpeechService {
   }
 
   private async pickTts(): Promise<TtsEngine | null> {
+    if (this.remoteTts !== null && await this.ttsOk(this.remoteTts)) {
+      return this.remoteTts;
+    }
     for (const engine of this.ttsTiers) {
       if (await this.ttsOk(engine)) {
         return engine;

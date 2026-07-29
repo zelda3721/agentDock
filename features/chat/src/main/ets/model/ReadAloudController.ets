@@ -9,7 +9,7 @@
  */
 
 import { AppConfig, ConfigKeys, Logger } from 'core-infra';
-import { SpeechBackend, SpeechError, SpeechService, TtsListener, TtsOptions } from 'core-speech';
+import { RemoteAudioConfigCodec, SpeechBackend, SpeechError, SpeechService, TtsListener, TtsOptions } from 'core-speech';
 
 const TAG: string = 'ReadAloudController';
 
@@ -25,7 +25,10 @@ export class ReadAloudController {
     return this.readingId;
   }
 
-  /** 从持久化配置读入朗读偏好（音色/语速/音调）并装进 SpeechService，供本会话朗读使用。 */
+  /**
+   * 从持久化配置读入：①朗读偏好（音色/语速/音调）②远程语音端点配置——都装进 SpeechService，
+   * 供本会话朗读/识别使用（远程档配了即优先于系统档）。
+   */
   async loadPrefs(): Promise<void> {
     try {
       const kv = AppConfig.get();
@@ -38,6 +41,9 @@ export class ReadAloudController {
         pitch
       };
       SpeechService.get().setTtsPrefs(prefs);
+
+      const remoteJson: string = await kv.getString(ConfigKeys.VOICE_REMOTE_AUDIO, '');
+      SpeechService.get().configureRemoteAudio(RemoteAudioConfigCodec.parse(remoteJson));
     } catch (e) {
       Logger.warn(TAG, 'loadPrefs failed');
     }

@@ -74,6 +74,8 @@ export class ConfigKeys {
   static readonly VOICE_TTS_SPEED: string = 'voice.tts_speed';
   /** 朗读音调（约 0.5–2.0，1.0 原调；调整可减弱机械感）。 */
   static readonly VOICE_TTS_PITCH: string = 'voice.tts_pitch';
+  /** 远程语音端点配置（JSON：enabled 与 asr/tts 各字段；**不含 Key**，Key 走 SecretStore）。T1.5 退路第二档。 */
+  static readonly VOICE_REMOTE_AUDIO: string = 'voice.remote_audio';
 }
 
 /** 禁止写入 kv_config 的键片段（红线 16：密钥只进 Asset Store Kit）。 */
