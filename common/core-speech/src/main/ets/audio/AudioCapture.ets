@@ -62,10 +62,29 @@ export class AudioCapture {
     };
     const options: audio.AudioCapturerOptions = { streamInfo, capturerInfo };
 
-    this.capturer = await audio.createAudioCapturer(options);
+    // 创建可能因上一次采集的释放尚未完成而"设备占用"（快速开合免手场景）——等一下重试一次
+    this.capturer = await AudioCapture.createWithRetry(options);
     this.capturer.on('readData', this.onReadData);
     await this.capturer.start();
     Logger.info(TAG, 'capture started');
+  }
+
+  private static async createWithRetry(options: audio.AudioCapturerOptions): Promise<audio.AudioCapturer> {
+    try {
+      return await audio.createAudioCapturer(options);
+    } catch (e) {
+      Logger.warn(TAG, 'createAudioCapturer failed, retry after delay', [
+        { key: 'code', value: (e as BusinessError).code }
+      ]);
+      await AudioCapture.delay(300);
+      return await audio.createAudioCapturer(options);
+    }
+  }
+
+  private static delay(ms: number): Promise<void> {
+    return new Promise<void>((resolve: () => void): void => {
+      setTimeout(resolve, ms);
+    });
   }
 
   /** 停止采集（不冲刷不足一帧的尾巴——< 40ms，对识别无影响）。 */

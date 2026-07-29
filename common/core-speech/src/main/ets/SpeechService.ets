@@ -160,8 +160,12 @@ export class SpeechService {
    */
   async startDictation(listener: AsrListener, opts?: AsrOptions): Promise<SpeechBackend | null> {
     if (this.activeAsr !== null) {
-      Logger.warn(TAG, 'startDictation while active; ignoring');
-      return null;
+      // 上一次会话残留（快速开合/竞态未收尾）——**强制收尾并清引用**再继续，
+      // 不能直接 return null 卡死成"不可用"（真机：没说话反复开合免手后不可用）。
+      Logger.warn(TAG, 'startDictation: force-resetting stale activeAsr');
+      const stale: AsrEngine = this.activeAsr;
+      this.activeAsr = null;
+      stale.cancel();
     }
     const engine: AsrEngine | null = await this.pickAsr();
     if (engine === null) {
