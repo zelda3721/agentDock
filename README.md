@@ -7,13 +7,13 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 [![Platform](https://img.shields.io/badge/platform-HarmonyOS%206.0%2B%20(API%2020)-black.svg)](#开发环境要求)
-[![Status](https://img.shields.io/badge/status-V1.0%20Must%20done%20%C2%B7%20device--verified-brightgreen.svg)](#当前状态)
+[![Status](https://img.shields.io/badge/status-V1.5%20voice%20%26%20phone%20%C2%B7%20device--verified-brightgreen.svg)](#当前状态)
 
 ---
 
 ## 当前状态
 
-> **V1.0「差异化版」Must 全部完成 —— 已在真机跑通、逐项验证。**
+> **V1.0「差异化版」Must 全部完成，V1.5 语音与电话模式已交付 —— 均在真机跑通、逐项验证。**
 > V0.9「占位版」已落地：本地 GGUF + 远程 OpenAI 兼容聊天（流式、随时中断）、知识库（向量 + FTS5 混合检索、
 > 答案带引用可溯源）、单 Agent、上下文治理、三端一多、备份导出、`local_only` 数据层隐私围栏。
 
@@ -27,10 +27,16 @@ V1.0 差异化资产均已交付并真机验证：
 - **`always_ask` 权限模式** —— 按 Agent 把任一工具提级为「每次调用都询问」，仅本次放行、不记忆。
 - **压缩回归套件 v1** —— 已入 CI 合并门禁（约束召回 100% / 实体召回 ≥95% / trace.read 补救后 100%）。
 
+**V1.5 语音与电话模式已交付**（真机验证）：按住说话 / 消息朗读 / **免手电话模式**（连续多轮 + 音波 UI），
+语音三档 ASR（系统 CoreSpeechKit · 远程 OpenAI 兼容/FunASR · 离线 sherpa SenseVoice）+ TTS（系统 · 远程 ·
+离线 MeloTTS 实验档）**分层降级**、断网可语音输入。外放为半双工（说话中按钮打断），远程 TTS/耳机下可外放声控打断
+（硬件 AEC）。详见 [docs/V1.5-语音与电话模式.md](./docs/V1.5-语音与电话模式.md)。诚实边界：端上神经 TTS/LLM
+不走 NPU（框架限制），离线朗读慢故默认系统 TTS。
+
 进度以《AgentDock 开发计划》的任务编号（T0.9-xx / T1.0-xx）为准，源码里的每个 TODO 都反向引用它。
 剩余：**PC 键鼠专项**（T1.0-15：Ctrl+Enter/N 快捷键、拖拽导入；属 Must，但按 §6.1 裁剪顺序为最先可砍项）与
 **发版验收**（T1.0-14 封版周：M4 强杀续跑 / 7 天 dogfood / 金标回归 / 留存埋点）；其余为 Should·机动
-（bge-reranker 重排、检索调试器完整版、诊断包导出、Agent 导入导出）与语音链路·电话模式（V1.5）。
+（bge-reranker 重排、检索调试器完整版、诊断包导出、Agent 导入导出）与两级大脑（V1.5 P3）。
 
 ---
 
@@ -69,7 +75,9 @@ AgentDock 就是填这个空位的：一个**鸿蒙原生**（ArkTS + C++/NAPI�
 | 隐私围栏 | `local_only` 内容在**数据层**对远程 Provider 强制过滤（不靠 UI 逻辑） | V0.9 |
 | **记忆系统** | 在线抽取 + 五阶段自动整理 + **整理报告与一键撤销**（招牌能力） | V1.0 |
 | Agent 工具总线 | JSON 工具协议、运行轨迹（agent_runs/run_steps）、Agent-as-Tool | V1.0 |
-| **电话模式** | 级联语音链路（VAD/ASR/TTS）+ 两级大脑（快脑调度 + 强模型接管） | V1.5 |
+| **语音链路** | 按住说话 / 消息朗读；三档 ASR（系统·远程 OpenAI/FunASR·离线 SenseVoice）+ TTS 分层降级，断网可语音输入 | ✅ V1.5 |
+| **电话模式** | 免手连续多轮（VAD/ASR/逐句 TTS）+ **音波 UI**；外放半双工·远程/耳机可外放声控打断（AEC） | ✅ V1.5 |
+| 两级大脑 | 快脑调度 + `deep.answer` 强模型接管 | V1.5 P3 |
 | 多智能体编排 / Long Job / PDF OCR·VL / 端云同步 | 数据驱动，由 V1.x 留存行为决定优先级 | V2 |
 
 ## 三端支持
@@ -233,6 +241,7 @@ SPDX-License-Identifier: Apache-2.0
 |---|---|
 | [docs/鸿蒙智能体平台系统设计.md](./docs/鸿蒙智能体平台系统设计.md) | 系统设计（生产级）：架构、推理层、RAG、Agent、记忆、语音、一多适配、安全隐私、**开源合规 §22**、上下文压缩 §23/§27、PDF 路线 §25、产品全案 §26 |
 | [docs/AgentDock开发计划.md](./docs/AgentDock开发计划.md) | 开发计划：**红线清单（第 3 节，28 条）**、V0.9/V1.0/V1.5 WBS 与排期、验收标准、Spike 清单、测试计划、**开源与合规工程 §11** |
+| [docs/V1.5-语音与电话模式.md](./docs/V1.5-语音与电话模式.md) | **V1.5 语音子系统**：三档 ASR/TTS 分层降级、免手电话模式与音波 UI、回声/AEC 与外放打断、离线模型与远程端点配置、诚实边界（NPU/离线 TTS） |
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | DCO、代码规范、PR 流程与 CI 门禁、社区治理 |
 | [models/README.md](./models/README.md) | 模型清单机制、待核许可项、权重永不入仓 |
 | [THIRD_PARTY_LICENSES/README.md](./THIRD_PARTY_LICENSES/README.md) | 依赖许可审计表与自动收集校验规范 |
