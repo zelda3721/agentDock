@@ -121,11 +121,11 @@ export class VoiceSession {
     }
     this.running = true;
     this.resetTurn();
-    // 探测朗读会落到哪档：remote/sherpa 自渲染 PCM → 可用通话音频渲染 + 硬件 AEC → **外放也能声控 barge**。
-    // 系统档不吐 PCM、消不了回声 → 只能半双工（除非耳机开 bargeEnabled）。
+    // **先进电话模式**（抑制离线 TTS——它在电话快速循环里崩且慢）再探测落档：只会是 remote/system。
+    // remote 自渲染 PCM → 通话音频渲染 + 硬件 AEC → **外放也能声控 barge**；system 不吐 PCM → 半双工。
+    SpeechService.get().setVoiceCallMode(true);
     const ttsBackend: SpeechBackend | null = await SpeechService.get().pickTtsBackend();
-    this.aecCapable = ttsBackend === 'remote' || ttsBackend === 'sherpa';
-    SpeechService.get().setVoiceCallMode(this.aecCapable);
+    this.aecCapable = ttsBackend === 'remote';
     await this.beginListening();
   }
 
@@ -154,6 +154,9 @@ export class VoiceSession {
     this.asrFinal = '';
     this.asrPartial = '';
     this.endpointFired = false;
+    // 连续多轮：新一轮开麦即清上一轮的"你说的/助手答"，屏上只留当前轮（ChatGPT 式）。
+    this.cb.onTranscript('');
+    this.cb.onResponse('');
     this.setState('listening');
 
     const listener: AsrListener = {

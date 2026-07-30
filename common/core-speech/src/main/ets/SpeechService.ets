@@ -350,8 +350,9 @@ export class SpeechService {
   }
 
   private async pickTts(): Promise<TtsEngine | null> {
-    // 离线 TTS 仅在**实验开关**显式开启时用（端上 MeloTTS 慢，见 preferOfflineTts）。
-    if (this.preferOfflineTts && this.sherpaTts !== null && await this.ttsOk(this.sherpaTts)) {
+    // 离线 TTS 仅在**实验开关**开启、且**非电话模式**时用：端上 MeloTTS 慢，且在电话模式的
+    // 快速合成/打断循环里 sherpa 异步 worker 会 use-after-free 崩溃（真机崩溃栈实证）。电话模式走系统/远程。
+    if (!this.voiceCallMode && this.preferOfflineTts && this.sherpaTts !== null && await this.ttsOk(this.sherpaTts)) {
       return this.sherpaTts;
     }
     // 默认：远程（配了就用，音质更好）→ 系统（快、已 NPU 加速，默认朗读档）。
