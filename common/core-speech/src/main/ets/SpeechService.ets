@@ -49,6 +49,8 @@ export class SpeechService {
   private sherpaAsr: AsrEngine | null = null;
   /** 离线 TTS（sherpa-onnx MeloTTS，模型已下载才可用）。断网可用、比系统 TTS 自然。 */
   private sherpaTts: TtsEngine | null = null;
+  /** 已建离线 TTS 引擎对应的模型目录（同目录不重建，避免 shutdown 旧引擎撞上在飞合成崩溃）。 */
+  private sherpaTtsDir: string = '';
   /** 优先使用离线识别：为真且离线档可用时，离线档抢在远程/系统之前（用户主动选用离线）。仅作用于 ASR。 */
   private preferOffline: boolean = false;
   /**
@@ -165,11 +167,17 @@ export class SpeechService {
    * 设置页下载完模型后再调一次以刷新可用性缓存。
    */
   configureOfflineTts(modelDir: string): void {
+    // 同目录且已建过就**不重建**——重建会 shutdown 旧引擎，若此刻有合成在飞会 use-after-free 崩溃
+    // （probeTts 在页面重现时可能再调一次）。
+    if (this.sherpaTts !== null && this.sherpaTtsDir === modelDir) {
+      return;
+    }
     try {
       if (this.sherpaTts !== null) {
         this.sherpaTts.shutdown();
       }
       this.sherpaTts = new SherpaTtsEngine(new SherpaTtsModelManager(modelDir));
+      this.sherpaTtsDir = modelDir;
       this.ttsAvail.delete('sherpa');
     } catch (e) {
       this.sherpaTts = null;

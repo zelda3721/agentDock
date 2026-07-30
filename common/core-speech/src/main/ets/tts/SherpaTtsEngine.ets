@@ -29,6 +29,12 @@ export class SherpaTtsEngine implements TtsEngine {
   private speaking: boolean = false;
   /** 本次 speak 是否被 stop 打断——打断后不再回 onComplete/onError（onStop 已发）。 */
   private cancelled: boolean = false;
+  /**
+   * 当前在飞的 generateAsync（PCM 合成）。**必须串行**：sherpa 的 OfflineTts 不支持并发 generate，
+   * 两次重叠会在 native 的 TtsGenerateWorker::OnOK 里 use-after-free 崩溃（真机崩溃栈实证）。
+   * 新 speak / shutdown 前先 await 它排空。
+   */
+  private inFlight: Promise<Uint8Array> | null = null;
 
   constructor(manager: SherpaTtsModelManager) {
     this.manager = manager;
@@ -46,6 +52,8 @@ export class SherpaTtsEngine implements TtsEngine {
     if (this.speaking) {
       this.stop();
     }
+    // 串行护栏：等上一次（可能被 stop 打断的）合成在 native 层真正跑完，再开新的，杜绝并发 generate 崩溃。
+    await this.drainInFlight();
     this.listener = listener;
     this.speaking = true;
     this.cancelled = false;
@@ -113,15 +121,37 @@ export class SherpaTtsEngine implements TtsEngine {
     return this.speaking;
   }
 
-  /** 合成一句 → PCM16。generateAsync 在 worker 线程，不卡 UI。 */
-  private async synth(engine: OfflineTts, sentence: string, sid: number, speed: number): Promise<Uint8Array> {
-    const input: TtsInput = new TtsInput();
-    input.text = sentence;
-    input.sid = sid;
-    input.speed = speed;
-    input.enableExternalBuffer = false;
-    const out = await engine.generateAsync(input);
-    return SherpaTtsEngine.floatToPcm16(out.samples);
+  /** 合成一句 → PCM16。generateAsync 在 worker 线程，不卡 UI。**串行**（记 inFlight，供排空）。 */
+  private synth(engine: OfflineTts, sentence: string, sid: number, speed: number): Promise<Uint8Array> {
+    const p: Promise<Uint8Array> = (async (): Promise<Uint8Array> => {
+      const input: TtsInput = new TtsInput();
+      input.text = sentence;
+      input.sid = sid;
+      input.speed = speed;
+      input.enableExternalBuffer = false;
+      const out = await engine.generateAsync(input);
+      return SherpaTtsEngine.floatToPcm16(out.samples);
+    })();
+    this.inFlight = p;
+    const clear = (): void => {
+      if (this.inFlight === p) {
+        this.inFlight = null;
+      }
+    };
+    p.then(clear, clear);
+    return p;
+  }
+
+  /** 等在飞的合成在 native 层真正结束（成功或异常都算结束），再放行下一次——防并发 generate 崩溃。 */
+  private async drainInFlight(): Promise<void> {
+    const p: Promise<Uint8Array> | null = this.inFlight;
+    if (p !== null) {
+      try {
+        await p;
+      } catch (e) {
+        // 上一次的异常在其自身 catch 处理过，这里只为排空
+      }
+    }
   }
 
   /**
@@ -161,7 +191,14 @@ export class SherpaTtsEngine implements TtsEngine {
 
   shutdown(): void {
     this.stop();
-    this.tts = null;
+    // 有合成在飞时**不能立刻置空** OfflineTts——native worker 的 OnOK 还会用它，提前释放会 use-after-free 崩溃。
+    // 推迟到在飞的合成结束后再释放。
+    const p: Promise<Uint8Array> | null = this.inFlight;
+    if (p !== null) {
+      p.then((): void => { this.tts = null; }, (): void => { this.tts = null; });
+    } else {
+      this.tts = null;
+    }
   }
 
   /** 懒建 OfflineTts（VITS + jieba dict + rule fst）。模型路径由 manager 给。 */
