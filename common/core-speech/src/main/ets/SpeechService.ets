@@ -82,8 +82,10 @@ export class SpeechService {
 
   /** 是否有任一可用 TTS 档（UI 决定是否显示「朗读」）。 */
   async isReadAloudAvailable(): Promise<boolean> {
-    const engine: TtsEngine | null = await this.pickTts();
-    return engine !== null;
+    // 只要**配了任一档**就显示朗读按钮：系统档（内建，几乎必有）/ 远程 / 离线。
+    // 不再靠一次 pickTts 实探——探测会 createEngine，偶发失败（资源竞争）就把按钮永久藏掉，
+    // 是很差的体验。真正朗读时 pickTts 逐档尝试，某档确不可用会走 onError 优雅失败，不静默。
+    return this.ttsTiers.length > 0 || this.remoteTts !== null || this.sherpaTts !== null;
   }
 
   /** 枚举当前可用 TTS 档的音色（设置页选择器用）。无可用档或无法枚举则空表。 */
