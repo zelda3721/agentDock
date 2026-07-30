@@ -175,7 +175,9 @@ export class SherpaTtsEngine implements TtsEngine {
     config.model.vits.dictDir = this.manager.dictDir();
     config.model.numThreads = 4;   // 多核加速合成，尽量逼近实时（减断续/延迟）
     config.model.debug = false;
-    config.model.provider = 'cpu';
+    // XNNPACK：ARM 上高度优化的推理后端，卷积密集的 VITS 通常比默认 cpu 档快 1.5–3×，
+    // 争取把合成拉到快于实时（否则句间必有停顿）。不支持的算子自动回落 cpu。
+    config.model.provider = 'xnnpack';
     config.ruleFsts = this.manager.ruleFsts();
     config.maxNumSentences = 1;
     this.tts = new OfflineTts(config);

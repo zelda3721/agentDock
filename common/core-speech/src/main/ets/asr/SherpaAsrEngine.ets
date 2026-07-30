@@ -145,9 +145,9 @@ export class SherpaAsrEngine implements AsrEngine {
       config.modelConfig.senseVoice.model = this.manager.modelPath();
       config.modelConfig.senseVoice.useItn = true;
       config.modelConfig.tokens = this.manager.tokensPath();
-      config.modelConfig.numThreads = 2;
+      config.modelConfig.numThreads = 4;
       config.modelConfig.debug = false;
-      config.modelConfig.provider = 'cpu';
+      config.modelConfig.provider = 'xnnpack';   // ARM 优化后端，加速 SenseVoice 解码（识别也慢）
       this.recognizer = new OfflineRecognizer(config);
     }
     return this.recognizer;
