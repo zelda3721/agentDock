@@ -508,8 +508,10 @@ export struct ChatPage {
           this.onOpenModels();
         },
         onVoiceMode: (): void => {
-          // 现读优先离线（本页是 Tab 常驻，probeTts 不会重跑；用户可能刚在设置里改过）
+          // 现读两个离线开关（本页是 Tab 常驻，probeTts 不会重跑；用户可能刚在设置里改过）：
+          // 识别用 prefer_offline；朗读用 offline_tts（后者=远程/离线 PCM 档，触发外放 AEC barge）。
           SpeechService.get().setPreferOffline(AppStorage.get<boolean>('ad_voice_prefer_offline') ?? false);
+          SpeechService.get().setPreferOfflineTts(AppStorage.get<boolean>('ad_voice_offline_tts') ?? false);
           this.voicePanelOpen = true;
         }
       })

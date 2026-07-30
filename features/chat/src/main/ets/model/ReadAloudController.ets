@@ -89,6 +89,22 @@ export class ReadAloudController {
     if (backend === null) {
       this.onNotice('本机暂无可用的语音合成（系统、远程、离线均不可用）。可在设置中配置远程语音服务。');
       this.clear(messageId);
+    } else {
+      // 明示落到哪档（用户要确认离线朗读是否生效）
+      this.onNotice(`朗读：${ReadAloudController.backendLabel(backend)}`);
+    }
+  }
+
+  private static backendLabel(b: SpeechBackend): string {
+    switch (b) {
+      case 'sherpa':
+        return '离线（本机）';
+      case 'remote':
+        return '远程';
+      case 'system':
+        return '系统';
+      default:
+        return b;
     }
   }
 
