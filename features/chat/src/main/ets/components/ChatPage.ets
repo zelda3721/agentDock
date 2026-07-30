@@ -217,6 +217,8 @@ export struct ChatPage {
     // 而非 kv_config——kv 是每 HSP 独立的全量缓存，设置页写的值 chat 实例读不到（真机实证：开着却读 false）。
     // 与「减弱动效」同一套跨页共享机制。
     SpeechService.get().configureOfflineAsr(modelDir);
+    // 离线 TTS（MeloTTS）独立模型目录；下载后即成为 TTS 兜底/优先档（比系统 TTS 自然）。
+    SpeechService.get().configureOfflineTts(`${ctx.filesDir}/sherpa-tts`);
     PersistentStorage.persistProp('ad_voice_prefer_offline', false);
     const prefer: boolean = AppStorage.get<boolean>('ad_voice_prefer_offline') ?? false;
     SpeechService.get().setPreferOffline(prefer);

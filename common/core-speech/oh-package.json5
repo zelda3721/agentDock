@@ -11,7 +11,7 @@
     "core-infra": "file:../core-infra",
     // 离线语音（T1.5 退路第三档）：sherpa-onnx 官方 HarmonyOS HAR（k2-fsa，Apache-2.0，含 arm64 .so）。
     // ohpm 客户端在本机取 registry 元数据被重置（ECONNRESET），故直挂本地 .har（离线可构建）。
-    // 该 HAR 仅提供 ASR + VAD（无 TTS）——离线识别用它，离线合成暂缺（由系统/远程 TTS 兜）。
-    "sherpa_onnx": "file:../../third_party/sherpa_onnx-1.10.32.har"
+    // 1.13.3：ArkTS 侧完整暴露 **OfflineTts（VITS/Kokoro/Matcha）** + OfflinePunctuation——离线 ASR + TTS 都能用。
+    "sherpa_onnx": "file:../../third_party/sherpa_onnx-1.13.3.har"
   }
 }

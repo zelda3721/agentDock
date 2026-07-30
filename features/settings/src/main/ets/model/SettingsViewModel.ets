@@ -21,6 +21,8 @@ import {
   RemoteAudioConfigCodec,
   RemoteAudioConfigRaw,
   SherpaModelManager,
+  SherpaTtsModelManager,
+  DEFAULT_MELO_BASE,
   SpeechService,
   TtsListener,
   TtsOptions,
@@ -49,6 +51,12 @@ export interface OfflineModelStatus {
   present: boolean;
   modelUrl: string;
   tokensUrl: string;
+}
+
+/** 离线 TTS 模型状态（设置页展示）。 */
+export interface OfflineTtsStatus {
+  present: boolean;
+  baseUrl: string;
 }
 
 /**
@@ -373,6 +381,34 @@ export class SettingsFacade {
   public removeOfflineModel(context: common.Context): void {
     new SherpaModelManager(this.offlineModelDir(context)).remove();
     SpeechService.get().configureOfflineAsr(this.offlineModelDir(context));   // 刷新可用性（转不可用）
+  }
+
+  // --- 离线 TTS 模型（MeloTTS 中英双语 int8）--------------------
+
+  private offlineTtsDir(context: common.Context): string {
+    return `${context.filesDir}/sherpa-tts`;
+  }
+
+  /** 读离线 TTS 模型状态（是否已下载 + 下载源基址）。 */
+  public async loadOfflineTtsStatus(context: common.Context): Promise<OfflineTtsStatus> {
+    const baseUrl: string = await AppConfig.get().getString(ConfigKeys.VOICE_SHERPA_TTS_URL, DEFAULT_MELO_BASE);
+    const present: boolean = new SherpaTtsModelManager(this.offlineTtsDir(context)).isPresent();
+    return { present, baseUrl };
+  }
+
+  /** 下载离线 TTS 模型（按清单多文件，~66MB）。存下载源；完成后激活离线 TTS 档。 */
+  public async downloadOfflineTts(context: common.Context, baseUrl: string,
+                                  onProgress: (received: number, total: number, file: string) => void): Promise<void> {
+    await AppConfig.get().setString(ConfigKeys.VOICE_SHERPA_TTS_URL, baseUrl.trim());
+    const dir: string = this.offlineTtsDir(context);
+    await new SherpaTtsModelManager(dir).download(context, baseUrl.trim(), onProgress);
+    SpeechService.get().configureOfflineTts(dir);   // 下完即激活
+  }
+
+  /** 删除离线 TTS 模型（腾空间）。 */
+  public removeOfflineTts(context: common.Context): void {
+    new SherpaTtsModelManager(this.offlineTtsDir(context)).remove();
+    SpeechService.get().configureOfflineTts(this.offlineTtsDir(context));   // 刷新可用性（转不可用）
   }
 
   /** 应用版本号（关于区展示 + 备份 manifest.appVersion）。 */

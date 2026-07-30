@@ -24,6 +24,8 @@ import { SherpaAsrEngine } from './asr/SherpaAsrEngine';
 import { SherpaModelManager } from './asr/SherpaModelManager';
 import { SystemTtsEngine } from './tts/SystemTtsEngine';
 import { RemoteTtsEngine } from './tts/RemoteTtsEngine';
+import { SherpaTtsEngine } from './tts/SherpaTtsEngine';
+import { SherpaTtsModelManager } from './tts/SherpaTtsModelManager';
 import { TtsSanitizer } from './tts/TtsSanitizer';
 
 const TAG: string = 'SpeechService';
@@ -44,6 +46,8 @@ export class SpeechService {
 
   /** 离线档（sherpa-onnx，第三档，模型已下载才可用）。在系统档之后兜底。 */
   private sherpaAsr: AsrEngine | null = null;
+  /** 离线 TTS（sherpa-onnx MeloTTS，模型已下载才可用）。断网可用、比系统 TTS 自然。 */
+  private sherpaTts: TtsEngine | null = null;
   /** 优先使用离线识别：为真且离线档可用时，离线档抢在远程/系统之前（用户主动选用离线）。 */
   private preferOffline: boolean = false;
 
@@ -146,7 +150,24 @@ export class SpeechService {
     }
   }
 
-  /** 设置是否优先离线识别（设置页开关；仅在离线模型已下载时生效）。 */
+  /**
+   * 配置离线 TTS 档（sherpa-onnx MeloTTS）。传模型目录即构建引擎；isAvailable 由模型是否下载决定。
+   * 设置页下载完模型后再调一次以刷新可用性缓存。
+   */
+  configureOfflineTts(modelDir: string): void {
+    try {
+      if (this.sherpaTts !== null) {
+        this.sherpaTts.shutdown();
+      }
+      this.sherpaTts = new SherpaTtsEngine(new SherpaTtsModelManager(modelDir));
+      this.ttsAvail.delete('sherpa');
+    } catch (e) {
+      this.sherpaTts = null;
+      Logger.warn(TAG, 'configureOfflineTts failed', [{ key: 'msg', value: (e as Error).message }]);
+    }
+  }
+
+  /** 设置是否优先离线识别（设置页开关；仅在离线模型已下载时生效）。同样作用于离线 TTS。 */
   setPreferOffline(on: boolean): void {
     this.preferOffline = on;
   }
@@ -250,6 +271,9 @@ export class SpeechService {
     if (this.sherpaAsr !== null) {
       this.sherpaAsr.shutdown();
     }
+    if (this.sherpaTts !== null) {
+      this.sherpaTts.shutdown();
+    }
     this.activeAsr = null;
     this.activeTts = null;
   }
@@ -280,6 +304,10 @@ export class SpeechService {
   }
 
   private async pickTts(): Promise<TtsEngine | null> {
+    // 优先离线：用户主动选离线时，离线 TTS 抢在远程/系统之前（与 pickAsr 对称）。
+    if (this.preferOffline && this.sherpaTts !== null && await this.ttsOk(this.sherpaTts)) {
+      return this.sherpaTts;
+    }
     if (this.remoteTts !== null && await this.ttsOk(this.remoteTts)) {
       return this.remoteTts;
     }
@@ -287,6 +315,10 @@ export class SpeechService {
       if (await this.ttsOk(engine)) {
         return engine;
       }
+    }
+    // 系统档不可用时，离线 TTS 兜底（模型已下载）。
+    if (this.sherpaTts !== null && await this.ttsOk(this.sherpaTts)) {
+      return this.sherpaTts;
     }
     return null;
   }

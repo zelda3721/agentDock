@@ -30,5 +30,7 @@ export * from './src/main/ets/asr/SherpaAsrEngine';
 export * from './src/main/ets/asr/SherpaModelManager';
 export * from './src/main/ets/tts/RemoteTtsEngine';
 export * from './src/main/ets/tts/SystemTtsEngine';
+export * from './src/main/ets/tts/SherpaTtsEngine';
+export * from './src/main/ets/tts/SherpaTtsModelManager';
 export * from './src/main/ets/audio/AudioCapture';
 export * from './src/main/ets/audio/WavCodec';

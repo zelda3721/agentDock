@@ -9,7 +9,7 @@
 # 用法：bash tools/speech/fetch-sherpa-onnx.sh
 set -euo pipefail
 
-VERSION="1.10.32"
+VERSION="1.13.3"
 DEST_DIR="$(cd "$(dirname "$0")/../.." && pwd)/third_party"
 DEST="${DEST_DIR}/sherpa_onnx-${VERSION}.har"
 URL="https://ohpm.openharmony.cn/ohpm/sherpa_onnx/-/sherpa_onnx-${VERSION}.har"

@@ -19,7 +19,7 @@ import {
 } from 'design-system';
 import { ImportResult } from 'core-data';
 import { RemoteAudioConfigRaw, TtsVoice } from 'core-speech';
-import { AppSettings, BreakpointKey, ImportPreview, OfflineModelStatus, SettingsFacade, TtsPrefs } from '../model/SettingsViewModel';
+import { AppSettings, BreakpointKey, ImportPreview, OfflineModelStatus, OfflineTtsStatus, SettingsFacade, TtsPrefs } from '../model/SettingsViewModel';
 
 /**
  * 设置页（T0.9-27 / T0.9-19）。
@@ -117,6 +117,12 @@ export struct SettingsPage {
   /** 优先使用离线识别（模型已下载时才有意义）。 */
   @State private oaPreferOffline: boolean = false;
 
+  // ---- 离线 TTS 模型（MeloTTS 中英双语 int8）--------------------
+  @State private otPresent: boolean = false;
+  @State private otBaseUrl: string = '';
+  @State private otDownloading: boolean = false;
+  @State private otProgress: string = '';
+
   private facade: SettingsFacade = new SettingsFacade();
   /** 2in1 无蜂窝概念：网络策略开关整行隐藏（§8 能力差异守卫） */
   private readonly hasCellular: boolean = deviceInfo.deviceType !== '2in1';
@@ -132,6 +138,44 @@ export struct SettingsPage {
     this.loadTts();
     this.loadRemoteAudio();
     this.loadOfflineModel();
+    this.loadOfflineTts();
+  }
+
+  private async loadOfflineTts(): Promise<void> {
+    const ctx: common.Context = this.getUIContext().getHostContext() as common.Context;
+    const s: OfflineTtsStatus = await this.facade.loadOfflineTtsStatus(ctx);
+    this.otPresent = s.present;
+    this.otBaseUrl = s.baseUrl;
+  }
+
+  private downloadOfflineTts(): void {
+    if (this.otDownloading) {
+      return;
+    }
+    this.otDownloading = true;
+    this.otProgress = '准备下载…';
+    const ctx: common.Context = this.getUIContext().getHostContext() as common.Context;
+    this.facade.downloadOfflineTts(ctx, this.otBaseUrl,
+      (received: number, total: number, file: string): void => {
+        const pct: number = total > 0 ? Math.floor(received * 100 / total) : 0;
+        const mb: number = Math.floor(received / 1048576);
+        const totalMb: number = Math.floor(total / 1048576);
+        this.otProgress = `下载 ${file} ${pct}%（${mb}/${totalMb} MB）`;
+      }).then((): void => {
+      this.otDownloading = false;
+      this.otPresent = true;
+      this.otProgress = '模型已就绪，离线朗读可用。';
+    }).catch((e: Error): void => {
+      this.otDownloading = false;
+      this.otProgress = e.message;
+    });
+  }
+
+  private removeOfflineTts(): void {
+    const ctx: common.Context = this.getUIContext().getHostContext() as common.Context;
+    this.facade.removeOfflineTts(ctx);
+    this.otPresent = false;
+    this.otProgress = '已删除离线 TTS 模型。';
   }
 
   private async loadOfflineModel(): Promise<void> {
@@ -243,6 +287,59 @@ export struct SettingsPage {
           }
         })
       }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  offlineTtsSection() {
+    Column({ space: AdSpace.s3 }) {
+      Text('离线朗读 TTS（可选）').settingsGroupTitle().width('100%')
+      Text('断网也能朗读，比系统音色更自然。下载 sherpa-onnx MeloTTS 中英双语离线模型（约 66MB）。' +
+        '权重不随应用打包——从下方源站下载到本机。开「优先使用离线」后朗读也走它。')
+        .settingsRowHelper().width('100%')
+      Row({ space: AdSpace.s1 }) {
+        if (this.otPresent) {
+          AdGlyph({ kind: AdGlyphKind.CHECK, glyphSize: 12, color: AdColor.successFg })
+        }
+        Text(this.otPresent ? '状态：模型已就绪' : '状态：未下载')
+          .settingsRowLabel()
+          .fontColor(this.otPresent ? AdColor.successFg : AdColor.inkSecondary)
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+
+      if (!this.otPresent) {
+        AdTextField({
+          label: '下载源基址',
+          text: this.otBaseUrl,
+          placeholder: 'https://…/vits-melo-tts-zh_en/resolve/main',
+          onTextChange: (v: string): void => { this.otBaseUrl = v; }
+        })
+      }
+
+      if (this.otProgress.length > 0) {
+        Text(this.otProgress).settingsRowHelper().width('100%')
+      }
+
+      Row({ space: AdSpace.s2 }) {
+        AdButton({
+          label: this.otDownloading ? '下载中…' : (this.otPresent ? '重新下载' : '下载模型（约 66MB）'),
+          variant: AdButtonVariant.SECONDARY,
+          btnSize: AdButtonSize.MD,
+          btnEnabled: !this.otDownloading && this.otBaseUrl.trim().length > 0,
+          onAction: (): void => { this.downloadOfflineTts(); }
+        })
+        if (this.otPresent && !this.otDownloading) {
+          AdButton({
+            label: '删除模型',
+            variant: AdButtonVariant.GHOST,
+            btnSize: AdButtonSize.MD,
+            onAction: (): void => { this.removeOfflineTts(); }
+          })
+        }
+      }.width('100%')
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
@@ -684,6 +781,10 @@ export struct SettingsPage {
         // ---- 离线语音识别（T1.5 退路第三档，sherpa-onnx）-------------------
         AdDivider()
         this.offlineAsrSection()
+
+        // ---- 离线朗读 TTS（sherpa-onnx MeloTTS）-------------------
+        AdDivider()
+        this.offlineTtsSection()
 
         AdDivider()
 
