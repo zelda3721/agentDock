@@ -82,11 +82,11 @@ export class SystemTtsEngine implements TtsEngine {
   }
 
   /**
-   * 验证系统 TTS 能否经 onData 吐 PCM（电话模式外放 AEC 的抓手）。合成一段文本、挂 onData 累计
-   * 字节/块数/audioType，返回屏上可读的结论。用户同时听是否**仍自动播放**（判断能否"只合成不自播"）。
-   * extraParams 可传 playType 等尝试关闭自播（键名各版本不一，先默认再试）。
+   * 验证系统 TTS 能否经 onData 吐 PCM（电话模式外放 AEC 的抓手）。**自动依次试多组 extraParams**，
+   * 每组合成一句短文本、挂 onData 累计块数/字节/audioType，逐行报告哪组能吐 PCM。
+   * HMS TTS 常见是默认自播、需某个模式键（如 playType）切到"合成出数据"，键名各版本不一，故批量试。
    */
-  async probePcm(text: string, extra?: Record<string, Object>): Promise<string> {
+  async probePcmModes(): Promise<string> {
     const cfg: TtsConfig | null = await this.resolveConfig();
     if (cfg === null) {
       return '系统 TTS 不可用（建引擎失败）';
@@ -97,39 +97,74 @@ export class SystemTtsEngine implements TtsEngine {
     } catch (e) {
       return `建引擎失败：${(e as BusinessError).code}`;
     }
-    let chunks: number = 0;
-    let totalBytes: number = 0;
-    let audioType: string = '';
+    const text: string = '测试一二三四五。';
+    // 候选参数组：默认 + 若干可能的"只合成/出数据"键（真机试哪组触发 onData）。
+    const cands: Record<string, Object>[] = [
+      {},
+      { 'playType': 0 },
+      { 'playType': 1 },
+      { 'audioType': 'pcm' },
+      { 'synthesizeType': 0 },
+      { 'mode': 0 }
+    ];
+    const names: string[] = ['默认', 'playType=0', 'playType=1', 'audioType=pcm', 'synthesizeType=0', 'mode=0'];
+    let report: string = '';
+    for (let i = 0; i < cands.length; i++) {
+      const line: string = await this.probeOne(engine, text, cands[i], names[i]);
+      report += line + '\n';
+    }
+    return report.trim();
+  }
+
+  /** 单组：speak 一次，等 onComplete/onStop/onError 或超时，返回该组的简报。 */
+  private probeOne(engine: textToSpeech.TextToSpeechEngine, text: string,
+                   extra: Record<string, Object>, label: string): Promise<string> {
     return new Promise<string>((resolve: (s: string) => void): void => {
+      let chunks: number = 0;
+      let bytes: number = 0;
+      let at: string = '';
+      let settled: boolean = false;
+      let timer: number = -1;
+      const finish = (s: string): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer >= 0) {
+          clearTimeout(timer);
+        }
+        resolve(s);
+      };
+      timer = setTimeout((): void => {
+        finish(`${label}: 超时（可能自播不回调）${chunks > 0 ? ' 但收到 ' + bytes + ' 字节' : ''}`);
+      }, 6000);
       const listener: textToSpeech.SpeakListener = {
         onStart: (_id: string, _r: textToSpeech.StartResponse): void => {},
         onComplete: (_id: string, _r: textToSpeech.CompleteResponse): void => {
-          this.speaking = false;
-          resolve(chunks > 0
-            ? `✅ onData 吐 PCM：${chunks} 块 / ${totalBytes} 字节 / 类型=${audioType || '未知'}`
-            : `⚠️ 未收到 onData（本机可能不经回调吐 PCM）`);
+          finish(chunks > 0 ? `${label}: ✅ PCM ${chunks}块/${bytes}字节 类型=${at || '-'}` : `${label}: 无 onData（自播）`);
         },
         onStop: (_id: string, _r: textToSpeech.StopResponse): void => {
-          this.speaking = false;
-          resolve(`⏹ 停止：${chunks} 块 / ${totalBytes} 字节`);
+          finish(`${label}: 停 ${chunks}块/${bytes}字节`);
         },
-        onError: (_id: string, code: number, msg: string): void => {
-          this.speaking = false;
-          resolve(`❌ 出错(${code}) ${msg}；onData ${chunks > 0 ? '有' : '无'}数据`);
+        onError: (_id: string, code: number, _msg: string): void => {
+          finish(`${label}: 错(${code}) ${chunks > 0 ? '有' + bytes + '字节' : '无PCM'}`);
         },
         onData: (_id: string, audio: ArrayBuffer, response: textToSpeech.SynthesisResponse): void => {
           chunks++;
-          totalBytes += audio.byteLength;
-          audioType = response.audioType;
+          bytes += audio.byteLength;
+          at = response.audioType;
         }
       };
       engine.setListener(listener);
-      this.speaking = true;
       const params: textToSpeech.SpeakParams = {
-        requestId: `pcmprobe_${Date.now()}`,
-        extraParams: extra !== undefined ? extra : {}
+        requestId: `probe_${Date.now()}_${label}`,
+        extraParams: extra
       };
-      engine.speak(text, params);
+      try {
+        engine.speak(text, params);
+      } catch (e) {
+        finish(`${label}: speak 抛错 ${(e as BusinessError).code}`);
+      }
     });
   }
 

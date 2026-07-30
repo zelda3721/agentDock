@@ -191,20 +191,16 @@ export struct SettingsPage {
    * 若成立，就能"系统 NPU 合成(静音) + 拿 PCM 自渲染成通话音频做 AEC → 外放真 barge"。
    * 用户同时听：默认档有没有声、静音档是不是真没声。
    */
-  private probeSystemPcm(muted: boolean): void {
+  private probeSystemPcm(): void {
     if (this.pcmProbing) {
       return;
     }
     this.pcmProbing = true;
-    this.pcmProbeResult = muted ? '静音合成中…（应听不到声）' : '合成中…（听有没有声）';
+    this.pcmProbeResult = '依次试多组参数中…（会连着合成几句、约 10 秒）';
     const probe: SystemTtsEngine = new SystemTtsEngine();
-    const extra: Record<string, Object> = {};
-    if (muted) {
-      extra['volume'] = 0;
-    }
-    probe.probePcm('这是一段用来验证系统语音能不能吐出 PCM 数据的测试文本。', extra)
+    probe.probePcmModes()
       .then((r: string): void => {
-        this.pcmProbeResult = (muted ? '【静音档】' : '【默认档】') + r + '　→ 你刚才' + (muted ? '应听不到声' : '有没有听到声？');
+        this.pcmProbeResult = r;
         probe.shutdown();
         this.pcmProbing = false;
       }).catch((e: Error): void => {
@@ -413,8 +409,8 @@ export struct SettingsPage {
 
       // 诊断：验证系统 TTS 能否吐 PCM（决定外放能不能做 barge）
       Text('诊断：系统 TTS 吐 PCM 验证').settingsRowLabel().width('100%').padding({ top: AdSpace.s2 })
-      Text('点下面按钮各合成一句：默认档听有没有声、静音档看是不是没声但仍吐出 PCM。' +
-        '若「静音档」既没声又有 PCM，就能拿它做外放回声消除、实现外放说话即打断。')
+      Text('点一下会**依次试多组参数**、连着合成几句（约 10 秒）。逐行看哪组显示「✅ PCM …块…字节」——' +
+        '那组就是能拿到 PCM 的参数，找到它外放就能做回声消除、实现说话即打断。')
         .settingsRowHelper().width('100%')
       if (this.pcmProbeResult.length > 0) {
         Text(this.pcmProbeResult)
@@ -422,18 +418,11 @@ export struct SettingsPage {
       }
       Row({ space: AdSpace.s2 }) {
         AdButton({
-          label: this.pcmProbing ? '合成中…' : '默认合成（听声）',
+          label: this.pcmProbing ? '验证中…（约10秒）' : '验证系统 TTS 吐 PCM',
           variant: AdButtonVariant.SECONDARY,
           btnSize: AdButtonSize.MD,
           btnEnabled: !this.pcmProbing,
-          onAction: (): void => { this.probeSystemPcm(false); }
-        })
-        AdButton({
-          label: '静音合成（volume=0）',
-          variant: AdButtonVariant.SECONDARY,
-          btnSize: AdButtonSize.MD,
-          btnEnabled: !this.pcmProbing,
-          onAction: (): void => { this.probeSystemPcm(true); }
+          onAction: (): void => { this.probeSystemPcm(); }
         })
       }.width('100%')
     }
