@@ -122,6 +122,8 @@ export struct SettingsPage {
   @State private otBaseUrl: string = '';
   @State private otDownloading: boolean = false;
   @State private otProgress: string = '';
+  /** 用离线 TTS 朗读（实验，默认关——端上合成慢，朗读默认走系统 TTS）。 */
+  @State private otUseForReadAloud: boolean = false;
 
   private facade: SettingsFacade = new SettingsFacade();
   /** 2in1 无蜂窝概念：网络策略开关整行隐藏（§8 能力差异守卫） */
@@ -146,6 +148,9 @@ export struct SettingsPage {
     const s: OfflineTtsStatus = await this.facade.loadOfflineTtsStatus(ctx);
     this.otPresent = s.present;
     this.otBaseUrl = s.baseUrl;
+    // 离线朗读实验开关走进程级 AppStorage（跨 HSP，chat 侧现读）。
+    PersistentStorage.persistProp('ad_voice_offline_tts', false);
+    this.otUseForReadAloud = AppStorage.get<boolean>('ad_voice_offline_tts') ?? false;
   }
 
   private downloadOfflineTts(): void {
@@ -295,9 +300,10 @@ export struct SettingsPage {
   @Builder
   offlineTtsSection() {
     Column({ space: AdSpace.s3 }) {
-      Text('离线朗读 TTS（可选）').settingsGroupTitle().width('100%')
-      Text('断网也能朗读，比系统音色更自然。下载 sherpa-onnx MeloTTS 中英双语离线模型（约 66MB）。' +
-        '权重不随应用打包——从下方源站下载到本机。开「优先使用离线」后朗读也走它。')
+      Text('离线朗读 TTS（实验）').settingsGroupTitle().width('100%')
+      Text('断网也能朗读、音色可换。下载 sherpa-onnx MeloTTS 中英双语离线模型（约 66MB）。' +
+        '⚠️ 实测本机算力跑神经 TTS **慢于实时、句间有停顿**（NPU 无法调用），故**朗读默认走系统 TTS**；' +
+        '此档仅供实验，开下方开关才用它朗读。')
         .settingsRowHelper().width('100%')
       Row({ space: AdSpace.s1 }) {
         if (this.otPresent) {
@@ -340,6 +346,40 @@ export struct SettingsPage {
           })
         }
       }.width('100%')
+
+      // 实验开关：仅模型下载后给——开了朗读才走离线（慢）
+      if (this.otPresent) {
+        AdSwitch({
+          label: '用离线朗读（实验·较慢）',
+          helper: '开启后朗读用离线 MeloTTS（断网可用、音色不同），但合成慢、句间可能停顿。关闭则朗读走系统 TTS（快）。',
+          checked: this.otUseForReadAloud,
+          onToggle: (checked: boolean): void => {
+            this.otUseForReadAloud = checked;
+            AppStorage.setOrCreate('ad_voice_offline_tts', checked);
+          }
+        })
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  /** 电话模式当前能力与限制说明（诚实告知，避免误期）。 */
+  @Builder
+  voiceModeNotesSection() {
+    Column({ space: AdSpace.s2 }) {
+      Text('电话模式说明').settingsGroupTitle().width('100%')
+      Text('· 外放（不戴耳机）时为**半双工**：助手朗读时不听你说话，说完自动轮到你——' +
+        '**朗读中不能用说话打断**（可点面板「打断说话」按钮）。这是因为外放时麦会收到扬声器里助手自己的声音，' +
+        '本机系统 TTS 无法做回声消除。')
+        .settingsRowHelper().width('100%')
+      Text('· 想「说话即打断」（免手插话）：**戴耳机**后在免手面板打开「声控插话」开关即可' +
+        '（耳机下麦听不到扬声器，不会误触发）。')
+        .settingsRowHelper().width('100%')
+      Text('· 外放也要免手插话：需接**远程语音服务**（可自渲染成通话音频做回声消除），见上方「远程语音服务」。')
+        .settingsRowHelper().width('100%')
+      Text('· 离线识别（SenseVoice）已可用；离线朗读较慢，默认用系统 TTS。')
+        .settingsRowHelper().width('100%')
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
@@ -785,6 +825,10 @@ export struct SettingsPage {
         // ---- 离线朗读 TTS（sherpa-onnx MeloTTS）-------------------
         AdDivider()
         this.offlineTtsSection()
+
+        // ---- 电话模式能力与限制说明 -------------------
+        AdDivider()
+        this.voiceModeNotesSection()
 
         AdDivider()
 

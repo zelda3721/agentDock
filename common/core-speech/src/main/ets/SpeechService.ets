@@ -48,8 +48,13 @@ export class SpeechService {
   private sherpaAsr: AsrEngine | null = null;
   /** 离线 TTS（sherpa-onnx MeloTTS，模型已下载才可用）。断网可用、比系统 TTS 自然。 */
   private sherpaTts: TtsEngine | null = null;
-  /** 优先使用离线识别：为真且离线档可用时，离线档抢在远程/系统之前（用户主动选用离线）。 */
+  /** 优先使用离线识别：为真且离线档可用时，离线档抢在远程/系统之前（用户主动选用离线）。仅作用于 ASR。 */
   private preferOffline: boolean = false;
+  /**
+   * 用离线 TTS 朗读（**实验**，默认关）。端上 MeloTTS 在多数手机慢于实时、句间停顿明显，
+   * 故朗读默认走系统 TTS（快、已 NPU 加速）；仅用户显式开启此实验开关才用离线合成。
+   */
+  private preferOfflineTts: boolean = false;
 
   /** 能力检测缓存（探测有成本：system 档要 createEngine 一把）。 */
   private readonly asrAvail: Map<SpeechBackend, boolean> = new Map<SpeechBackend, boolean>();
@@ -169,9 +174,14 @@ export class SpeechService {
     }
   }
 
-  /** 设置是否优先离线识别（设置页开关；仅在离线模型已下载时生效）。同样作用于离线 TTS。 */
+  /** 设置是否优先离线识别（设置页开关；仅在离线模型已下载时生效）。仅作用于 ASR。 */
   setPreferOffline(on: boolean): void {
     this.preferOffline = on;
+  }
+
+  /** 设置是否用离线 TTS 朗读（实验开关；默认关，朗读走系统 TTS）。 */
+  setPreferOfflineTts(on: boolean): void {
+    this.preferOfflineTts = on;
   }
 
   // ==========================================================================
@@ -306,10 +316,11 @@ export class SpeechService {
   }
 
   private async pickTts(): Promise<TtsEngine | null> {
-    // 优先离线：用户主动选离线时，离线 TTS 抢在远程/系统之前（与 pickAsr 对称）。
-    if (this.preferOffline && this.sherpaTts !== null && await this.ttsOk(this.sherpaTts)) {
+    // 离线 TTS 仅在**实验开关**显式开启时用（端上 MeloTTS 慢，见 preferOfflineTts）。
+    if (this.preferOfflineTts && this.sherpaTts !== null && await this.ttsOk(this.sherpaTts)) {
       return this.sherpaTts;
     }
+    // 默认：远程（配了就用，音质更好）→ 系统（快、已 NPU 加速，默认朗读档）。
     if (this.remoteTts !== null && await this.ttsOk(this.remoteTts)) {
       return this.remoteTts;
     }
@@ -317,10 +328,6 @@ export class SpeechService {
       if (await this.ttsOk(engine)) {
         return engine;
       }
-    }
-    // 系统档不可用时，离线 TTS 兜底（模型已下载）。
-    if (this.sherpaTts !== null && await this.ttsOk(this.sherpaTts)) {
-      return this.sherpaTts;
     }
     return null;
   }

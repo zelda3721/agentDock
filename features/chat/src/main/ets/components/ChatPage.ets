@@ -226,6 +226,9 @@ export struct ChatPage {
     PersistentStorage.persistProp('ad_voice_prefer_offline', false);
     const prefer: boolean = AppStorage.get<boolean>('ad_voice_prefer_offline') ?? false;
     SpeechService.get().setPreferOffline(prefer);
+    // 离线朗读实验开关（默认关，朗读走系统 TTS）。
+    PersistentStorage.persistProp('ad_voice_offline_tts', false);
+    SpeechService.get().setPreferOfflineTts(AppStorage.get<boolean>('ad_voice_offline_tts') ?? false);
     await this.readAloud.loadPrefs(modelDir);
     // 配置装载后再刷一次（此刻已知远程/离线档是否配齐）。
     this.ttsAvailable = await this.readAloud.available();
@@ -472,9 +475,9 @@ export struct ChatPage {
         ttsAvailable: this.ttsAvailable,
         readingId: this.readingId,
         onReadAloud: (messageId: string, text: string): void => {
-          // 现读优先离线：本页常驻 Tab，probeTts 不重跑；用户可能刚在设置里改过开关（跨 HSP 走 AppStorage）。
+          // 现读离线朗读实验开关：本页常驻 Tab，probeTts 不重跑；用户可能刚在设置里改过（跨 HSP 走 AppStorage）。
           // 不刷的话朗读会一直用进页面时那档（真机实测：开了开关但朗读仍走系统档，要发新消息才变）。
-          SpeechService.get().setPreferOffline(AppStorage.get<boolean>('ad_voice_prefer_offline') ?? false);
+          SpeechService.get().setPreferOfflineTts(AppStorage.get<boolean>('ad_voice_offline_tts') ?? false);
           this.readAloud.toggle(messageId, text);
         },
         onCreateConversation: (): void => {
