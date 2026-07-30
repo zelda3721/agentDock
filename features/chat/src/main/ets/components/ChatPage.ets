@@ -472,6 +472,9 @@ export struct ChatPage {
         ttsAvailable: this.ttsAvailable,
         readingId: this.readingId,
         onReadAloud: (messageId: string, text: string): void => {
+          // 现读优先离线：本页常驻 Tab，probeTts 不重跑；用户可能刚在设置里改过开关（跨 HSP 走 AppStorage）。
+          // 不刷的话朗读会一直用进页面时那档（真机实测：开了开关但朗读仍走系统档，要发新消息才变）。
+          SpeechService.get().setPreferOffline(AppStorage.get<boolean>('ad_voice_prefer_offline') ?? false);
           this.readAloud.toggle(messageId, text);
         },
         onCreateConversation: (): void => {

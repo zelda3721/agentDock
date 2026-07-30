@@ -51,25 +51,38 @@ export class SherpaTtsEngine implements TtsEngine {
     this.cancelled = false;
     try {
       const engine: OfflineTts = this.ensureEngine();
+      const sid: number = opts?.voice !== undefined ? opts.voice : 0;
+      const speed: number = opts?.speed !== undefined ? opts.speed : 1.0;
       if (listener.onStart !== undefined) {
         listener.onStart('sherpa');
       }
-      // 非流式：整句合成（worker 线程，不卡 UI）→ 一次性播。上层按句喂（VoiceSession 逐句），
-      // 故单次合成的是一句、缓冲不大。先求**稳定不崩**；流式/管线优化待稳定后再上。
-      const input: TtsInput = new TtsInput();
-      input.text = text;
-      input.sid = opts?.voice !== undefined ? opts.voice : 0;
-      input.speed = opts?.speed !== undefined ? opts.speed : 1.0;
-      input.enableExternalBuffer = false;
-      const out = await engine.generateAsync(input);
-      if (this.cancelled) {
-        return;   // stop() 已发 onStop
-      }
-      const pcm: Uint8Array = SherpaTtsEngine.floatToPcm16(out.samples);
-      await this.player.playPcm(pcm, out.sampleRate, 1);
-      if (this.cancelled) {
+
+      // **句级流水线**：把整段切成句，逐句合成——**边播当前句、边合成下一句**（generateAsync 在
+      // worker 线程），首音只等第一句、不随全文变长；且不用崩过的 native 分块回调，稳。renderer 复用
+      // （beginStream/writeStream）避免逐句开合的停顿。
+      const sentences: string[] = SherpaTtsEngine.splitSentences(text);
+      if (sentences.length === 0) {
+        this.speaking = false;
+        listener.onComplete();
         return;
       }
+      await this.player.beginStream(engine.sampleRate, 1);
+      let nextSynth: Promise<Uint8Array> = this.synth(engine, sentences[0], sid, speed);
+      for (let i = 0; i < sentences.length; i++) {
+        const pcm: Uint8Array = await nextSynth;
+        if (this.cancelled) {
+          return;   // stop() 已发 onStop
+        }
+        // 播当前句前，先把下一句的合成挂起（与本句播放并行，隐藏合成耗时）
+        if (i + 1 < sentences.length) {
+          nextSynth = this.synth(engine, sentences[i + 1], sid, speed);
+        }
+        await this.player.writeStream(pcm);   // 整句写入，renderer 背压自然节流
+        if (this.cancelled) {
+          return;
+        }
+      }
+      await this.player.endStream();
       this.speaking = false;
       listener.onComplete();
     } catch (e) {
@@ -97,6 +110,47 @@ export class SherpaTtsEngine implements TtsEngine {
 
   isSpeaking(): boolean {
     return this.speaking;
+  }
+
+  /** 合成一句 → PCM16。generateAsync 在 worker 线程，不卡 UI。 */
+  private async synth(engine: OfflineTts, sentence: string, sid: number, speed: number): Promise<Uint8Array> {
+    const input: TtsInput = new TtsInput();
+    input.text = sentence;
+    input.sid = sid;
+    input.speed = speed;
+    input.enableExternalBuffer = false;
+    const out = await engine.generateAsync(input);
+    return SherpaTtsEngine.floatToPcm16(out.samples);
+  }
+
+  /**
+   * 切句（首音低延迟 + 每句缓冲不大）：按句末标点/换行切；过长且无句末标点的段再按逗号/分号兜切，
+   * 免单段过大又拖首音。空白段丢弃。
+   */
+  private static splitSentences(text: string): string[] {
+    const HARD: string = '。！？!?…\n';
+    const SOFT: string = '，,；;、';
+    const MAX: number = 60;
+    const out: string[] = [];
+    let buf: string = '';
+    for (let i = 0; i < text.length; i++) {
+      const ch: string = text.charAt(i);
+      buf += ch;
+      const hard: boolean = HARD.indexOf(ch) >= 0;
+      const soft: boolean = SOFT.indexOf(ch) >= 0 && buf.length >= MAX;
+      if (hard || soft) {
+        const s: string = buf.trim();
+        if (s.length > 0) {
+          out.push(s);
+        }
+        buf = '';
+      }
+    }
+    const tail: string = buf.trim();
+    if (tail.length > 0) {
+      out.push(tail);
+    }
+    return out;
   }
 
   /** 离线单模型，无多音色枚举（MeloTTS zh_en 单发音人）。 */
