@@ -210,6 +210,10 @@ export struct ChatPage {
   }
 
   private async probeTts(): Promise<void> {
+    // 朗读按钮可用性**先于任何 await 设好**——系统 TTS 内建、结构上必有；不让后续异步（配置/加载）
+    // 万一抛错或卡住就把朗读按钮藏掉（真机实证过按钮消失）。真正朗读时 pickTts 逐档尝试、失败走 onError。
+    this.ttsAvailable = await this.readAloud.available();
+
     // 先把用户的朗读偏好（音色/语速/音调）+ 远程/离线语音配置装进 SpeechService，再探测可用性
     const ctx: common.Context = this.getUIContext().getHostContext() as common.Context;
     const modelDir: string = `${ctx.filesDir}/sherpa-asr`;
@@ -223,6 +227,7 @@ export struct ChatPage {
     const prefer: boolean = AppStorage.get<boolean>('ad_voice_prefer_offline') ?? false;
     SpeechService.get().setPreferOffline(prefer);
     await this.readAloud.loadPrefs(modelDir);
+    // 配置装载后再刷一次（此刻已知远程/离线档是否配齐）。
     this.ttsAvailable = await this.readAloud.available();
   }
 
