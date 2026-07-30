@@ -164,9 +164,9 @@ export class VoiceSession {
       }
     };
 
-    // echoCancel：电话模式全程用 AEC 采集，即便与朗读尾音/误触发短暂重叠也不把 TTS 识别进来。
-    const backend: SpeechBackend | null =
-      await SpeechService.get().startDictation(listener, { echoCancel: true });
+    // 半双工下识别期间不放音，用识别专用麦（VOICE_RECOGNITION）即可——之前改 AEC 采集
+    // （VOICE_COMMUNICATION）反而拖慢/不稳识别，回退。（外放插话的 AEC 方案见交接文档 §5，另行处理。）
+    const backend: SpeechBackend | null = await SpeechService.get().startDictation(listener);
     if (backend === null) {
       this.failSession('本机暂无可用的语音识别。可在设置中配置远程/离线语音，或用键盘输入。');
       return;
