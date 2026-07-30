@@ -120,6 +120,11 @@ export interface TtsOptions {
   readonly pitch?: number;
   /** 音量（system 档 extraParams.volume，约 [0,2]，1.0 常量）。 */
   readonly volume?: number;
+  /**
+   * 通话音频渲染（电话模式外放 barge）：自渲染 PCM 的档（remote/sherpa）据此用 VOICE_COMMUNICATION 播，
+   * 让硬件 AEC 能消掉这段 TTS。系统档不自渲染、忽略此项。
+   */
+  readonly callAudio?: boolean;
 }
 
 /** 一个可选音色（system 档来自 textToSpeech.listVoices 的 VoiceInfo）。 */

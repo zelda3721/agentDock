@@ -26,6 +26,7 @@ import { SystemTtsEngine } from './tts/SystemTtsEngine';
 import { RemoteTtsEngine } from './tts/RemoteTtsEngine';
 import { SherpaTtsEngine } from './tts/SherpaTtsEngine';
 import { SherpaTtsModelManager } from './tts/SherpaTtsModelManager';
+import { AudioPlayer } from './audio/AudioPlayer';
 import { TtsSanitizer } from './tts/TtsSanitizer';
 
 const TAG: string = 'SpeechService';
@@ -55,6 +56,8 @@ export class SpeechService {
    * 故朗读默认走系统 TTS（快、已 NPU 加速）；仅用户显式开启此实验开关才用离线合成。
    */
   private preferOfflineTts: boolean = false;
+  /** 电话模式外放会话中：朗读用通话音频渲染（AEC）+ 扬声器。见 setVoiceCallMode。 */
+  private voiceCallMode: boolean = false;
 
   /** 能力检测缓存（探测有成本：system 档要 createEngine 一把）。 */
   private readonly asrAvail: Map<SpeechBackend, boolean> = new Map<SpeechBackend, boolean>();
@@ -184,6 +187,21 @@ export class SpeechService {
     this.preferOfflineTts = on;
   }
 
+  /**
+   * 电话模式外放会话：开则朗读走**通话音频渲染**（自渲染 PCM 的档 remote/sherpa 用 VOICE_COMMUNICATION，
+   * 配合 AEC 采集消回声）+ 强制扬声器。系统档不自渲染、无效。挂断时关。
+   */
+  setVoiceCallMode(on: boolean): void {
+    this.voiceCallMode = on;
+    AudioPlayer.setSpeakerphone(on);
+  }
+
+  /** 探测当前会落到的 TTS 档（VoiceSession 据此判断能否外放 barge：remote/sherpa 自渲染=能 AEC）。 */
+  async pickTtsBackend(): Promise<SpeechBackend | null> {
+    const engine: TtsEngine | null = await this.pickTts();
+    return engine !== null ? engine.backend : null;
+  }
+
   // ==========================================================================
   // ASR：按住说话 → 转文字
   // ==========================================================================
@@ -250,8 +268,16 @@ export class SpeechService {
       listener.onComplete();
       return engine.backend;
     }
-    // 未显式传 opts 时用朗读偏好（音色/语速/音调）
-    const effective: TtsOptions = opts !== undefined ? opts : this.ttsPrefs;
+    // 未显式传 opts 时用朗读偏好（音色/语速/音调）；电话模式外放叠加 callAudio（通话音频渲染做 AEC）。
+    const base: TtsOptions = opts !== undefined ? opts : this.ttsPrefs;
+    const effective: TtsOptions = {
+      language: base.language,
+      voice: base.voice,
+      speed: base.speed,
+      pitch: base.pitch,
+      volume: base.volume,
+      callAudio: this.voiceCallMode || base.callAudio === true
+    };
     await engine.speak(clean, listener, effective);
     return engine.backend;
   }

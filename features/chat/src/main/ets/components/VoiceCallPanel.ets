@@ -42,6 +42,8 @@ export struct VoiceCallPanel {
   @State private vadFloor: number = 0;
   /** 声控插话开关。默认关（外放会把自己朗读收进来）；戴耳机时可开，真正免手打断。 */
   @State private bargeOn: boolean = false;
+  /** 本会话朗读档能否做回声消除（remote/离线 自渲染 PCM）——外放也能声控 barge，无需耳机开关。 */
+  @State private aecCapable: boolean = false;
 
   private session: VoiceSession | null = null;
 
@@ -53,6 +55,10 @@ export struct VoiceCallPanel {
           this.hadTurn = true;
         }
         this.state = s;
+        // 会话起手后 aecCapable 才定（探测朗读档）；刷进 UI 决定文案/是否需要耳机开关。
+        if (this.session !== null) {
+          this.aecCapable = this.session.isAecCapable();
+        }
       },
       onTranscript: (t: string): void => { this.transcript = t; },
       onResponse: (r: string): void => { this.response = r; },
@@ -169,23 +175,34 @@ export struct VoiceCallPanel {
 
       Blank()
 
-      // 声控插话开关（默认关——外放会把朗读收进识别；戴耳机时开，真正免手打断）
-      Row({ space: AdSpace.s2 }) {
-        Toggle({ type: ToggleType.Switch, isOn: this.bargeOn })
-          .onChange((on: boolean): void => {
-            this.bargeOn = on;
-            if (this.session !== null) {
-              this.session.setBargeEnabled(on);
-            }
-          })
-        Text('声控插话（戴耳机时开）')
+      // 声控插话：aecCapable（远程/离线自渲染 PCM 做 AEC）时外放自动可插话，无需开关；
+      // 否则（系统档）给耳机开关：戴耳机才不会把朗读收进来。
+      if (this.aecCapable) {
+        Text('可外放直接说话打断（回声消除已启用）')
           .fontSize(AdType.bodyS.size)
           .lineHeight(AdType.bodyS.lineHeight)
           .fontFamily(AdType.bodyS.family)
-          .fontColor(AdColor.inkSecondary)
+          .fontColor(AdColor.successFg)
+          .width('100%')
+          .textAlign(TextAlign.Center)
+      } else {
+        Row({ space: AdSpace.s2 }) {
+          Toggle({ type: ToggleType.Switch, isOn: this.bargeOn })
+            .onChange((on: boolean): void => {
+              this.bargeOn = on;
+              if (this.session !== null) {
+                this.session.setBargeEnabled(on);
+              }
+            })
+          Text('声控插话（戴耳机时开）')
+            .fontSize(AdType.bodyS.size)
+            .lineHeight(AdType.bodyS.lineHeight)
+            .fontFamily(AdType.bodyS.family)
+            .fontColor(AdColor.inkSecondary)
+        }
+        .width('100%')
+        .justifyContent(FlexAlign.Center)
       }
-      .width('100%')
-      .justifyContent(FlexAlign.Center)
 
       // 控制区
       Row({ space: AdSpace.s3 }) {
@@ -261,7 +278,7 @@ export struct VoiceCallPanel {
       case 'thinking':
         return '思考中…';
       case 'speaking':
-        return this.bargeOn ? '读答案中…（可直接说话打断）' : '读答案中…（点『打断说话』）';
+        return (this.bargeOn || this.aecCapable) ? '读答案中…（可直接说话打断）' : '读答案中…（点『打断说话』）';
       case 'error':
         return '出错了';
       default:

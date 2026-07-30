@@ -16,9 +16,39 @@ const WRITE_CHUNK: number = 8192;
 export class AudioPlayer {
   private renderer: audio.AudioRenderer | null = null;
   private stopped: boolean = false;
+  /**
+   * 通话音频模式：用 STREAM_USAGE_VOICE_COMMUNICATION 渲染，使其进入通话音频路径 → 与
+   * SOURCE_TYPE_VOICE_COMMUNICATION 采集配对，系统硬件 AEC 才会把这段 TTS 从麦里消掉
+   * （电话模式外放声控插话的前提，§18.4）。默认关（普通朗读用 VOICE_ASSISTANT）。
+   */
+  private callAudio: boolean = false;
 
   isPlaying(): boolean {
     return this.renderer !== null;
+  }
+
+  /** 切通话音频模式（电话模式外放 barge 用）。下次 playPcm/beginStream 生效。 */
+  setCallAudio(on: boolean): void {
+    this.callAudio = on;
+  }
+
+  private streamUsage(): audio.StreamUsage {
+    return this.callAudio
+      ? audio.StreamUsage.STREAM_USAGE_VOICE_COMMUNICATION
+      : audio.StreamUsage.STREAM_USAGE_VOICE_ASSISTANT;
+  }
+
+  /**
+   * 强制通话音频走扬声器（外放）——VOICE_COMMUNICATION 默认可能走听筒。电话模式外放时开、挂断关。
+   * 失败不抛（pad 无听筒时本就外放）。
+   */
+  static async setSpeakerphone(on: boolean): Promise<void> {
+    try {
+      const rm: audio.AudioRoutingManager = audio.getAudioManager().getRoutingManager();
+      await rm.setCommunicationDevice(audio.CommunicationDeviceType.SPEAKER, on);
+    } catch (e) {
+      Logger.warn(TAG, 'setSpeakerphone failed', [{ key: 'code', value: (e as BusinessError).code }]);
+    }
   }
 
   /**
@@ -37,7 +67,7 @@ export class AudioPlayer {
       encodingType: audio.AudioEncodingType.ENCODING_TYPE_RAW
     };
     const rendererInfo: audio.AudioRendererInfo = {
-      usage: audio.StreamUsage.STREAM_USAGE_VOICE_ASSISTANT,
+      usage: this.streamUsage(),
       rendererFlags: 0
     };
     const options: audio.AudioRendererOptions = { streamInfo, rendererInfo };
@@ -76,7 +106,7 @@ export class AudioPlayer {
       encodingType: audio.AudioEncodingType.ENCODING_TYPE_RAW
     };
     const rendererInfo: audio.AudioRendererInfo = {
-      usage: audio.StreamUsage.STREAM_USAGE_VOICE_ASSISTANT,
+      usage: this.streamUsage(),
       rendererFlags: 0
     };
     const options: audio.AudioRendererOptions = { streamInfo, rendererInfo };

@@ -86,6 +86,11 @@ export class VoiceSession {
    * 参考 HuggingFace speech-to-speech：本地麦场景 should_listen.clear() 走半双工，插话靠耳机。
    */
   private bargeEnabled: boolean = false;
+  /**
+   * 本会话朗读档能否做回声消除（remote/sherpa 自渲染 PCM 走通话音频 + AEC）。为真时**外放也能声控 barge**，
+   * 无需耳机。start() 探测 pickTtsBackend 得出。系统档为假（不吐 PCM，只能半双工）。
+   */
+  private aecCapable: boolean = false;
 
   constructor(responder: VoiceResponder, callbacks: VoiceSessionCallbacks) {
     this.responder = responder;
@@ -94,6 +99,11 @@ export class VoiceSession {
 
   getState(): VoiceState {
     return this.state;
+  }
+
+  /** 本会话朗读档能否做回声消除（外放也能声控 barge，无需耳机）。start() 后有效。 */
+  isAecCapable(): boolean {
+    return this.aecCapable;
   }
 
   /** 设置声控插话开关（戴耳机时才建议开）。可在会话中随时切换。 */
@@ -111,6 +121,11 @@ export class VoiceSession {
     }
     this.running = true;
     this.resetTurn();
+    // 探测朗读会落到哪档：remote/sherpa 自渲染 PCM → 可用通话音频渲染 + 硬件 AEC → **外放也能声控 barge**。
+    // 系统档不吐 PCM、消不了回声 → 只能半双工（除非耳机开 bargeEnabled）。
+    const ttsBackend: SpeechBackend | null = await SpeechService.get().pickTtsBackend();
+    this.aecCapable = ttsBackend === 'remote' || ttsBackend === 'sherpa';
+    SpeechService.get().setVoiceCallMode(this.aecCapable);
     await this.beginListening();
   }
 
@@ -125,6 +140,7 @@ export class VoiceSession {
       this.cancelResponder = null;
     }
     SpeechService.get().stopReading();
+    SpeechService.get().setVoiceCallMode(false);   // 关通话音频 + 扬声器路由
     this.ttsQueue = [];
     this.ttsPlaying = false;
     this.setState('idle');
@@ -267,9 +283,9 @@ export class VoiceSession {
     this.cb.onResponse(this.responseText);
     if (this.state === 'thinking') {
       this.setState('speaking');   // 首个 delta 到 → 进入说话态（首句合成即将开始）
-      // 半双工：默认**说话中不开麦**（外放时开麦必然把自己朗读收进来→自问自答）。
-      // 仅"声控插话"开启（戴耳机）时才并行监听插话——耳机下麦听不到扬声器，检测到=真用户插话。
-      if (this.bargeEnabled) {
+      // 开麦监听插话的条件：① aecCapable——朗读走通话音频渲染、硬件 AEC 消掉自身朗读，**外放也安全**；
+      // 或 ② bargeEnabled——用户戴耳机手动开（麦听不到扬声器）。否则半双工（说话中不开麦）避免自问自答。
+      if (this.aecCapable || this.bargeEnabled) {
         this.barge.start((): void => { this.onBargeDetected(); },
           (rms: number, floor: number): void => {
             if (this.cb.onVadDebug !== undefined) {
@@ -421,6 +437,7 @@ export class VoiceSession {
   private failSession(message: string): void {
     this.clearTimers();
     this.barge.stop();
+    SpeechService.get().setVoiceCallMode(false);
     if (this.cancelResponder !== null) {
       this.cancelResponder();
       this.cancelResponder = null;

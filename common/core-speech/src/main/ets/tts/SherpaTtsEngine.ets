@@ -53,6 +53,7 @@ export class SherpaTtsEngine implements TtsEngine {
       const engine: OfflineTts = this.ensureEngine();
       const sid: number = opts?.voice !== undefined ? opts.voice : 0;
       const speed: number = opts?.speed !== undefined ? opts.speed : 1.0;
+      this.player.setCallAudio(opts?.callAudio === true);   // 电话模式外放 barge：通话音频渲染做 AEC
       if (listener.onStart !== undefined) {
         listener.onStart('sherpa');
       }

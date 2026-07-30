@@ -66,6 +66,7 @@ export class RemoteTtsEngine implements TtsEngine {
           '远程语音返回的音频不是 WAV：请把端点的 response_format 设为 wav。', 'remote');
       }
       listener.onStart('remote');
+      this.player.setCallAudio(opts?.callAudio === true);   // 电话模式外放 barge：通话音频渲染做 AEC
       await this.player.playPcm(wav.pcm, wav.sampleRate, wav.channels);
       this.playing = false;
       listener.onComplete();
