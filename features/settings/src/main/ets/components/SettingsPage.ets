@@ -18,7 +18,7 @@ import {
   AD_REDUCE_MOTION_KEY
 } from 'design-system';
 import { ImportResult } from 'core-data';
-import { RemoteAudioConfigRaw, TtsVoice } from 'core-speech';
+import { RemoteAudioConfigRaw, SystemTtsEngine, TtsVoice } from 'core-speech';
 import { AppSettings, BreakpointKey, ImportPreview, OfflineModelStatus, OfflineTtsStatus, SettingsFacade, TtsPrefs } from '../model/SettingsViewModel';
 
 /**
@@ -124,6 +124,9 @@ export struct SettingsPage {
   @State private otProgress: string = '';
   /** 用离线 TTS 朗读（实验，默认关——端上合成慢，朗读默认走系统 TTS）。 */
   @State private otUseForReadAloud: boolean = false;
+  /** 系统 TTS 吐 PCM 验证结果（诊断，电话模式 AEC 抓手）。 */
+  @State private pcmProbeResult: string = '';
+  @State private pcmProbing: boolean = false;
 
   private facade: SettingsFacade = new SettingsFacade();
   /** 2in1 无蜂窝概念：网络策略开关整行隐藏（§8 能力差异守卫） */
@@ -181,6 +184,33 @@ export struct SettingsPage {
     this.facade.removeOfflineTts(ctx);
     this.otPresent = false;
     this.otProgress = '已删除离线 TTS 模型。';
+  }
+
+  /**
+   * 验证系统 TTS 能否吐 PCM（电话模式外放 AEC 抓手）。muted=true 传 volume:0 试"静音但仍出 PCM"——
+   * 若成立，就能"系统 NPU 合成(静音) + 拿 PCM 自渲染成通话音频做 AEC → 外放真 barge"。
+   * 用户同时听：默认档有没有声、静音档是不是真没声。
+   */
+  private probeSystemPcm(muted: boolean): void {
+    if (this.pcmProbing) {
+      return;
+    }
+    this.pcmProbing = true;
+    this.pcmProbeResult = muted ? '静音合成中…（应听不到声）' : '合成中…（听有没有声）';
+    const probe: SystemTtsEngine = new SystemTtsEngine();
+    const extra: Record<string, Object> = {};
+    if (muted) {
+      extra['volume'] = 0;
+    }
+    probe.probePcm('这是一段用来验证系统语音能不能吐出 PCM 数据的测试文本。', extra)
+      .then((r: string): void => {
+        this.pcmProbeResult = (muted ? '【静音档】' : '【默认档】') + r + '　→ 你刚才' + (muted ? '应听不到声' : '有没有听到声？');
+        probe.shutdown();
+        this.pcmProbing = false;
+      }).catch((e: Error): void => {
+        this.pcmProbeResult = `验证失败：${e.message}`;
+        this.pcmProbing = false;
+      });
   }
 
   private async loadOfflineModel(): Promise<void> {
@@ -380,6 +410,32 @@ export struct SettingsPage {
         .settingsRowHelper().width('100%')
       Text('· 离线识别（SenseVoice）已可用；离线朗读较慢，默认用系统 TTS。')
         .settingsRowHelper().width('100%')
+
+      // 诊断：验证系统 TTS 能否吐 PCM（决定外放能不能做 barge）
+      Text('诊断：系统 TTS 吐 PCM 验证').settingsRowLabel().width('100%').padding({ top: AdSpace.s2 })
+      Text('点下面按钮各合成一句：默认档听有没有声、静音档看是不是没声但仍吐出 PCM。' +
+        '若「静音档」既没声又有 PCM，就能拿它做外放回声消除、实现外放说话即打断。')
+        .settingsRowHelper().width('100%')
+      if (this.pcmProbeResult.length > 0) {
+        Text(this.pcmProbeResult)
+          .settingsRowHelper().width('100%').fontColor(AdColor.brandFg)
+      }
+      Row({ space: AdSpace.s2 }) {
+        AdButton({
+          label: this.pcmProbing ? '合成中…' : '默认合成（听声）',
+          variant: AdButtonVariant.SECONDARY,
+          btnSize: AdButtonSize.MD,
+          btnEnabled: !this.pcmProbing,
+          onAction: (): void => { this.probeSystemPcm(false); }
+        })
+        AdButton({
+          label: '静音合成（volume=0）',
+          variant: AdButtonVariant.SECONDARY,
+          btnSize: AdButtonSize.MD,
+          btnEnabled: !this.pcmProbing,
+          onAction: (): void => { this.probeSystemPcm(true); }
+        })
+      }.width('100%')
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)

@@ -81,6 +81,58 @@ export class SystemTtsEngine implements TtsEngine {
     return this.speaking;
   }
 
+  /**
+   * 验证系统 TTS 能否经 onData 吐 PCM（电话模式外放 AEC 的抓手）。合成一段文本、挂 onData 累计
+   * 字节/块数/audioType，返回屏上可读的结论。用户同时听是否**仍自动播放**（判断能否"只合成不自播"）。
+   * extraParams 可传 playType 等尝试关闭自播（键名各版本不一，先默认再试）。
+   */
+  async probePcm(text: string, extra?: Record<string, Object>): Promise<string> {
+    const cfg: TtsConfig | null = await this.resolveConfig();
+    if (cfg === null) {
+      return '系统 TTS 不可用（建引擎失败）';
+    }
+    let engine: textToSpeech.TextToSpeechEngine;
+    try {
+      engine = await this.ensureEngine();
+    } catch (e) {
+      return `建引擎失败：${(e as BusinessError).code}`;
+    }
+    let chunks: number = 0;
+    let totalBytes: number = 0;
+    let audioType: string = '';
+    return new Promise<string>((resolve: (s: string) => void): void => {
+      const listener: textToSpeech.SpeakListener = {
+        onStart: (_id: string, _r: textToSpeech.StartResponse): void => {},
+        onComplete: (_id: string, _r: textToSpeech.CompleteResponse): void => {
+          this.speaking = false;
+          resolve(chunks > 0
+            ? `✅ onData 吐 PCM：${chunks} 块 / ${totalBytes} 字节 / 类型=${audioType || '未知'}`
+            : `⚠️ 未收到 onData（本机可能不经回调吐 PCM）`);
+        },
+        onStop: (_id: string, _r: textToSpeech.StopResponse): void => {
+          this.speaking = false;
+          resolve(`⏹ 停止：${chunks} 块 / ${totalBytes} 字节`);
+        },
+        onError: (_id: string, code: number, msg: string): void => {
+          this.speaking = false;
+          resolve(`❌ 出错(${code}) ${msg}；onData ${chunks > 0 ? '有' : '无'}数据`);
+        },
+        onData: (_id: string, audio: ArrayBuffer, response: textToSpeech.SynthesisResponse): void => {
+          chunks++;
+          totalBytes += audio.byteLength;
+          audioType = response.audioType;
+        }
+      };
+      engine.setListener(listener);
+      this.speaking = true;
+      const params: textToSpeech.SpeakParams = {
+        requestId: `pcmprobe_${Date.now()}`,
+        extraParams: extra !== undefined ? extra : {}
+      };
+      engine.speak(text, params);
+    });
+  }
+
   shutdown(): void {
     this.stop();
     if (this.engine !== null) {
