@@ -11,13 +11,22 @@
  * Float32[-1,1] → PCM16 → AudioPlayer 播；stop() 即时打断（barge/手动）。
  */
 
-import { OfflineTts, OfflineTtsConfig, TtsInput, TtsOutput } from 'sherpa_onnx';
+import { OfflineTts, OfflineTtsConfig, TtsInput } from 'sherpa_onnx';
 import { Logger } from 'core-infra';
 import { SpeechBackend, SpeechError, TtsEngine, TtsListener, TtsOptions, TtsVoice } from '../model/SpeechTypes';
 import { AudioPlayer } from '../audio/AudioPlayer';
 import { SherpaTtsModelManager } from './SherpaTtsModelManager';
 
 const TAG: string = 'SherpaTtsEngine';
+
+/** 合成回调分块数据（结构同 sherpa 内部 TtsCallbackData，后者未导出，本地按形状声明）。 */
+interface TtsChunk {
+  samples: Float32Array;
+  progress: number;
+}
+
+/** 轮询队列空时的等待步长（ms）。 */
+const DRAIN_TICK_MS: number = 8;
 
 export class SherpaTtsEngine implements TtsEngine {
   readonly backend: SpeechBackend = 'sherpa';
@@ -54,20 +63,47 @@ export class SherpaTtsEngine implements TtsEngine {
       if (listener.onStart !== undefined) {
         listener.onStart('sherpa');
       }
+
+      // 边合成边播：generateAsync 在 worker 线程推理，每合成一块经 callback 回主线程 → 入队；
+      // 写线程顺序喂 renderer（自带背压）。首音只等第一块，不等整段——大幅降延迟、且不再一次性
+      // 转换/播放整段（消 UI 卡顿）。
+      await this.player.beginStream(engine.sampleRate, 1);
+      const queue: Uint8Array[] = [];
+      let genDone: boolean = false;
+
       const input: TtsInput = new TtsInput();
       input.text = text;
       input.sid = opts?.voice !== undefined ? opts.voice : 0;
       input.speed = opts?.speed !== undefined ? opts.speed : 1.0;
       input.enableExternalBuffer = false;
-      const out: TtsOutput = await engine.generateAsync(input);
+      input.callback = (chunk: TtsChunk): number => {
+        if (this.cancelled) {
+          return 0;   // 返回 0 让 native 停止合成（barge/手动打断）
+        }
+        queue.push(SherpaTtsEngine.floatToPcm16(chunk.samples));
+        return 1;
+      };
+
+      // 写线程：与 generateAsync 并行消费队列
+      const writer: Promise<void> = (async (): Promise<void> => {
+        while (!this.cancelled && (!genDone || queue.length > 0)) {
+          const c: Uint8Array | undefined = queue.shift();
+          if (c === undefined) {
+            await SherpaTtsEngine.delay(DRAIN_TICK_MS);
+            continue;
+          }
+          await this.player.writeStream(c);
+        }
+      })();
+
+      await engine.generateAsync(input);
+      genDone = true;
+      await writer;
+
       if (this.cancelled) {
         return;   // stop() 已发 onStop
       }
-      const pcm: Uint8Array = SherpaTtsEngine.floatToPcm16(out.samples);
-      await this.player.playPcm(pcm, out.sampleRate, 1);
-      if (this.cancelled) {
-        return;
-      }
+      await this.player.endStream();
       this.speaking = false;
       listener.onComplete();
     } catch (e) {
@@ -78,6 +114,12 @@ export class SherpaTtsEngine implements TtsEngine {
           `离线合成失败：${(e as Error).message}`, 'sherpa'));
       }
     }
+  }
+
+  private static delay(ms: number): Promise<void> {
+    return new Promise<void>((resolve: () => void): void => {
+      setTimeout(resolve, ms);
+    });
   }
 
   stop(): void {

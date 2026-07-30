@@ -60,6 +60,58 @@ export class AudioPlayer {
     await this.release();
   }
 
+  /**
+   * 流式播放起手：建好并启动 renderer，随后用 writeStream 分块喂、endStream 收尾。
+   * 用于离线 TTS 边合成边播（首音低延迟）——不必等整段合成完。
+   */
+  async beginStream(sampleRate: number, channels: number): Promise<void> {
+    if (this.renderer !== null) {
+      this.stop();
+    }
+    this.stopped = false;
+    const streamInfo: audio.AudioStreamInfo = {
+      samplingRate: AudioPlayer.toSamplingRate(sampleRate),
+      channels: channels >= 2 ? audio.AudioChannel.CHANNEL_2 : audio.AudioChannel.CHANNEL_1,
+      sampleFormat: audio.AudioSampleFormat.SAMPLE_FORMAT_S16LE,
+      encodingType: audio.AudioEncodingType.ENCODING_TYPE_RAW
+    };
+    const rendererInfo: audio.AudioRendererInfo = {
+      usage: audio.StreamUsage.STREAM_USAGE_VOICE_ASSISTANT,
+      rendererFlags: 0
+    };
+    const options: audio.AudioRendererOptions = { streamInfo, rendererInfo };
+    const renderer: audio.AudioRenderer = await audio.createAudioRenderer(options);
+    this.renderer = renderer;
+    await renderer.start();
+  }
+
+  /** 流式写一块 PCM16。renderer.write 自带背压，顺序 await 即自然节流。停了就丢弃。 */
+  async writeStream(pcm: Uint8Array): Promise<void> {
+    const r: audio.AudioRenderer | null = this.renderer;
+    if (r === null || this.stopped || pcm.length === 0) {
+      return;
+    }
+    const chunk: ArrayBuffer = new ArrayBuffer(pcm.length);
+    new Uint8Array(chunk).set(pcm);
+    try {
+      await r.write(chunk);
+    } catch (e) {
+      Logger.warn(TAG, 'writeStream failed', [{ key: 'code', value: (e as BusinessError).code }]);
+    }
+  }
+
+  /** 流式收尾：冲刷剩余并释放。 */
+  async endStream(): Promise<void> {
+    if (this.renderer !== null && !this.stopped) {
+      try {
+        await this.renderer.drain();
+      } catch (e) {
+        Logger.warn(TAG, 'drain failed', [{ key: 'code', value: (e as BusinessError).code }]);
+      }
+    }
+    await this.release();
+  }
+
   /** 停止播放（barge-in / 手动）。释放异步进行，不阻塞调用方。 */
   stop(): void {
     this.stopped = true;
